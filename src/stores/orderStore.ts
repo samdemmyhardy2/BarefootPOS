@@ -15,12 +15,13 @@ interface OrderState {
   connectLive: () => Promise<void>;
   disconnectLive: () => void;
   createOrder: (
-    location: { tableId?: string; roomStayId?: string; paymentMethod: OrderPaymentMethod },
+    location: { tableId?: string; roomStayId?: string; paymentMethod?: OrderPaymentMethod },
     items: Array<{
       menuItemId: string;
       quantity: number;
       removeIngredients?: string;
       addExtras?: string;
+      selectedAllergens?: string[];
       specialNotes?: string;
     }>,
   ) => Promise<Order>;

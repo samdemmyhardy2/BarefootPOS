@@ -5,8 +5,12 @@ import { api, errorMessage } from "../lib/api";
 import type { Category, MenuItem } from "../lib/types";
 import { money } from "../lib/types";
 import { useUiStore } from "../stores/uiStore";
+import { localizedFoodLabels, splitFoodLabels } from "../lib/foodTranslations";
 
 export function MenuPage() {
+  type FoodField = "allergens" | "dietaryInfo" | "availableExtras";
+  type FoodLabelLanguages = Record<"en" | "my" | "th", string>;
+  type FoodLabels = Record<FoodField, FoodLabelLanguages>;
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [categoryId, setCategoryId] = useState("all");
@@ -18,13 +22,17 @@ export function MenuPage() {
   const [description, setDescription] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [allergens, setAllergens] = useState("");
-  const [dietaryInfo, setDietaryInfo] = useState("");
-  const [availableExtras, setAvailableExtras] = useState("");
+  const emptyFoodLabels = (): FoodLabels => ({
+    allergens: { en: "", my: "", th: "" },
+    dietaryInfo: { en: "", my: "", th: "" },
+    availableExtras: { en: "", my: "", th: "" },
+  });
+  const [foodLabels, setFoodLabels] = useState<FoodLabels>(emptyFoodLabels);
   const [selectedCategory, setSelectedCategory] = useState("");
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [error, setError] = useState("");
   const notify = useUiStore((state) => state.notify);
+  const language = useUiStore((state) => state.language);
   const load = useCallback(async () => {
     try {
       const { data } = await api.get<Category[]>("/categories");
@@ -44,7 +52,7 @@ export function MenuPage() {
   const visible = items.filter(
     (item) =>
       (categoryId === "all" || item.categoryId === categoryId) &&
-      `${item.name} ${item.description ?? ""} ${item.allergens ?? ""} ${item.dietaryInfo ?? ""} ${item.availableExtras ?? ""}`
+      `${item.name} ${item.description ?? ""} ${splitFoodLabels(item.allergens).join(" ")} ${splitFoodLabels(item.dietaryInfo).join(" ")} ${splitFoodLabels(item.availableExtras).join(" ")}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
@@ -67,9 +75,15 @@ export function MenuPage() {
         description,
         categoryId: selectedCategory,
         imageUrl: hostedImageUrl || (editingItem ? null : undefined),
-        allergens: allergens.trim() || (editingItem ? null : undefined),
-        dietaryInfo: dietaryInfo.trim() || (editingItem ? null : undefined),
-        availableExtras: availableExtras.trim() || (editingItem ? null : undefined),
+        allergens: splitFoodLabels(foodLabels.allergens.en),
+        allergensMy: splitFoodLabels(foodLabels.allergens.my),
+        allergensTh: splitFoodLabels(foodLabels.allergens.th),
+        dietaryInfo: splitFoodLabels(foodLabels.dietaryInfo.en),
+        dietaryInfoMy: splitFoodLabels(foodLabels.dietaryInfo.my),
+        dietaryInfoTh: splitFoodLabels(foodLabels.dietaryInfo.th),
+        availableExtras: splitFoodLabels(foodLabels.availableExtras.en),
+        availableExtrasMy: splitFoodLabels(foodLabels.availableExtras.my),
+        availableExtrasTh: splitFoodLabels(foodLabels.availableExtras.th),
       };
       if (editingItem) {
         await api.patch(`/menu-items/${editingItem.id}`, payload);
@@ -84,9 +98,7 @@ export function MenuPage() {
       setDescription("");
       setImageUrl("");
       setImageFile(null);
-      setAllergens("");
-      setDietaryInfo("");
-      setAvailableExtras("");
+      setFoodLabels(emptyFoodLabels());
       await load();
     } catch (e) {
       setError(errorMessage(e));
@@ -99,9 +111,11 @@ export function MenuPage() {
     setDescription(item.description ?? "");
     setImageUrl(item.imageUrl ?? "");
     setImageFile(null);
-    setAllergens(item.allergens ?? "");
-    setDietaryInfo(item.dietaryInfo ?? "");
-    setAvailableExtras(item.availableExtras ?? "");
+    setFoodLabels({
+      allergens: { en: splitFoodLabels(item.allergens).join(", "), my: splitFoodLabels(item.allergensMy).join(", "), th: splitFoodLabels(item.allergensTh).join(", ") },
+      dietaryInfo: { en: splitFoodLabels(item.dietaryInfo).join(", "), my: splitFoodLabels(item.dietaryInfoMy).join(", "), th: splitFoodLabels(item.dietaryInfoTh).join(", ") },
+      availableExtras: { en: splitFoodLabels(item.availableExtras).join(", "), my: splitFoodLabels(item.availableExtrasMy).join(", "), th: splitFoodLabels(item.availableExtrasTh).join(", ") },
+    });
     setSelectedCategory(item.categoryId);
     setError("");
     setModal(true);
@@ -169,9 +183,7 @@ export function MenuPage() {
                 setDescription("");
                 setImageUrl("");
                 setImageFile(null);
-                setAllergens("");
-                setDietaryInfo("");
-                setAvailableExtras("");
+                setFoodLabels(emptyFoodLabels());
                 setError("");
                 setModal(true);
               }}
@@ -247,13 +259,13 @@ export function MenuPage() {
                   <p className="mt-1 truncate text-xs text-muted">
                     {item.description || "No description added."}
                   </p>
-                  {(item.allergens || item.dietaryInfo) && (
+                  {(item.allergens?.length || item.dietaryInfo?.length || item.availableExtras?.length) ? (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {item.allergens && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-semibold text-amber-800">Allergens: {item.allergens}</span>}
-                      {item.dietaryInfo && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-semibold text-emerald-800">{item.dietaryInfo}</span>}
-                      {item.availableExtras && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[9px] font-semibold text-sky-800">Extras: {item.availableExtras}</span>}
+                      {localizedFoodLabels(item.allergens, item.allergensMy, item.allergensTh, language).map((label) => <span key={`a-${label}`} className="rounded-full bg-amber-50 px-2 py-0.5 text-[9px] font-semibold text-amber-800">{label}</span>)}
+                      {localizedFoodLabels(item.dietaryInfo, item.dietaryInfoMy, item.dietaryInfoTh, language).map((label) => <span key={`d-${label}`} className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-semibold text-emerald-800">{label}</span>)}
+                      {localizedFoodLabels(item.availableExtras, item.availableExtrasMy, item.availableExtrasTh, language).map((label) => <span key={`e-${label}`} className="rounded-full bg-sky-50 px-2 py-0.5 text-[9px] font-semibold text-sky-800">{label}</span>)}
                     </div>
-                  )}
+                  ) : null}
                 </div>
                 <span className="text-sm font-bold">{money(item.price)}</span>
                 <button
@@ -326,24 +338,34 @@ export function MenuPage() {
               onChange={(e) => setDescription(e.target.value)}
               placeholder="A short, delicious description"
             />
-            <Field
-              label="Known allergens"
-              value={allergens}
-              onChange={(e) => setAllergens(e.target.value)}
-              placeholder="e.g. peanuts, milk, wheat"
-            />
-            <Field
-              label="Dietary labels"
-              value={dietaryInfo}
-              onChange={(e) => setDietaryInfo(e.target.value)}
-              placeholder="e.g. vegetarian, vegan, contains dairy"
-            />
-            <Field
-              label="Extras offered for this dish"
-              value={availableExtras}
-              onChange={(e) => setAvailableExtras(e.target.value)}
-              placeholder="Comma separated, e.g. add tomato, extra cheese"
-            />
+            {([
+              { key: "allergens", label: "Known allergens", placeholder: "e.g. peanuts, milk, wheat" },
+              { key: "dietaryInfo", label: "Dietary labels", placeholder: "e.g. vegetarian, vegan, contains dairy" },
+              { key: "availableExtras", label: "Extras offered for this dish", placeholder: "e.g. add tomato, extra cheese" },
+            ] as const).map((field) => (
+              <fieldset key={field.key} className="grid gap-3 rounded-xl border border-line p-3 sm:grid-cols-3">
+                <legend className="px-1 text-xs font-semibold text-ink">{field.label}</legend>
+                {([
+                  { lang: "en", label: "English" },
+                  { lang: "my", label: "Burmese" },
+                  { lang: "th", label: "Thai" },
+                ] as const).map(({ lang, label }) => (
+                  <label key={lang} className="block">
+                    <span className="mb-1.5 block text-[11px] font-semibold text-muted">{label}</span>
+                    <input
+                      value={foodLabels[field.key][lang]}
+                      onChange={(event) => setFoodLabels((current) => ({ ...current, [field.key]: { ...current[field.key], [lang]: event.target.value } }))}
+                      placeholder={lang === "en" ? field.placeholder : `Enter ${label.toLowerCase()} labels`}
+                      aria-label={`${field.label} (${label})`}
+                      required
+                      className="focus-ring h-11 w-full rounded-xl border border-line bg-white px-3.5 text-sm text-ink outline-none focus:border-olive"
+                    />
+                    <span className="mt-1 block text-[10px] text-muted">{lang === "en" ? "English" : lang === "my" ? "မြန်မာ" : "ภาษาไทย"} · comma-separated, same order</span>
+                  </label>
+                ))}
+                <p className="text-[10px] text-muted sm:col-span-3">All three languages are required. Enter “None” in all three fields when no labels apply.</p>
+              </fieldset>
+            ))}
             <div>
               <Field
                 label="Upload image"

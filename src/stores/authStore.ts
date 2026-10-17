@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api } from "../lib/api";
+import { AUTH_EXPIRED_EVENT } from "../lib/authEvents";
 import type { Role, User } from "../lib/types";
 
 interface AuthState {
@@ -75,3 +76,9 @@ export const useAuthStore = create<AuthState>()(
     },
   ),
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_EXPIRED_EVENT, () => {
+    useAuthStore.getState().logout();
+  });
+}

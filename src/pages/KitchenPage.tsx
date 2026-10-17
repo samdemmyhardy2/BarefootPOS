@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   ChefHat,
@@ -11,14 +11,22 @@ import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { errorMessage } from "../lib/api";
 import { orderLocation } from "../lib/types";
+import { localizedFoodLabels } from "../lib/foodTranslations";
+import { formatOrderDuration } from "../lib/orderTiming";
 
 export function KitchenPage() {
   const orders = useOrderStore((state) => state.orders);
   const liveState = useOrderStore((state) => state.liveState);
   const cookAction = useOrderStore((state) => state.cookAction);
   const notify = useUiStore((state) => state.notify);
+  const language = useUiStore((state) => state.language);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const queue = useMemo(
     () =>
       orders
@@ -123,6 +131,9 @@ export function KitchenPage() {
                     <p className="mt-1 font-mono text-[10px] text-muted">
                       Order #{order.id.slice(-6).toUpperCase()}
                     </p>
+                    <p className="mt-1 text-[11px] font-semibold text-olive">
+                      {order.status === "PREPARING" ? "Preparing" : "Waiting to start"}: {formatOrderDuration(order.status === "PREPARING" ? order.preparingAt ?? order.createdAt : order.createdAt, now)}
+                    </p>
                   </div>
                   <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
                     <Clock3 size={13} />
@@ -158,6 +169,17 @@ export function KitchenPage() {
                             Extra: {item.addExtras}
                           </p>
                         )}
+                        {item.selectedAllergens?.length ? (
+                          <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">
+                            {language === "my" ? "ဓာတ်မတည့်မှု:" : language === "th" ? "สารก่อภูมิแพ้:" : "Allergens:"}{" "}
+                            {item.selectedAllergens.map((allergen) => {
+                              const canonical = item.menuItem.allergens ?? [];
+                              const translated = localizedFoodLabels(item.menuItem.allergens, item.menuItem.allergensMy, item.menuItem.allergensTh, language);
+                              const index = canonical.indexOf(allergen);
+                              return index >= 0 ? translated[index] : allergen;
+                            }).join(", ")}
+                          </p>
+                        ) : null}
                         {item.specialNotes && (
                           <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] italic text-amber-800">
                             “{item.specialNotes}”

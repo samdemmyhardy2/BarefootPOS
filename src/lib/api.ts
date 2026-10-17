@@ -1,4 +1,5 @@
 import axios from "axios";
+import { AUTH_EXPIRED_EVENT } from "./authEvents";
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "/api",
@@ -17,8 +18,7 @@ api.interceptors.response.use(
   (error: unknown) => {
     if (axios.isAxiosError(error) && error.response?.status === 401) {
       localStorage.removeItem("restaurant-access-token");
-      if (!window.location.pathname.startsWith("/login"))
-        window.location.assign("/login");
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
     }
     return Promise.reject(error);
   },

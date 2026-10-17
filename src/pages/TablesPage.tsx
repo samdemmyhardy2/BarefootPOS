@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Armchair, CircleCheck, Plus, RefreshCw, Users } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Armchair, Plus, RefreshCw, Users } from "lucide-react";
 import { Field, Modal, PageHeader, Panel, TableBadge } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import type { DiningTable, TableStatus } from "../lib/types";
@@ -7,6 +8,7 @@ import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 
 export function TablesPage() {
+  const navigate = useNavigate();
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
@@ -161,14 +163,12 @@ export function TablesPage() {
                   <option value="OCCUPIED">Occupied</option>
                 </select>
               )}
-              {table.status === "OCCUPIED" && (
-                <button
-                  onClick={() => void changeStatus(table, "AVAILABLE")}
-                  className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-lg bg-white py-2 text-[10px] font-bold text-olive shadow-sm hover:bg-emerald-50"
-                >
-                  <CircleCheck size={13} /> Mark available
-                </button>
-              )}
+              <button
+                onClick={() => navigate(`/tables/${table.id}`)}
+                className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-lg bg-olive py-2 text-[10px] font-bold text-white shadow-sm hover:bg-[#334438]"
+              >
+                {table.status === "OCCUPIED" ? "View table & add items" : "Open table"}
+              </button>
             </Panel>
           ))}
         </div>

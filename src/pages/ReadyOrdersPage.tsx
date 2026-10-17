@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BellRing, Check, Clock3, PackageCheck, Utensils } from "lucide-react";
 import { EmptyState, PageHeader, Panel } from "../components/ui";
 import { useOrderStore } from "../stores/orderStore";
@@ -6,6 +6,7 @@ import { useUiStore } from "../stores/uiStore";
 import { orderLocation } from "../lib/types";
 import { errorMessage } from "../lib/api";
 import { money } from "../lib/types";
+import { formatOrderDuration } from "../lib/orderTiming";
 
 export function ReadyOrdersPage() {
   const orders = useOrderStore((state) => state.orders);
@@ -13,11 +14,16 @@ export function ReadyOrdersPage() {
   const notify = useUiStore((state) => state.notify);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const ready = useMemo(
     () =>
       orders
         .filter((order) => order.status === "READY")
-        .sort((a, b) => +new Date(a.updatedAt) - +new Date(b.updatedAt)),
+        .sort((a, b) => +new Date(a.readyAt ?? a.updatedAt) - +new Date(b.readyAt ?? b.updatedAt)),
     [orders],
   );
   const markServed = async (id: string) => {
@@ -97,9 +103,13 @@ export function ReadyOrdersPage() {
                   {new Intl.DateTimeFormat("en-US", {
                     hour: "numeric",
                     minute: "2-digit",
-                  }).format(new Date(order.updatedAt))}
+                  }).format(new Date(order.readyAt ?? order.updatedAt))}
                   <span className="mx-1">·</span>
                   {order.waiter?.name}
+                </div>
+                <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                  <p className="font-semibold">Prep time: {formatOrderDuration(order.preparingAt ?? order.createdAt, order.readyAt ?? order.updatedAt)}</p>
+                  <p className="mt-1">Waiting for pickup: {formatOrderDuration(order.readyAt ?? order.updatedAt, now)}</p>
                 </div>
                 <div className="space-y-3">
                   {order.items.map((item, index) => (

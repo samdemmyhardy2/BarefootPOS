@@ -4,21 +4,19 @@ import {
   NavLink,
   Outlet,
   useLocation,
-  useNavigate,
 } from "react-router-dom";
 import {
   Activity,
+  BarChart3,
   Bell,
   BedDouble,
-  BookOpen,
   ChefHat,
   ChevronDown,
   Clock3,
+  ClipboardList,
   LayoutDashboard,
   Menu,
-  Plus,
   Salad,
-  ShoppingBag,
   Utensils,
   Users,
   X,
@@ -28,48 +26,46 @@ import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { initials } from "../lib/types";
 import { Toast } from "../components/Toast";
+import { observeUiTranslations } from "../lib/uiLocalization";
+import { translate } from "../lib/translations";
+import { hasJobPermission, type JobPermission } from "../lib/access";
 
 const baseNav = [
-  { label: "Overview", to: "/overview", icon: LayoutDashboard },
-  { label: "New order", to: "/orders", icon: Plus },
-  { label: "Order tracker", to: "/tracker", icon: ShoppingBag },
-  { label: "Tables", to: "/tables", icon: Utensils },
-  { label: "Rooms & folios", to: "/rooms", icon: BedDouble },
-  { label: "My attendance", to: "/attendance", icon: Clock3 },
+  { label: "Overview", to: "/overview", icon: LayoutDashboard, permission: "ORDER_VIEW" },
+  { label: "Business overview", to: "/business-overview", icon: BarChart3, permission: "REPORTS" },
+  { label: "Tables", to: "/tables", icon: Utensils, permission: "TABLES" },
+  { label: "Rooms & folios", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
+  { label: "My attendance", to: "/attendance" as const, icon: Clock3 },
+  { label: "Tasks", to: "/tasks" as const, icon: ClipboardList },
+  { label: "Kitchen display", to: "/kitchen", icon: ChefHat, permission: "KITCHEN" },
+  { label: "Ready to serve", to: "/ready", icon: Bell, permission: "ORDER_SERVE" },
+  { label: "Menu", to: "/menu", icon: Salad, adminOnly: true },
+  { label: "Team", to: "/team", icon: Users, adminOnly: true },
 ];
 
 export function AppLayout() {
   const user = useAuthStore((state) => state.user)!;
+  const refreshProfile = useAuthStore((state) => state.refreshProfile);
   const connectLive = useOrderStore((state) => state.connectLive);
   const disconnectLive = useOrderStore((state) => state.disconnectLive);
   const liveState = useOrderStore((state) => state.liveState);
   const sidebarOpen = useUiStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
+  const language = useUiStore((state) => state.language);
+  const setLanguage = useUiStore((state) => state.setLanguage);
   const location = useLocation();
-  const navigate = useNavigate();
-  const fullCanvas = location.pathname === "/menu" || location.pathname === "/tables";
-  const nav =
-    user.role === "ADMIN"
-      ? [
-          ...baseNav,
-          { label: "Kitchen display", to: "/kitchen", icon: ChefHat },
-          { label: "Ready to serve", to: "/ready", icon: Bell },
-          { label: "Menu", to: "/menu", icon: Salad },
-          { label: "Team", to: "/team", icon: Users },
-        ]
-      : [
-          ...baseNav,
-          { label: "Kitchen display", to: "/kitchen", icon: ChefHat },
-          { label: "Ready to serve", to: "/ready", icon: Bell },
-        ];
+  const fullCanvas = location.pathname === "/menu" || location.pathname.startsWith("/tables");
+  const nav = baseNav.filter((item) => user.role === "ADMIN" || (!item.adminOnly && (!item.permission || hasJobPermission(user, item.permission as JobPermission))));
 
   useEffect(() => {
-    void connectLive();
+    if (hasJobPermission(user, "ORDER_VIEW")) void connectLive();
     return disconnectLive;
-  }, [connectLive, disconnectLive]);
+  }, [connectLive, disconnectLive, user]);
+  useEffect(() => { void refreshProfile().catch(() => undefined); }, [refreshProfile]);
   useEffect(() => {
     setSidebarOpen(false);
   }, [location.pathname, setSidebarOpen]);
+  useEffect(() => observeUiTranslations(language), [language]);
 
   return (
     <div className="min-h-screen bg-canvas text-ink">
@@ -185,13 +181,12 @@ export function AppLayout() {
               />
               {liveState === "live" ? "Live sync on" : "Connecting"}
             </div>
-            <button
-              onClick={() => navigate("/account")}
-              className="grid h-9 w-9 place-items-center rounded-xl border border-line bg-white text-[#697066] hover:text-ink"
-              aria-label="Activity"
-            >
-              <BookOpen size={16} />
-            </button>
+            <label className="flex h-9 items-center gap-1.5 rounded-xl border border-line bg-white px-2 text-xs font-semibold text-ink" aria-label={translate(language, "language")}>
+              <span className="sr-only">{translate(language, "language")}</span>
+              <select value={language} onChange={(event) => setLanguage(event.target.value as "en" | "my" | "th")} className="max-w-[100px] cursor-pointer bg-transparent text-xs font-semibold outline-none sm:max-w-none" aria-label={translate(language, "language")}>
+                <option value="en">English</option><option value="my">မြန်မာ</option><option value="th">ไทย</option>
+              </select>
+            </label>
             <Link to="/account" className="flex items-center gap-2 rounded-full border border-line bg-white p-1 pr-2.5">
               <span className="grid h-7 w-7 place-items-center overflow-hidden rounded-full bg-[#ecefe7] text-[10px] font-bold text-olive">
                 {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="h-full w-full object-cover" /> : initials(user.name)}

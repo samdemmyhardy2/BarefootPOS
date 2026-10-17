@@ -2,26 +2,29 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   Check,
-  Minus,
   Plus,
   Search,
   ShoppingBag,
   Trash2,
   Utensils,
 } from "lucide-react";
-import { PageHeader, Panel, EmptyState, SelectField } from "../components/ui";
+import { PageHeader, Panel, EmptyState, OrderBadge, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import type { Category, DiningTable, MenuItem, OrderPaymentMethod, Room } from "../lib/types";
+import type { Category, DiningTable, MenuItem, OrderPaymentMethod } from "../lib/types";
 import { money } from "../lib/types";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
+import { localizedFoodLabels, splitFoodLabels } from "../lib/foodTranslations";
+import { useNavigate, useParams } from "react-router-dom";
 
 type CartLine = {
+  id: string;
   item: MenuItem;
-  quantity: number;
+  quantity: 1;
   removeIngredients: string;
   addExtras: string;
   allergyDietNotes: string;
+  selectedAllergens: string[];
 };
 const categoryColors = [
   "from-[#e1edcf] to-[#f2f6e9]",
@@ -30,38 +33,42 @@ const categoryColors = [
   "from-[#e0edf0] to-[#f1f7f7]",
   "from-[#ece7d8] to-[#f6f3e9]",
 ];
+type ActiveRoomStay = { id: string; primaryGuestName: string; room: { roomNumber: number } };
 
 export function NewOrderPage() {
+  const { tableId = "" } = useParams();
+  const navigate = useNavigate();
   const [categories, setCategories] = useState<Category[]>([]);
   const [tables, setTables] = useState<DiningTable[]>([]);
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [destinationType, setDestinationType] = useState<"TABLE" | "ROOM">("TABLE");
-  const [paymentMethod, setPaymentMethod] = useState<OrderPaymentMethod>("CASH");
+  const [activeStays, setActiveStays] = useState<ActiveRoomStay[]>([]);
+  const [checkoutMethod, setCheckoutMethod] = useState<OrderPaymentMethod>("CASH");
   const [roomStayId, setRoomStayId] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [search, setSearch] = useState("");
-  const [tableId, setTableId] = useState("");
-  const [cart, setCart] = useState<Record<string, CartLine>>({});
+  const [cart, setCart] = useState<CartLine[]>([]);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState("");
   const createOrder = useOrderStore((state) => state.createOrder);
+  const orders = useOrderStore((state) => state.orders);
+  const fetchOrders = useOrderStore((state) => state.fetchOrders);
   const notify = useUiStore((state) => state.notify);
+  const language = useUiStore((state) => state.language);
   useEffect(() => {
     void Promise.all([
       api.get<Category[]>("/categories"),
       api.get<DiningTable[]>("/tables"),
-      api.get<Room[]>("/rooms"),
+      api.get<ActiveRoomStay[]>("/orders/active-room-stays"),
     ])
-      .then(([cat, tbl, rm]) => {
-        setCategories(cat.data);
-        setTables(tbl.data);
-        setRooms(rm.data);
-      })
+      .then(([cat, tbl, stays]) => { setCategories(cat.data); setTables(tbl.data); setActiveStays(stays.data); })
       .catch((e) => setError(errorMessage(e)));
   }, []);
-  // An occupied table can place multiple tickets during the same sitting.
-  const availableTables = tables;
-  const activeStays = rooms.flatMap((room) => (room.stays ?? []).map((stay) => ({ ...stay, room })));
+  useEffect(() => {
+    void fetchOrders().catch(() => undefined);
+  }, [fetchOrders]);
+  const selectedTable = tables.find((table) => table.id === tableId);
+  const activeTableOrders = orders
+    .filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status))
+    .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
   const menuItems = useMemo(
     () =>
       categories
@@ -78,39 +85,29 @@ export function NewOrderPage() {
         ),
     [categories, selectedCategory, search],
   );
-  const cartLines = Object.values(cart);
+  const cartLines = cart;
   const total = cartLines.reduce(
     (sum, line) => sum + Number(line.item.price) * line.quantity,
     0,
   );
+  const tableTotal = activeTableOrders.reduce((sum, order) => sum + Number(order.totalAmount), 0);
+  const allOrdersServed = activeTableOrders.length > 0 && activeTableOrders.every((order) => order.status === "SERVED");
   const add = (item: MenuItem) =>
-    setCart((current) => ({
-      ...current,
-      [item.id]: {
-        item,
-        quantity: (current[item.id]?.quantity ?? 0) + 1,
-        removeIngredients: current[item.id]?.removeIngredients ?? "",
-        addExtras: current[item.id]?.addExtras ?? "",
-        allergyDietNotes: current[item.id]?.allergyDietNotes ?? "",
-      },
-    }));
-  const adjust = (id: string, delta: number) =>
-    setCart((current) => {
-      const qty = (current[id]?.quantity ?? 0) + delta;
-      if (qty <= 0) {
-        const next = { ...current };
-        delete next[id];
-        return next;
-      }
-      return { ...current, [id]: { ...current[id], quantity: qty } };
-    });
+    setCart((current) => [...current, {
+      id: crypto.randomUUID(),
+      item,
+      quantity: 1,
+      removeIngredients: "",
+      addExtras: "",
+      allergyDietNotes: "",
+      selectedAllergens: [],
+    }]);
+  const removeCartLine = (lineId: string) => setCart((current) => current.filter((line) => line.id !== lineId));
+  const updateCartLine = (lineId: string, update: (line: CartLine) => CartLine) =>
+    setCart((current) => current.map((line) => line.id === lineId ? update(line) : line));
   const placeOrder = async () => {
-    if (destinationType === "TABLE" && !tableId) {
-      setError("Choose a table before sending the order.");
-      return;
-    }
-    if ((destinationType === "ROOM" || paymentMethod === "ROOM_CHECKOUT") && !roomStayId) {
-      setError("Choose the in-house guest room for room service or checkout billing.");
+    if (!tableId || !selectedTable) {
+      setError("Return to the floor and open a table before sending an order.");
       return;
     }
     if (!cartLines.length) {
@@ -121,29 +118,49 @@ export function NewOrderPage() {
     setError("");
     try {
       await createOrder(
-        {
-          ...(destinationType === "TABLE" ? { tableId } : {}),
-          ...((destinationType === "ROOM" || paymentMethod === "ROOM_CHECKOUT") ? { roomStayId } : {}),
-          paymentMethod,
-        },
-        cartLines.map(({ item, quantity, removeIngredients, addExtras, allergyDietNotes }) => ({
-          menuItemId: item.id,
-          quantity,
-          ...(removeIngredients.trim() ? { removeIngredients: removeIngredients.trim() } : {}),
-          ...(addExtras.trim() ? { addExtras: addExtras.trim() } : {}),
-          ...(allergyDietNotes.trim() ? { specialNotes: allergyDietNotes.trim() } : {}),
-        })),
+        { tableId },
+        cartLines.map(({ item, quantity, removeIngredients, addExtras, allergyDietNotes, selectedAllergens }) => ({
+            menuItemId: item.id,
+            quantity,
+            ...(removeIngredients.trim() ? { removeIngredients: removeIngredients.trim() } : {}),
+            ...(addExtras.trim() ? { addExtras: addExtras.trim() } : {}),
+            ...(selectedAllergens.length ? { selectedAllergens } : {}),
+            ...(allergyDietNotes.trim() ? { specialNotes: allergyDietNotes.trim() } : {}),
+          })),
       );
       notify("Order sent to the kitchen.");
-      setCart({});
-      setTableId("");
-      setRoomStayId("");
+      setCart([]);
       const { data } = await api.get<DiningTable[]>("/tables");
       setTables(data);
-      const roomData = await api.get<Room[]>("/rooms");
-      setRooms(roomData.data);
+      await fetchOrders();
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      setPlacing(false);
+    }
+  };
+  const checkoutTable = async () => {
+    if (!allOrdersServed) {
+      setError("All table orders must be served before checkout.");
+      return;
+    }
+    if (checkoutMethod === "ROOM_CHECKOUT" && !roomStayId) {
+      setError("Choose the guest room that should receive this folio charge.");
+      return;
+    }
+    setPlacing(true);
+    setError("");
+    try {
+      const { data } = await api.post<{ totalAmount: number; tableNumber: number }>(`/tables/${tableId}/checkout`, {
+        paymentMethod: checkoutMethod,
+        ...(checkoutMethod === "ROOM_CHECKOUT" ? { roomStayId } : {}),
+      });
+      notify(checkoutMethod === "CASH" ? `Table ${data.tableNumber} paid in cash and checked out.` : `Table ${data.tableNumber} added to the guest folio.`);
+      setRoomStayId("");
+      setCheckoutMethod("CASH");
+      await Promise.all([fetchOrders(), api.get<DiningTable[]>("/tables").then((result) => setTables(result.data))]);
+    } catch (cause) {
+      setError(errorMessage(cause));
     } finally {
       setPlacing(false);
     }
@@ -152,14 +169,11 @@ export function NewOrderPage() {
   return (
     <div className="page-enter">
       <PageHeader
-        eyebrow="Floor · New ticket"
-        title="Build an order"
-        description="Choose a table, add a few good things, and send it straight to the kitchen."
+        eyebrow="Floor · Table service"
+        title={selectedTable ? `Table ${selectedTable.tableNumber}` : "Table not found"}
+        description="Review this table’s open tickets, add items, send them to the kitchen, then settle the bill."
         action={
-          <div className="flex items-center gap-2 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" /> Kitchen
-            connected
-          </div>
+          <button onClick={() => navigate("/tables")} className="rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold">Back to tables</button>
         }
       />
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -226,7 +240,7 @@ export function NewOrderPage() {
                         />
                       </>
                     )}
-                    {cart[item.id] && (
+                    {cart.some((line) => line.item.id === item.id) && (
                       <span className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-full bg-olive text-white shadow-sm">
                         <Check size={15} />
                       </span>
@@ -248,13 +262,13 @@ export function NewOrderPage() {
                       {item.description ||
                         "Prepared fresh by our kitchen team."}
                     </p>
-                    {(item.allergens || item.dietaryInfo) && (
+                    {(item.allergens?.length || item.dietaryInfo?.length) ? (
                       <div className="mt-2 space-y-1">
-                        {item.allergens && <p className="text-[10px] font-semibold text-amber-800">Contains: {item.allergens}</p>}
-                        {item.dietaryInfo && <p className="text-[10px] font-semibold text-emerald-800">{item.dietaryInfo}</p>}
+                        {item.allergens?.length ? <p className="text-[10px] font-semibold text-amber-800">{language === "my" ? "ပါဝင်သည်:" : language === "th" ? "มี:" : "Contains:"} {localizedFoodLabels(item.allergens, item.allergensMy, item.allergensTh, language).join(", ")}</p> : null}
+                        {item.dietaryInfo?.length ? <p className="text-[10px] font-semibold text-emerald-800">{localizedFoodLabels(item.dietaryInfo, item.dietaryInfoMy, item.dietaryInfoTh, language).join(", ")}</p> : null}
                       </div>
-                    )}
-                    {item.availableExtras && <p className="mt-1 truncate text-[10px] text-sky-800">Extras: {item.availableExtras}</p>}
+                    ) : null}
+                    {item.availableExtras?.length ? <p className="mt-1 truncate text-[10px] text-sky-800">{language === "my" ? "အပိုထည့်စရာ:" : language === "th" ? "รายการเพิ่มเติม:" : "Extras:"} {localizedFoodLabels(item.availableExtras, item.availableExtrasMy, item.availableExtrasTh, language).join(", ")}</p> : null}
                     <div className="mt-4 flex items-center justify-between border-t border-line pt-3">
                       <span className="text-[10px] text-muted">Tap to add</span>
                       <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#edf2e9] text-olive transition group-hover:bg-olive group-hover:text-white">
@@ -282,7 +296,7 @@ export function NewOrderPage() {
                 Current ticket
               </h2>
               <p className="mt-1 text-xs text-muted">
-                {cartLines.reduce((sum, line) => sum + line.quantity, 0)} items
+                {cartLines.length} individual items
                 in this order
               </p>
             </div>
@@ -291,34 +305,42 @@ export function NewOrderPage() {
             </span>
           </div>
           <div className="p-5">
-            <SelectField label="Order destination" value={destinationType} onChange={(e) => setDestinationType(e.target.value as "TABLE" | "ROOM")}>
-              <option value="TABLE">Restaurant table</option>
-              <option value="ROOM">Room service</option>
-            </SelectField>
-            {destinationType === "TABLE" && <SelectField label="Table" value={tableId} onChange={(e) => setTableId(e.target.value)}>
-              <option value="">Select a table</option>
-              {availableTables.map((table) => <option key={table.id} value={table.id}>Table {table.tableNumber} · {table.capacity} seats{table.status === "OCCUPIED" ? " · occupied" : table.status === "RESERVED" ? " · reserved" : ""}</option>)}
-            </SelectField>}
-            <SelectField label="Payment" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as OrderPaymentMethod)}>
-              <option value="CASH">Pay by cash</option>
-              <option value="ROOM_CHECKOUT">Charge to room for checkout</option>
-            </SelectField>
-            {(destinationType === "ROOM" || paymentMethod === "ROOM_CHECKOUT") && <SelectField label="In-house guest room" value={roomStayId} onChange={(e) => setRoomStayId(e.target.value)}>
-              <option value="">Select a current guest</option>
-              {activeStays.map((stay) => <option key={stay.id} value={stay.id}>Room {stay.room?.roomNumber} · {stay.primaryGuestName}</option>)}
-            </SelectField>}
+            {selectedTable && <section className="mb-4 rounded-2xl border border-line bg-[#fbfcf9] p-4" aria-label={`Table ${selectedTable.tableNumber} open orders`}>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
+                <div><h3 className="text-sm font-bold">Table {selectedTable.tableNumber} · Open tab</h3><p className="mt-1 text-[10px] text-muted">{selectedTable.capacity} seats · {activeTableOrders.length} active tickets</p></div>
+                <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-olive">{selectedTable.status}</span>
+              </div>
+              {activeTableOrders.length ? <div className="mt-3 space-y-3">
+                {activeTableOrders.map((order) => <article key={order.id} className="rounded-xl border border-line bg-white p-3">
+                  <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="font-mono text-[10px] font-bold">#{order.id.slice(-6).toUpperCase()}</span><OrderBadge status={order.status} /></div><span className="text-[10px] text-muted">Ordered by {order.waiter?.name}</span></div>
+                  <ul className="mt-2 space-y-1 text-xs">{order.items.map((line, index) => <li key={line.id ?? `${order.id}-${index}`}><span className="font-bold">{line.quantity}×</span> {line.menuItem.name}{line.addExtras ? <span className="text-muted"> · {line.addExtras}</span> : null}</li>)}</ul>
+                  {order.servedBy && <p className="mt-2 text-[10px] font-semibold text-emerald-700">Collected / served by {order.servedBy.name}</p>}
+                </article>)}
+                <p className="text-[10px] text-muted">Add another ticket below to continue this table’s order.</p>
+              </div> : <p className="mt-3 text-xs text-muted">No items have been ordered at this table yet. Start with the menu below.</p>}
+              {activeTableOrders.length > 0 && <div className="mt-4 border-t border-line pt-4">
+                <div className="flex items-center justify-between"><span className="text-xs font-semibold">Open table total</span><span className="font-display text-lg font-extrabold">{money(tableTotal)}</span></div>
+                <SelectField label="Checkout payment" value={checkoutMethod} onChange={(event) => setCheckoutMethod(event.target.value as OrderPaymentMethod)}>
+                  <option value="CASH">Pay with cash</option><option value="ROOM_CHECKOUT">Add to room folio</option>
+                </SelectField>
+                {checkoutMethod === "ROOM_CHECKOUT" && <SelectField label="Guest room to charge" value={roomStayId} onChange={(event) => setRoomStayId(event.target.value)}>
+                  <option value="">Choose the guest who ordered</option>
+                  {activeStays.map((stay) => <option key={stay.id} value={stay.id}>Room {stay.room?.roomNumber} · {stay.primaryGuestName}</option>)}
+                </SelectField>}
+                {!allOrdersServed && <p className="mt-2 text-[10px] text-muted">All active tickets must be marked served before checkout.</p>}
+                <button onClick={() => void checkoutTable()} disabled={placing || !allOrdersServed || (checkoutMethod === "ROOM_CHECKOUT" && !roomStayId)} className="mt-3 h-11 w-full rounded-xl border border-olive bg-white text-xs font-bold text-olive hover:bg-[#edf2e9] disabled:cursor-not-allowed disabled:opacity-40">{placing ? "Checking out…" : checkoutMethod === "CASH" ? "Record cash payment & close table" : "Charge room folio & close table"}</button>
+              </div>}
+            </section>}
             <div className="my-4 h-px bg-line" />
             {cartLines.length ? (
               <div className="max-h-[min(45vh,430px)] space-y-4 overflow-y-auto pr-1">
-                {cartLines.map(({ item, quantity, removeIngredients, addExtras, allergyDietNotes }) => (
-                  <div key={item.id} className="flex gap-3">
+                {cartLines.map(({ id, item, quantity, removeIngredients, addExtras, allergyDietNotes, selectedAllergens }, lineIndex) => (
+                  <div key={id} className="flex gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="text-xs font-bold leading-5">
-                          {item.name}
-                        </p>
+                        <div><p className="text-xs font-bold leading-5">{item.name}</p><p className="text-[9px] font-semibold uppercase tracking-wide text-muted">Item {lineIndex + 1}</p></div>
                         <button
-                          onClick={() => adjust(item.id, -quantity)}
+                          onClick={() => removeCartLine(id)}
                           className="text-[#a4a89f] hover:text-rose-600"
                           aria-label={`Remove ${item.name}`}
                         >
@@ -326,52 +348,33 @@ export function NewOrderPage() {
                         </button>
                       </div>
                       <div className="mt-2 flex items-center justify-between">
-                        <span className="text-xs text-muted">
-                          {money(Number(item.price) * quantity)}
-                        </span>
-                        <div className="flex items-center gap-2 rounded-lg bg-canvas p-1">
-                          <button
-                            onClick={() => adjust(item.id, -1)}
-                            className="grid h-6 w-6 place-items-center rounded-md text-muted hover:bg-white hover:text-ink"
-                            aria-label="Decrease quantity"
-                          >
-                            <Minus size={12} />
-                          </button>
-                          <span className="w-4 text-center text-xs font-bold">
-                            {quantity}
-                          </span>
-                          <button
-                            onClick={() => adjust(item.id, 1)}
-                            className="grid h-6 w-6 place-items-center rounded-md text-muted hover:bg-white hover:text-ink"
-                            aria-label="Increase quantity"
-                          >
-                            <Plus size={12} />
-                          </button>
-                        </div>
+                        <span className="text-[10px] font-semibold text-muted">{quantity}× {money(item.price)} · customize this item only</span>
+                        <span className="text-xs font-bold">{money(item.price)}</span>
                       </div>
-                      {item.allergens && <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] font-semibold leading-4 text-amber-900">Known allergens: {item.allergens}. Confirm allergy requests with the kitchen.</p>}
+                      {item.allergens?.length ? <fieldset className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2"><legend className="text-[10px] font-bold leading-4 text-amber-900">{language === "my" ? "ဓာတ်မတည့်နိုင်သောပစ္စည်း · သက်ဆိုင်ပါက ရွေးပါ" : language === "th" ? "สารก่อภูมิแพ้ · เลือกรายการที่เกี่ยวข้อง" : "Known allergens · select any that apply"}</legend><div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">{item.allergens.map((allergen, index) => <label key={allergen} className="inline-flex cursor-pointer items-center gap-1 text-[10px] font-semibold text-amber-900"><input type="checkbox" checked={selectedAllergens.includes(allergen)} onChange={(event) => updateCartLine(id, (line) => ({ ...line, selectedAllergens: event.target.checked ? [...selectedAllergens, allergen] : selectedAllergens.filter((value) => value !== allergen) }))} className="accent-amber-700" />{localizedFoodLabels(item.allergens, item.allergensMy, item.allergensTh, language)[index] ?? allergen}</label>)}</div></fieldset> : null}
                       <label className="mt-2 block text-[9px] font-semibold text-muted">Remove ingredients
-                        <input value={removeIngredients} onChange={(e) => setCart((current) => ({ ...current, [item.id]: { ...current[item.id], removeIngredients: e.target.value } }))} placeholder="e.g. no onion, no tomato" className="mt-1 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-[10px] font-normal text-ink outline-none focus:border-olive" />
+                        <input value={removeIngredients} onChange={(e) => updateCartLine(id, (line) => ({ ...line, removeIngredients: e.target.value }))} placeholder="e.g. no onion, no tomato" className="mt-1 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-[10px] font-normal text-ink outline-none focus:border-olive" />
                       </label>
                       <div className="mt-2">
-                        <span className="text-[9px] font-semibold text-muted">Available extras</span>
-                        {item.availableExtras ? (
+                        <span className="text-[9px] font-semibold text-muted">{language === "my" ? "ရရှိနိုင်သောအပိုများ" : language === "th" ? "รายการเสริมที่เลือกได้" : "Available extras"}</span>
+                        {splitFoodLabels(item.availableExtras).length ? (
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {item.availableExtras.split(",").map((extra) => extra.trim()).filter(Boolean).map((extra) => {
+                            {splitFoodLabels(item.availableExtras).map((extra, index) => {
                               const selectedExtras = addExtras.split(",").map((value) => value.trim()).filter(Boolean);
                               const selected = selectedExtras.some((value) => value.toLowerCase() === extra.toLowerCase());
-                              return <button key={extra} type="button" onClick={() => {
+                              return <label key={extra} className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-1 text-[9px] font-semibold ${selected ? "border-olive bg-olive text-white" : "border-line bg-white text-muted hover:border-olive"}`}>
+                                <input type="checkbox" checked={selected} onChange={() => {
                                 const next = selected ? selectedExtras.filter((value) => value.toLowerCase() !== extra.toLowerCase()) : [...selectedExtras, extra];
-                                setCart((current) => ({ ...current, [item.id]: { ...current[item.id], addExtras: next.join(", ") } }));
-                              }} className={`rounded-full border px-2 py-1 text-[9px] font-semibold ${selected ? "border-olive bg-olive text-white" : "border-line bg-white text-muted hover:border-olive"}`}>{extra}</button>;
+                                updateCartLine(id, (line) => ({ ...line, addExtras: next.join(", ") }));
+                              }} className="accent-olive" />{localizedFoodLabels(item.availableExtras, item.availableExtrasMy, item.availableExtrasTh, language)[index] ?? extra}</label>;
                             })}
                           </div>
                         ) : <p className="mt-1 text-[10px] text-muted">No extras configured for this dish.</p>}
-                        <input value={addExtras} onChange={(e) => setCart((current) => ({ ...current, [item.id]: { ...current[item.id], addExtras: e.target.value } }))} placeholder="Other extras or special requests" className="mt-2 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-[10px] font-normal text-ink outline-none focus:border-olive" />
+                        <input value={addExtras} onChange={(e) => updateCartLine(id, (line) => ({ ...line, addExtras: e.target.value }))} placeholder="Other extras or special requests" className="mt-2 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-[10px] font-normal text-ink outline-none focus:border-olive" />
                         <p className="mt-1 text-[9px] text-muted">Confirm any extra charges before sending.</p>
                       </div>
                       <label className="mt-2 block text-[9px] font-semibold text-muted">Allergy or dietary needs
-                        <input value={allergyDietNotes} onChange={(e) => setCart((current) => ({ ...current, [item.id]: { ...current[item.id], allergyDietNotes: e.target.value } }))} placeholder="Tell the kitchen about allergies or diet" className="mt-1 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-[10px] font-normal text-ink outline-none focus:border-olive" />
+                        <input value={allergyDietNotes} onChange={(e) => updateCartLine(id, (line) => ({ ...line, allergyDietNotes: e.target.value }))} placeholder="Tell the kitchen about allergies or diet" className="mt-1 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-[10px] font-normal text-ink outline-none focus:border-olive" />
                       </label>
                     </div>
                   </div>
@@ -403,7 +406,7 @@ export function NewOrderPage() {
               </div>
               <button
                 disabled={
-                  placing || !cartLines.length || (destinationType === "TABLE" ? !availableTables.length : !activeStays.length)
+                  placing || !cartLines.length || !selectedTable
                 }
                 onClick={() => void placeOrder()}
                 className="focus-ring mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-olive text-sm font-bold text-white transition hover:bg-[#334438] disabled:cursor-not-allowed disabled:opacity-40"

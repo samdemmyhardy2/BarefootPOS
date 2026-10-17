@@ -25,13 +25,18 @@ const formatTime = (value: string) =>
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
-function duration(start: string, end?: string | null) {
-  const minutes = Math.max(
-    0,
-    Math.floor(
-      ((end ? +new Date(end) : Date.now()) - +new Date(start)) / 60000,
-    ),
-  );
+function duration(start: string, end?: string | null, breaks: EmployeeShift["breaks"] = []) {
+  const finish = end ? +new Date(end) : Date.now();
+  const total = Math.max(0, finish - +new Date(start));
+  const breakMs = (breaks ?? []).reduce((sum, item) => {
+    const breakEnd = item.endedAt ? +new Date(item.endedAt) : finish;
+    return sum + Math.max(0, Math.min(finish, breakEnd) - Math.max(+new Date(start), +new Date(item.startedAt)));
+  }, 0);
+  const minutes = Math.max(0, Math.floor((total - breakMs) / 60000));
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+function breakDuration(breaks: EmployeeShift["breaks"] = []) {
+  const minutes = (breaks ?? []).reduce((sum, item) => sum + Math.max(0, Math.floor(((item.endedAt ? +new Date(item.endedAt) : Date.now()) - +new Date(item.startedAt)) / 60000)), 0);
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
@@ -65,6 +70,7 @@ export function AttendancePage() {
   const myOpenShift = shifts.find(
     (shift) => shift.employeeId === user.id && !shift.checkedOutAt,
   );
+  const activeBreak = myOpenShift?.breaks?.find((item) => !item.endedAt);
   const check = async (action: "check-in" | "check-out") => {
     setBusy(true);
     setError("");
@@ -82,6 +88,15 @@ export function AttendancePage() {
       setBusy(false);
     }
   };
+  const toggleBreak = async () => {
+    setBusy(true); setError("");
+    try {
+      await api.post(`/employees/me/break/${activeBreak ? "end" : "start"}`);
+      notify(activeBreak ? "Short break ended." : "Short break started.");
+      await load();
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  };
   const filtered = useMemo(
     () =>
       shifts.filter(
@@ -93,7 +108,7 @@ export function AttendancePage() {
       ),
     [shifts, filter],
   );
-  const currentDuration = myOpenShift ? duration(myOpenShift.checkedInAt) : "—";
+  const currentDuration = myOpenShift ? duration(myOpenShift.checkedInAt, null, myOpenShift.breaks) : "—";
   return (
     <div className="page-enter">
       <PageHeader
@@ -123,22 +138,22 @@ export function AttendancePage() {
         </p>
       )}
       <div className="mb-5 grid gap-3 lg:grid-cols-[1.2fr_.8fr]">
-        <Panel className="overflow-hidden bg-[#2e4235] p-5 text-white sm:p-6">
+        <Panel className="overflow-hidden bg-canvas p-5 text-ink sm:p-6">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-[.16em] text-white/55">
+              <p className="text-[10px] font-bold uppercase tracking-[.16em] text-muted">
                 {myOpenShift ? "Your shift is in progress" : "Your time today"}
               </p>
               <p className="mt-3 font-display text-3xl font-bold tracking-tight">
                 {myOpenShift ? currentDuration : "Ready when you are"}
               </p>
-              <p className="mt-2 text-xs text-white/60">
+              <p className="mt-2 text-xs text-muted">
                 {myOpenShift
                   ? `Checked in at ${formatTime(myOpenShift.checkedInAt)}`
                   : "Start recording your hours when you arrive."}
               </p>
             </div>
-            <span className="grid h-11 w-11 place-items-center rounded-xl bg-white/10 text-citrus">
+            <span className="grid h-11 w-11 place-items-center rounded-xl bg-olive-soft text-olive">
               <Timer size={19} />
             </span>
           </div>
@@ -159,6 +174,10 @@ export function AttendancePage() {
               </>
             )}
           </button>
+          {myOpenShift && <button disabled={busy} onClick={() => void toggleBreak()} className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-line bg-white text-xs font-bold text-olive disabled:opacity-50 sm:ml-2 sm:mt-6 sm:w-auto sm:px-4">
+            <Timer size={14} /> {busy ? "Please wait…" : activeBreak ? "End short break" : "Start short break"}
+          </button>}
+          {activeBreak && <p className="mt-2 text-xs font-semibold text-amber-700">Short break in progress · started {formatTime(activeBreak.startedAt)}</p>}
         </Panel>
         <Panel className="grid grid-cols-2 divide-x divide-line p-5 sm:p-6">
           <div className="pr-4">
@@ -226,7 +245,7 @@ export function AttendancePage() {
         </div>
         {filtered.length ? (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[620px] text-left">
+            <table className="w-full min-w-[700px] text-left">
               <thead>
                 <tr className="border-b border-line text-[10px] font-bold uppercase tracking-[.1em] text-muted">
                   <th className="px-5 py-3">
@@ -236,6 +255,7 @@ export function AttendancePage() {
                   <th className="px-5 py-3">Check in</th>
                   <th className="px-5 py-3">Check out</th>
                   <th className="px-5 py-3">Hours</th>
+                  <th className="px-5 py-3">Breaks</th>
                   <th className="px-5 py-3">Status</th>
                 </tr>
               </thead>
@@ -275,7 +295,10 @@ export function AttendancePage() {
                         : "—"}
                     </td>
                     <td className="px-5 py-3.5 text-xs font-semibold">
-                      {duration(shift.checkedInAt, shift.checkedOutAt)}
+                      {duration(shift.checkedInAt, shift.checkedOutAt, shift.breaks)}
+                    </td>
+                    <td className="px-5 py-3.5 text-xs font-semibold">
+                      {shift.breaks?.length ? <span title={shift.breaks.map((item) => `${formatTime(item.startedAt)}–${item.endedAt ? formatTime(item.endedAt) : "In progress"}`).join(", ")}>{breakDuration(shift.breaks)}</span> : "—"}
                     </td>
                     <td className="px-5 py-3.5">
                       <span

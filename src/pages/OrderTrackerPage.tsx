@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Clock3, Search, ShoppingBag, Trash2 } from "lucide-react";
 import { PageHeader, Panel, OrderBadge, EmptyState } from "../components/ui";
 import { useOrderStore } from "../stores/orderStore";
@@ -7,6 +7,7 @@ import { useUiStore } from "../stores/uiStore";
 import { errorMessage } from "../lib/api";
 import { money } from "../lib/types";
 import { orderLocation } from "../lib/types";
+import { formatOrderDuration } from "../lib/orderTiming";
 
 const filters = ["All active", "Pending", "Preparing", "Ready", "Served"];
 
@@ -20,6 +21,11 @@ export function OrderTrackerPage() {
   const [filter, setFilter] = useState("All active");
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const visible = useMemo(
     () =>
       orders
@@ -144,6 +150,15 @@ export function OrderTrackerPage() {
                     </div>
                   ))}
                 </div>
+                <div className="mb-3 rounded-xl bg-canvas px-3 py-2 text-[10px] text-muted">
+                  {order.readyAt ? (
+                    <p>Preparation: {formatOrderDuration(order.preparingAt ?? order.createdAt, order.readyAt)}</p>
+                  ) : order.status === "PENDING" || order.status === "PREPARING" ? (
+                    <p>{order.status === "PREPARING" ? "Preparing" : "Waiting to start"}: {formatOrderDuration(order.preparingAt ?? order.createdAt, now)}</p>
+                  ) : null}
+                  {order.readyAt && <p className="mt-1">Delivery: {formatOrderDuration(order.readyAt, order.servedAt ?? now)}{order.servedAt ? "" : " · in progress"}</p>}
+                  {order.servedAt && <p className="mt-1 font-semibold text-ink">Total to delivery: {formatOrderDuration(order.createdAt, order.servedAt)}</p>}
+                </div>
                 <div className="flex items-center justify-between">
                   <span className="inline-flex items-center gap-1.5 text-[10px] text-muted">
                     <Clock3 size={12} />
@@ -152,6 +167,7 @@ export function OrderTrackerPage() {
                       minute: "2-digit",
                     }).format(new Date(order.createdAt))}{" "}
                     · {order.waiter?.name}
+                    {order.servedBy?.name ? ` · Collected by ${order.servedBy.name}` : ""}
                   </span>
                   <span className="text-sm font-bold">
                     {money(order.totalAmount)}

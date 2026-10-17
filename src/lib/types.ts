@@ -3,9 +3,11 @@ export type OrderStatus =
   "PENDING" | "PREPARING" | "READY" | "SERVED" | "COMPLETED" | "CANCELLED";
 export type TableStatus = "AVAILABLE" | "OCCUPIED" | "RESERVED";
 export type RoomSize = "NORMAL" | "FAMILY";
-export type RoomStatus = "AVAILABLE" | "OCCUPIED";
+export type RoomStatus = "AVAILABLE" | "OCCUPIED" | "MAINTENANCE" | "ARCHIVED";
 export type OrderPaymentMethod = "CASH" | "ROOM_CHECKOUT";
+export type OrderPaymentStatus = "UNPAID" | "PAID" | "ROOM_FOLIO";
 export type RoomChargeKind = "ROOM_FEE" | "WATER" | "FOOD" | "RESTAURANT_ORDER" | "OTHER";
+export type TaskStatus = "TODO" | "IN_PROGRESS" | "COMPLETED";
 
 export interface User {
   id: string;
@@ -14,6 +16,18 @@ export interface User {
   role: Role;
   jobTitle: string;
   avatarUrl?: string | null;
+}
+
+export interface StaffTask {
+  id: string;
+  title: string;
+  description?: string | null;
+  status: TaskStatus;
+  dueAt?: string | null;
+  assignments: { employee: Pick<User, "id" | "name" | "jobTitle" | "avatarUrl">; assignedAt: string }[];
+  createdBy?: Pick<User, "id" | "name"> | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Category {
@@ -28,9 +42,15 @@ export interface MenuItem {
   description?: string | null;
   price: number | string;
   imageUrl?: string | null;
-  allergens?: string | null;
-  dietaryInfo?: string | null;
-  availableExtras?: string | null;
+  allergens: string[];
+  allergensMy: string[];
+  allergensTh: string[];
+  dietaryInfo: string[];
+  dietaryInfoMy: string[];
+  dietaryInfoTh: string[];
+  availableExtras: string[];
+  availableExtrasMy: string[];
+  availableExtrasTh: string[];
   categoryId: string;
   category?: Category;
 }
@@ -76,8 +96,10 @@ export interface Room {
   roomNumber: number;
   size: RoomSize;
   usageFee: number | string;
+  facilities: string[];
   status: RoomStatus;
   stays: RoomStay[];
+  _count?: { stays: number };
 }
 
 export interface OrderLine {
@@ -88,6 +110,7 @@ export interface OrderLine {
   subtotal?: number | string;
   removeIngredients?: string | null;
   addExtras?: string | null;
+  selectedAllergens?: string[];
   specialNotes?: string | null;
   menuItem: MenuItem;
 }
@@ -99,10 +122,17 @@ export interface Order {
   roomStayId?: string | null;
   roomStay?: RoomStay | null;
   paymentMethod: OrderPaymentMethod;
+  paymentStatus: OrderPaymentStatus;
+  paidAt?: string | null;
+  paidBy?: Pick<User, "id" | "name"> | null;
   waiterId: string;
   waiter: Pick<User, "id" | "name">;
+  servedBy?: Pick<User, "id" | "name"> | null;
   status: OrderStatus;
   totalAmount: number | string;
+  preparingAt?: string | null;
+  readyAt?: string | null;
+  servedAt?: string | null;
   items: OrderLine[];
   createdAt: string;
   updatedAt: string;
@@ -120,6 +150,7 @@ export interface EmployeeShift {
   employee?: Pick<Employee, "id" | "name" | "email">;
   checkedInAt: string;
   checkedOutAt?: string | null;
+  breaks?: { id: string; startedAt: string; endedAt?: string | null }[];
 }
 
 export const money = (value: number | string | null | undefined) =>

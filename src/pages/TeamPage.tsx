@@ -8,7 +8,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import { Field, Modal, PageHeader, Panel } from "../components/ui";
+import { Field, Modal, PageHeader, Panel, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import type { Employee } from "../lib/types";
 import { initials } from "../lib/types";
@@ -16,6 +16,7 @@ import { useUiStore } from "../stores/uiStore";
 
 export function TeamPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [jobTitles, setJobTitles] = useState<string[]>([]);
   const [modal, setModal] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [search, setSearch] = useState("");
@@ -27,8 +28,12 @@ export function TeamPage() {
   const notify = useUiStore((state) => state.notify);
   const load = useCallback(async () => {
     try {
-      const { data } = await api.get<Employee[]>("/employees");
-      setEmployees(data);
+      const [employeesResponse, rolesResponse] = await Promise.all([
+        api.get<Employee[]>("/employees"),
+        api.get<string[]>("/employees/roles"),
+      ]);
+      setEmployees(employeesResponse.data);
+      setJobTitles(rolesResponse.data);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -104,7 +109,8 @@ export function TeamPage() {
         action={
           <button
             onClick={openCreate}
-            className="inline-flex h-10 items-center gap-2 rounded-xl bg-olive px-4 text-xs font-bold text-white hover:bg-[#334438]"
+            disabled={!jobTitles.length}
+            className="inline-flex h-10 items-center gap-2 rounded-xl bg-olive px-4 text-xs font-bold text-white hover:bg-[#334438] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus size={15} /> Add employee
           </button>
@@ -262,13 +268,9 @@ export function TeamPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="morgan@restaurant.com"
             />
-            <div>
-              <Field label="Restaurant position" list="restaurant-job-titles" required value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="e.g. Waiter, Chef, or Accountant" />
-              <datalist id="restaurant-job-titles">
-                {["Waiter", "Chef", "Chief Accountant", "Bungalow Manager", "Guest Welcomer", "Gardener", "Cashier", "Housekeeping"].map((title) => <option key={title} value={title} />)}
-              </datalist>
-              <p className="mt-1 text-[11px] text-muted">Choose a suggestion or enter another position.</p>
-            </div>
+            <SelectField label="Restaurant position" required value={jobTitle} onChange={(e) => setJobTitle(e.target.value)}>
+              {jobTitles.map((title) => <option key={title} value={title}>{title}</option>)}
+            </SelectField>
             <Field
               label={
                 editingEmployee

@@ -6,6 +6,7 @@ import { api, errorMessage } from "../lib/api";
 import { initials, type User } from "../lib/types";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
+import { translate } from "../lib/translations";
 
 export function AccountPage() {
   const user = useAuthStore((state) => state.user)!;
@@ -15,6 +16,9 @@ export function AccountPage() {
   const navigate = useNavigate();
   const theme = useUiStore((state) => state.theme);
   const setTheme = useUiStore((state) => state.setTheme);
+  const language = useUiStore((state) => state.language);
+  const setLanguage = useUiStore((state) => state.setLanguage);
+  const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
   const notify = useUiStore((state) => state.notify);
   const [name, setName] = useState(user.name);
   const [image, setImage] = useState<File | null>(null);
@@ -72,11 +76,11 @@ export function AccountPage() {
 
   return (
     <div className="page-enter">
-      <PageHeader eyebrow="Your workspace" title="Account" description="Manage your profile, sign-in security, and display preferences." action={<button onClick={() => { logout(); navigate("/login"); }} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3.5 text-xs font-bold text-ink hover:bg-canvas"><LogOut size={14} /> Sign out</button>} />
+      <PageHeader eyebrow="Your workspace" title={t("account")} description="Manage your profile, sign-in security, and display preferences." action={<button onClick={() => { logout(); navigate("/login"); }} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3.5 text-xs font-bold text-ink hover:bg-canvas"><LogOut size={14} /> Sign out</button>} />
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
       <div className="grid max-w-4xl gap-5 lg:grid-cols-2">
         <Panel className="p-5 sm:p-6">
-          <div className="mb-5 flex items-center gap-3"><UserRound size={18} className="text-olive" /><h2 className="font-display text-base font-bold">Profile details</h2></div>
+          <div className="mb-5 flex items-center gap-3"><UserRound size={18} className="text-olive" /><h2 className="font-display text-base font-bold">{t("profile")}</h2></div>
           <form onSubmit={(event) => void saveProfile(event)} className="space-y-4">
             <div className="flex items-center gap-4">
               <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-full bg-citrus text-lg font-bold text-olive">
@@ -100,7 +104,13 @@ export function AccountPage() {
             </form>
           </Panel>
           <Panel className="p-5 sm:p-6">
-            <div className="mb-4"><h2 className="font-display text-base font-bold">Appearance</h2><p className="mt-1 text-xs text-muted">Choose the theme for this device.</p></div>
+            <div className="mb-4"><h2 className="font-display text-base font-bold">{translate(language, "language")}</h2><p className="mt-1 text-xs text-muted">{translate(language, "languageHelp")}</p></div>
+            <select aria-label={translate(language, "language")} value={language} onChange={(event) => setLanguage(event.target.value as "en" | "my" | "th")} className="h-11 w-full rounded-xl border border-line bg-white px-3 text-sm text-ink outline-none focus:border-olive">
+              <option value="en">{translate(language, "english")}</option><option value="my">{translate(language, "burmese")}</option><option value="th">{translate(language, "thai")}</option>
+            </select>
+          </Panel>
+          <Panel className="p-5 sm:p-6">
+            <div className="mb-4"><h2 className="font-display text-base font-bold">{t("appearance")}</h2><p className="mt-1 text-xs text-muted">Choose the theme for this device.</p></div>
             <div className="grid grid-cols-2 gap-3">
               <button onClick={() => setTheme("light")} className={`flex items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold ${theme === "light" ? "border-olive bg-olive-soft text-olive" : "border-line bg-white text-muted"}`}><Sun size={16} /> Light</button>
               <button onClick={() => setTheme("dark")} className={`flex items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold ${theme === "dark" ? "border-olive bg-olive text-white" : "border-line bg-white text-muted"}`}><Moon size={16} /> Dark</button>
