@@ -20,18 +20,18 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
       <div>
         {eyebrow && (
-          <p className="mb-2 text-[11px] font-bold uppercase tracking-[.18em] text-olive">
+          <p className="mb-3 inline-flex items-center rounded-full border border-olive/10 bg-olive-soft px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.14em] text-olive">
             {eyebrow}
           </p>
         )}
-        <h1 className="font-display text-[28px] font-bold tracking-[-.045em] text-ink sm:text-[34px]">
+        <h1 className="font-display text-[30px] font-extrabold leading-tight tracking-[-.05em] text-ink sm:text-[36px]">
           {title}
         </h1>
         {description && (
-          <p className="mt-1.5 max-w-2xl text-sm leading-6 text-muted">
+          <p className="mt-2 max-w-2xl text-[13px] leading-6 text-muted sm:text-sm">
             {description}
           </p>
         )}
@@ -50,7 +50,7 @@ export function Panel({
 }) {
   return (
     <section
-      className={`rounded-[20px] border border-line bg-white shadow-card ${className}`}
+      className={`rounded-[22px] border border-line bg-white shadow-card ${className}`}
     >
       {children}
     </section>
@@ -102,12 +102,12 @@ export function EmptyState({
   body: string;
 }) {
   return (
-    <div className="flex min-h-48 flex-col items-center justify-center px-6 py-10 text-center">
-      <div className="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-olive-soft text-olive">
+      <div className="flex min-h-52 flex-col items-center justify-center px-6 py-11 text-center">
+      <div className="mb-4 grid h-14 w-14 place-items-center rounded-[18px] bg-olive-soft text-olive">
         <Icon size={21} />
       </div>
-      <p className="font-semibold text-ink">{title}</p>
-      <p className="mt-1 max-w-sm text-sm leading-5 text-muted">{body}</p>
+      <p className="font-display text-[15px] font-bold text-ink">{title}</p>
+      <p className="mt-1.5 max-w-sm text-[13px] leading-5 text-muted">{body}</p>
     </div>
   );
 }
@@ -131,7 +131,7 @@ export function Modal({
       }}
     >
       <div
-        className={`w-full rounded-[24px] bg-white p-5 shadow-float sm:p-7 ${wide ? "max-w-2xl" : "max-w-lg"
+        className={`max-h-[min(90vh,900px)] w-full overflow-y-auto rounded-[24px] border border-line bg-white p-5 shadow-float sm:p-7 ${wide ? "max-w-2xl" : "max-w-lg"
           }`}
       >
         <div className="mb-6 flex items-center justify-between">
@@ -168,7 +168,7 @@ export function Field({
       </span>
       <input
         {...props}
-        className={`focus-ring w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm text-ink placeholder:text-[#a4a89f] outline-none transition focus:border-olive ${props.className ?? ""}`}
+        className={`focus-ring w-full rounded-xl border border-line bg-[#fcfcfa] px-3.5 py-3 text-sm text-ink placeholder:text-[#a4a89f] outline-none transition duration-150 hover:border-[#cbd2c6] focus:border-olive focus:bg-white ${props.className ?? ""}`}
       />
     </label>
   );
@@ -189,7 +189,7 @@ export function SelectField({
       </span>
       <select
         {...props}
-        className="focus-ring w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm text-ink outline-none focus:border-olive"
+        className="focus-ring w-full rounded-xl border border-line bg-[#fcfcfa] px-3.5 py-3 text-sm text-ink outline-none transition duration-150 hover:border-[#cbd2c6] focus:border-olive focus:bg-white"
       >
         {children}
       </select>

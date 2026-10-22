@@ -2,6 +2,7 @@ export type Role = "ADMIN" | "EMPLOYEE";
 export type OrderStatus =
   "PENDING" | "PREPARING" | "READY" | "SERVED" | "COMPLETED" | "CANCELLED";
 export type TableStatus = "AVAILABLE" | "OCCUPIED" | "RESERVED";
+export type TableShape = "ROUND" | "SQUARE" | "RECTANGLE" | "OVAL" | "BOOTH" | "BAR";
 export type RoomSize = "NORMAL" | "FAMILY";
 export type RoomStatus = "AVAILABLE" | "OCCUPIED" | "MAINTENANCE" | "ARCHIVED";
 export type OrderPaymentMethod = "CASH" | "ROOM_CHECKOUT";
@@ -60,6 +61,11 @@ export interface DiningTable {
   tableNumber: number;
   capacity: number;
   status: TableStatus;
+  shape: TableShape;
+  positionX: number;
+  positionY: number;
+  width: number;
+  height: number;
 }
 
 export interface RoomOccupant {
