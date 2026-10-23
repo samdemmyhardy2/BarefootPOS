@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   ArrowRight,
   Eye,
@@ -11,8 +11,10 @@ import {
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../stores/authStore";
 import { errorMessage } from "../lib/api";
+import { useUiStore } from "../stores/uiStore";
 
 export function LoginPage() {
+  const restaurantName = useUiStore((state) => state.restaurantName);
   const login = useAuthStore((state) => state.login);
   const user = useAuthStore((state) => state.user);
   const location = useLocation();
@@ -22,6 +24,9 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => {
+    document.title = `${restaurantName} · Restaurant operations`;
+  }, [restaurantName]);
   if (user) return <Navigate to="/overview" replace />;
   const submit = async (event: FormEvent) => {
     event.preventDefault();

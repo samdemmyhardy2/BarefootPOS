@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { BarChart3, CalendarDays, CircleDollarSign, LoaderCircle, PieChart, RefreshCw, TrendingUp, BedDouble } from "lucide-react";
 import { PageHeader, Panel } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
@@ -30,29 +30,39 @@ const todayString = () => {
 const chartColors = ["#52684f", "#d49368", "#8195a1", "#c47479", "#c4aa61", "#8b78a9", "#65a39a", "#bc8062"];
 
 function DonutChart({ values }: { values: OverviewData["topCategories"] }) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState<{ item: OverviewData["topCategories"][number]; x: number; y: number } | null>(null);
+  const showCategory = (item: OverviewData["topCategories"][number], event: ReactMouseEvent<SVGElement | HTMLDivElement>) => {
+    const bounds = chartRef.current?.getBoundingClientRect();
+    if (bounds) setHovered({ item, x: event.clientX - bounds.left, y: event.clientY - bounds.top });
+  };
   const total = values.reduce((sum, item) => sum + item.quantity, 0);
   const circumference = 2 * Math.PI * 72;
   let offset = 0;
   return <div className="flex flex-col items-center gap-5 sm:flex-row sm:justify-center">
-    <svg viewBox="0 0 180 180" className="h-48 w-48 shrink-0 -rotate-90" role="img" aria-label="Category sales distribution">
+    <div ref={chartRef} className="relative h-48 w-48 shrink-0 overflow-visible">
+    {hovered && <div className="pointer-events-none absolute z-10 w-44 rounded-xl border border-line bg-white/95 px-3 py-2 text-xs shadow-lg backdrop-blur-sm" style={{ left: hovered.x < 96 ? hovered.x + 10 : hovered.x - 186, top: hovered.y < 90 ? hovered.y + 10 : hovered.y - 70 }}><p className="truncate font-bold text-ink">{hovered.item.name}</p><p className="mt-1 font-extrabold text-olive">{hovered.item.quantity} items · {money(hovered.item.revenue)}</p></div>}
+    <svg viewBox="0 0 180 180" className="h-48 w-48 -rotate-90" role="img" aria-label="Category sales distribution">
       <circle cx="90" cy="90" r="72" fill="none" stroke="#edf0e9" strokeWidth="24" />
       {values.map((item, index) => {
         const length = total ? circumference * item.quantity / total : 0;
-        const segment = <circle key={item.id} cx="90" cy="90" r="72" fill="none" stroke={chartColors[index % chartColors.length]} strokeWidth="24" strokeDasharray={`${length} ${circumference - length}`} strokeDashoffset={-offset} />;
+        const segment = <circle key={item.id} cx="90" cy="90" r="72" fill="none" stroke={chartColors[index % chartColors.length]} strokeWidth="24" strokeDasharray={`${length} ${circumference - length}`} strokeDashoffset={-offset} className="cursor-pointer transition-[stroke-width] hover:stroke-[30]" onMouseEnter={(event) => showCategory(item, event)} onMouseMove={(event) => showCategory(item, event)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered({ item, x: 90, y: 90 })} onBlur={() => setHovered(null)} tabIndex={0} role="button" aria-label={`${item.name}: ${item.quantity} items, ${money(item.revenue)}`} />;
         offset += length;
         return segment;
       })}
-      <text x="90" y="86" textAnchor="middle" className="fill-[#252a24]" fontSize="20" fontWeight="700" transform="rotate(90 90 90)">{total}</text>
-      <text x="90" y="106" textAnchor="middle" className="fill-[#858a80]" fontSize="9" transform="rotate(90 90 90)">items sold</text>
+      <g transform="rotate(90 90 90)" pointerEvents="none"><text x="90" y="86" textAnchor="middle" className="fill-[#252a24]" fontSize="20" fontWeight="700">{total}</text><text x="90" y="106" textAnchor="middle" className="fill-[#858a80]" fontSize="9">items sold</text></g>
     </svg>
+    </div>
     <div className="grid w-full gap-2 sm:max-w-xs">
-      {values.map((item, index) => <div key={item.id} className="flex items-center gap-2 text-xs"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: chartColors[index % chartColors.length] }} /><span className="min-w-0 flex-1 truncate font-semibold">{item.name}</span><span className="text-muted">{item.quantity}</span></div>)}
+      {values.map((item, index) => <div key={item.id} onMouseEnter={(event) => showCategory(item, event)} onMouseMove={(event) => showCategory(item, event)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered({ item, x: 90, y: 90 })} onBlur={() => setHovered(null)} tabIndex={0} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-canvas focus:bg-canvas focus:outline-none"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: chartColors[index % chartColors.length] }} /><span className="min-w-0 flex-1 truncate font-semibold">{item.name}</span><span className="text-muted">{item.quantity}</span></div>)}
       {!values.length && <p className="text-sm text-muted">No paid orders in this date range.</p>}
     </div>
   </div>;
 }
 
 function RevenueChart({ values, mode }: { values: OverviewData["dailyRevenue"]; mode: "line" | "bar" }) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState<{ point: OverviewData["dailyRevenue"][number]; x: number; y: number } | null>(null);
   const width = 760;
   const height = 270;
   const left = 52;
@@ -66,13 +76,21 @@ function RevenueChart({ values, mode }: { values: OverviewData["dailyRevenue"]; 
   const y = (revenue: number) => top + chartHeight * (1 - revenue / max);
   const line = values.map((point, index) => `${index ? "L" : "M"}${x(index)},${y(point.revenue)}`).join(" ");
   const labelIndexes = [...new Set([0, Math.floor((values.length - 1) / 2), values.length - 1])];
-  return <div className="w-full overflow-hidden">
+  const showPoint = (point: OverviewData["dailyRevenue"][number], event?: ReactMouseEvent<SVGElement>) => {
+    const bounds = chartRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const eventX = event ? event.clientX - bounds.left : bounds.width * x(values.indexOf(point)) / width;
+    const eventY = event ? event.clientY - bounds.top : bounds.height * y(point.revenue) / height;
+    setHovered({ point, x: eventX, y: eventY });
+  };
+  return <div ref={chartRef} className="relative w-full overflow-hidden">
+    {hovered && <div className="pointer-events-none absolute z-10 w-52 rounded-xl border border-line bg-white/95 px-3 py-2.5 text-xs shadow-lg backdrop-blur-sm" style={{ left: Math.max(4, Math.min(hovered.x + 14, (chartRef.current?.clientWidth ?? 760) - 212)), top: Math.max(4, Math.min(hovered.y - 70, (chartRef.current?.clientHeight ?? 260) - 78)) }}><p className="font-bold text-ink">{new Date(`${hovered.point.date}T12:00:00`).toLocaleDateString(undefined, { dateStyle: "medium" })}</p><p className="mt-1 font-extrabold text-olive">{money(hovered.point.revenue)}</p><p className="mt-1 text-[10px] text-muted">{hovered.point.orderCount} orders · {hovered.point.occupiedRoomNights.toFixed(1)} room nights</p></div>}
     <svg viewBox={`0 0 ${width} ${height}`} className="h-[260px] w-full" role="img" aria-label={mode === "line" ? "Revenue by day line chart" : "Revenue by day vertical bar chart"}>
       {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <g key={fraction}><line x1={left} x2={width - right} y1={top + chartHeight * fraction} y2={top + chartHeight * fraction} stroke="#e9ece5" strokeDasharray="4 5" /><text x={left - 8} y={top + chartHeight * fraction + 4} textAnchor="end" fill="#858a80" fontSize="9">{money(max * (1 - fraction))}</text></g>)}
-      {mode === "line" ? <><path d={`${line} L${x(values.length - 1)},${top + chartHeight} L${x(0)},${top + chartHeight} Z`} fill="#52684f" opacity=".10" /><path d={line} fill="none" stroke="#52684f" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{values.map((point, index) => <circle key={point.date} cx={x(index)} cy={y(point.revenue)} r="3.5" fill="#fff" stroke="#52684f" strokeWidth="2" />)}</> : values.map((point, index) => {
+      {mode === "line" ? <><path d={`${line} L${x(values.length - 1)},${top + chartHeight} L${x(0)},${top + chartHeight} Z`} fill="#52684f" opacity=".10" /><path d={line} fill="none" stroke="#52684f" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" pointerEvents="none" />{values.map((point, index) => <g key={point.date} className="cursor-pointer" onMouseEnter={(event) => showPoint(point, event)} onMouseMove={(event) => showPoint(point, event)} onMouseLeave={() => setHovered(null)} onFocus={() => showPoint(point)} onBlur={() => setHovered(null)} tabIndex={0} role="button" aria-label={`${point.date}: ${money(point.revenue)}, ${point.orderCount} orders, ${point.occupiedRoomNights.toFixed(1)} room nights`}><circle cx={x(index)} cy={y(point.revenue)} r="11" fill="transparent" /><circle cx={x(index)} cy={y(point.revenue)} r="3.5" fill="#fff" stroke="#52684f" strokeWidth="2" pointerEvents="none" /></g>)}</> : values.map((point, index) => {
         const gap = values.length > 30 ? 2 : 6;
         const barWidth = Math.max(2, Math.min(24, chartWidth / Math.max(values.length, 1) - gap));
-        return <rect key={point.date} x={x(index) - barWidth / 2} y={y(point.revenue)} width={barWidth} height={Math.max(0, top + chartHeight - y(point.revenue))} rx="3" fill="#71866b" />;
+        return <rect key={point.date} x={x(index) - barWidth / 2} y={y(point.revenue)} width={barWidth} height={Math.max(0, top + chartHeight - y(point.revenue))} rx="3" fill="#71866b" className="cursor-pointer transition-colors hover:fill-[#52684f] focus:fill-[#52684f]" onMouseEnter={(event) => showPoint(point, event)} onMouseMove={(event) => showPoint(point, event)} onMouseLeave={() => setHovered(null)} onFocus={() => showPoint(point)} onBlur={() => setHovered(null)} tabIndex={0} role="button" aria-label={`${point.date}: ${money(point.revenue)}, ${point.orderCount} orders, ${point.occupiedRoomNights.toFixed(1)} room nights`} />;
       })}
       {labelIndexes.map((index) => values[index] && <text key={values[index].date} x={x(index)} y={height - 12} textAnchor={index === 0 ? "start" : index === values.length - 1 ? "end" : "middle"} fill="#858a80" fontSize="10">{new Date(`${values[index].date}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</text>)}
     </svg>

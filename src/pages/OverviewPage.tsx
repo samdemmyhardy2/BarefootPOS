@@ -6,7 +6,6 @@ import {
   Clock3,
   Coffee,
   Flame,
-  Plus,
   ShoppingBag,
   Sparkles,
   Utensils,
@@ -71,12 +70,12 @@ export function OverviewPage() {
   const revenue = todayOrders
     .filter((order) => order.status !== "CANCELLED")
     .reduce((sum, order) => sum + Number(order.totalAmount), 0);
-  const pending = orders.filter((order) =>
+  const pending = todayOrders.filter((order) =>
     ["PENDING", "PREPARING"].includes(order.status),
   );
-  const ready = orders.filter((order) => order.status === "READY");
+  const ready = todayOrders.filter((order) => order.status === "READY");
   const occupied = tables.filter((table) => table.status === "OCCUPIED").length;
-  const topRecent = [...orders]
+  const topRecent = [...todayOrders]
     .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
     .slice(0, 5);
   const metrics = [
@@ -124,14 +123,6 @@ export function OverviewPage() {
         eyebrow={`${new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date())} service · live operations`}
         title={`Good afternoon, ${user.name.split(" ")[0]}.`}
         description="Here’s the pulse of your restaurant right now."
-        action={
-          <Link
-            to="/orders"
-            className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-olive px-4 text-sm font-bold text-white shadow-sm transition hover:bg-[#334438]"
-          >
-            <Plus size={16} /> New order
-          </Link>
-        }
       />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:gap-4">
         {metrics.map(({ label, value, note, icon: Icon, tint, delta }) => (
@@ -170,7 +161,7 @@ export function OverviewPage() {
               </p>
             </div>
             <Link
-              to="/tracker"
+              to="/orders"
               className="flex items-center gap-1 text-xs font-bold text-olive hover:underline"
             >
               See tracker <ArrowRight size={14} />

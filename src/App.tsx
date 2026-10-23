@@ -14,6 +14,8 @@ import { AccountPage } from "./pages/AccountPage";
 import { RoomsPage } from "./pages/RoomsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { BusinessOverviewPage } from "./pages/BusinessOverviewPage";
+import { OrdersPage } from "./pages/OrdersPage";
+import { TechnicalPage } from "./pages/TechnicalPage";
 
 export default function App() {
   return (
@@ -23,6 +25,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/overview" replace />} />
           <Route element={<RequireJobPermission permission="ORDER_VIEW" />}><Route path="overview" element={<OverviewPage />} /></Route>
+          <Route element={<RequireJobPermission permission="ORDER_VIEW" />}><Route path="orders" element={<OrdersPage />} /></Route>
           <Route element={<RequireJobPermission permission="REPORTS" />}><Route path="business-overview" element={<BusinessOverviewPage />} /></Route>
           <Route element={<RequireJobPermission permission="KITCHEN" />}><Route path="kitchen" element={<KitchenPage />} /></Route>
           <Route element={<RequireJobPermission permission="ORDER_SERVE" />}><Route path="ready" element={<ReadyOrdersPage />} /></Route>
@@ -35,6 +38,7 @@ export default function App() {
           <Route element={<RequireAuth roles={["ADMIN"]} />}>
             <Route path="menu" element={<MenuPage />} />
             <Route path="team" element={<TeamPage />} />
+            <Route path="technical" element={<TechnicalPage />} />
           </Route>
           <Route path="attendance" element={<AttendancePage />} />
           <Route path="account" element={<AccountPage />} />

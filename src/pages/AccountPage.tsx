@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { Camera, LogOut, Moon, Sun, UserRound } from "lucide-react";
+import { Building2, Camera, LogOut, Moon, Sun, UserRound, Utensils } from "lucide-react";
 import { Field, PageHeader, Panel } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import { initials, type User } from "../lib/types";
+import { initials, type RestaurantIdentity, type User } from "../lib/types";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { translate } from "../lib/translations";
@@ -27,10 +27,25 @@ export function AccountPage() {
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [restaurantName, setRestaurantName] = useState("Table & Thyme");
+  const [restaurantLogoFile, setRestaurantLogoFile] = useState<File | null>(null);
+  const [restaurantLogoPreview, setRestaurantLogoPreview] = useState("");
+  const [restaurantBusy, setRestaurantBusy] = useState(false);
+  const setRestaurantIdentity = useUiStore((state) => state.setRestaurantIdentity);
+  const isAdmin = user.role === "ADMIN";
 
   useEffect(() => {
     void refreshProfile().catch(() => undefined);
   }, [refreshProfile]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    void api.get<RestaurantIdentity>("/restaurant-settings").then(({ data }) => {
+      setRestaurantName(data.name);
+      setRestaurantLogoPreview(data.logoUrl ?? "");
+      setRestaurantIdentity(data.name, data.logoUrl);
+    }).catch((cause) => setError(errorMessage(cause)));
+  }, [isAdmin, setRestaurantIdentity]);
 
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault();
@@ -74,11 +89,48 @@ export function AccountPage() {
     }
   };
 
+  const saveRestaurantIdentity = async (event: FormEvent) => {
+    event.preventDefault();
+    setRestaurantBusy(true);
+    setError("");
+    try {
+      let logoUrl: string | null = restaurantLogoPreview || null;
+      if (restaurantLogoFile) {
+        const form = new FormData();
+        form.append("file", restaurantLogoFile);
+        const uploaded = await api.post<{ imageUrl: string }>("/media/images", form, { headers: { "Content-Type": "multipart/form-data" } });
+        logoUrl = uploaded.data.imageUrl;
+      }
+      const { data } = await api.patch<RestaurantIdentity>("/restaurant-settings", { name: restaurantName.trim(), logoUrl });
+      setRestaurantName(data.name);
+      setRestaurantLogoPreview(data.logoUrl ?? "");
+      setRestaurantLogoFile(null);
+      setRestaurantIdentity(data.name, data.logoUrl);
+      notify("Restaurant identity saved.");
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setRestaurantBusy(false);
+    }
+  };
+
   return (
     <div className="page-enter">
       <PageHeader eyebrow="Your workspace" title={t("account")} description="Manage your profile, sign-in security, and display preferences." action={<button onClick={() => { logout(); navigate("/login"); }} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3.5 text-xs font-bold text-ink hover:bg-canvas"><LogOut size={14} /> Sign out</button>} />
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
       <div className="grid max-w-4xl gap-5 lg:grid-cols-2">
+        {isAdmin && <Panel className="p-5 sm:p-6 lg:col-span-2">
+          <div className="mb-5 flex items-center gap-3"><Building2 size={18} className="text-olive" /><div><h2 className="font-display text-base font-bold">Restaurant identity</h2><p className="mt-1 text-xs text-muted">Set the restaurant name and logo shown in the sidebar for your team.</p></div></div>
+          <form onSubmit={(event) => void saveRestaurantIdentity(event)} className="grid gap-5 sm:grid-cols-[1fr_auto] sm:items-end">
+            <Field label="Restaurant name" required maxLength={80} value={restaurantName} onChange={(event) => setRestaurantName(event.target.value)} />
+            <div className="flex items-center gap-3 sm:min-w-64">
+              <div className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl border border-line bg-canvas text-olive">{restaurantLogoPreview ? <img src={restaurantLogoPreview} alt="Restaurant logo preview" className="h-full w-full object-contain" /> : <Utensils size={22} />}</div>
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-line bg-white px-3 py-2.5 text-xs font-bold hover:bg-canvas"><Camera size={14} /> Upload logo<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; if (file) { setRestaurantLogoFile(file); setRestaurantLogoPreview(URL.createObjectURL(file)); } }} /></label>
+              {restaurantLogoPreview && <button type="button" onClick={() => { setRestaurantLogoFile(null); setRestaurantLogoPreview(""); }} className="text-xs font-semibold text-rose-600">Remove</button>}
+            </div>
+            <button disabled={restaurantBusy || !restaurantName.trim()} className="h-11 rounded-xl bg-olive px-5 text-sm font-bold text-white hover:bg-[#334438] disabled:opacity-50 sm:col-span-2">{restaurantBusy ? "Saving…" : "Save restaurant identity"}</button>
+          </form>
+        </Panel>}
         <Panel className="p-5 sm:p-6">
           <div className="mb-5 flex items-center gap-3"><UserRound size={18} className="text-olive" /><h2 className="font-display text-base font-bold">{t("profile")}</h2></div>
           <form onSubmit={(event) => void saveProfile(event)} className="space-y-4">

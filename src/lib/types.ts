@@ -19,6 +19,11 @@ export interface User {
   avatarUrl?: string | null;
 }
 
+export interface RestaurantIdentity {
+  name: string;
+  logoUrl: string | null;
+}
+
 export interface StaffTask {
   id: string;
   title: string;
@@ -142,6 +147,14 @@ export interface Order {
   items: OrderLine[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OrderPage {
+  items: Order[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
 }
 
 export interface Employee extends User {

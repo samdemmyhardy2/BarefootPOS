@@ -33,6 +33,43 @@ export function translateFacility(language: Language, facility: string): string 
   return facilityTranslations[language][facility] ?? facility;
 }
 
+const tableText: Record<Exclude<Language, "en">, Record<string, string>> = {
+  my: {
+    Tables: "စားပွဲများ", "Arrange your floor, check availability, and open a table to manage its orders.": "စားပွဲအစီအစဉ်ကို စီစဉ်ပါ၊ ရရှိနိုင်မှုကို စစ်ဆေးပြီး အော်ဒါများကို စီမံရန် စားပွဲကိုဖွင့်ပါ။",
+    "Edit layout": "အစီအစဉ်ပြင်ရန်", "Save layout": "အစီအစဉ်သိမ်းရန်", "Floor plan": "စားပွဲအစီအစဉ်", Reset: "ပြန်စရန်", "Zoom in floor plan": "စားပွဲအစီအစဉ်ကို ချဲ့ရန်", "Zoom out floor plan": "စားပွဲအစီအစဉ်ကို ချုံ့ရန်",
+    "Drag tables or use the arrow controls. Choose a shape, then save.": "စားပွဲများကို ဆွဲရွှေ့ပါ သို့မဟုတ် မြှားခလုတ်များကို သုံးပါ။ ပုံစံရွေးပြီး သိမ်းပါ။", "tables": "စားပွဲ", "Round": "အဝိုင်း", "Square": "စတုရန်း", "Rectangle": "စတုဂံ", "Oval": "ဘဲဥပုံ", "Booth": "ဘေးကပ်ခုံ", "Bar": "ဘား",
+    "seats": "ခုံ", "Seat capacity": "ထိုင်ခုံအရေအတွက်", "Bills": "ဘေလ်", Bill: "ဘေလ်", "Add a table": "စားပွဲထည့်ရန်", "Edit table": "စားပွဲပြင်ရန်", "Edit table details": "စားပွဲအချက်အလက်ပြင်ရန်", "Delete table": "စားပွဲဖျက်ရန်", "Tables with order history cannot be deleted.": "အော်ဒါမှတ်တမ်းရှိသော စားပွဲကို ဖျက်၍မရပါ။", deleted: "ဖျက်ပြီးပါပြီ", "Table shape": "စားပွဲပုံစံ", "Shape for table": "စားပွဲပုံစံ", "Bar counter": "ဘားကောင်တာ", "Add to floor": "စားပွဲစာရင်းသို့ ထည့်ရန်", "Your floor is ready for a layout": "စားပွဲအစီအစဉ် စတင်ရန်အသင့်ဖြစ်ပါပြီ", "Add your first table to start arranging your restaurant floor.": "စားသောက်ဆိုင်၏ စားပွဲအစီအစဉ်ကို စတင်ရန် ပထမဆုံးစားပွဲကို ထည့်ပါ။",
+  },
+  th: {
+    Tables: "โต๊ะ", "Arrange your floor, check availability, and open a table to manage its orders.": "จัดผังร้าน ตรวจสอบสถานะโต๊ะ และเปิดโต๊ะเพื่อจัดการคำสั่งซื้อ",
+    "Edit layout": "แก้ไขผัง", "Save layout": "บันทึกผัง", "Floor plan": "ผังโต๊ะ", Reset: "รีเซ็ต", "Zoom in floor plan": "ขยายผังโต๊ะ", "Zoom out floor plan": "ย่อผังโต๊ะ",
+    "Drag tables or use the arrow controls. Choose a shape, then save.": "ลากโต๊ะหรือใช้ปุ่มลูกศร เลือกรูปทรงแล้วบันทึก", "tables": "โต๊ะ", "Round": "วงกลม", "Square": "สี่เหลี่ยมจัตุรัส", "Rectangle": "สี่เหลี่ยมผืนผ้า", "Oval": "วงรี", "Booth": "ที่นั่งบูธ", "Bar": "บาร์",
+    "seats": "ที่นั่ง", "Seat capacity": "จำนวนที่นั่ง", "Bills": "บิล", Bill: "บิล", "Add a table": "เพิ่มโต๊ะ", "Edit table": "แก้ไขโต๊ะ", "Edit table details": "แก้ไขรายละเอียดโต๊ะ", "Delete table": "ลบโต๊ะ", "Tables with order history cannot be deleted.": "ไม่สามารถลบโต๊ะที่มีประวัติคำสั่งซื้อได้", deleted: "ลบแล้ว", "Table shape": "รูปทรงโต๊ะ", "Shape for table": "รูปทรงโต๊ะ", "Bar counter": "เคาน์เตอร์บาร์", "Add to floor": "เพิ่มโต๊ะ", "Your floor is ready for a layout": "พร้อมจัดผังโต๊ะแล้ว", "Add your first table to start arranging your restaurant floor.": "เพิ่มโต๊ะแรกเพื่อเริ่มจัดผังร้านอาหาร",
+  },
+};
+
+const ordersText: Record<Exclude<Language, "en">, Record<string, string>> = {
+  my: {
+    Orders: "အော်ဒါများ", "Order history": "အော်ဒါမှတ်တမ်း", "Service · Order history": "ဝန်ဆောင်မှု · အော်ဒါမှတ်တမ်း", "Browse orders by date, or scroll through the complete order history.": "ရက်စွဲအလိုက် အော်ဒါများကိုကြည့်ပါ သို့မဟုတ် အော်ဒါမှတ်တမ်းအားလုံးကို ဆွဲကြည့်ပါ။",
+    "Filter by date": "ရက်စွဲဖြင့် စစ်ထုတ်ရန်", "Orders for selected date": "ရွေးထားသောရက်စွဲ၏ အော်ဒါများ", "All dates": "ရက်စွဲအားလုံး", "Clear date": "ရက်စွဲဖယ်ရှားရန်", "Loading orders": "အော်ဒါများကို ဖွင့်နေသည်", "of": "မှ", orders: "အော်ဒါများ",
+    "Served by": "ဝန်ဆောင်မှုပေးသူ", "Collected by": "လာယူသူ", "You’ve reached the end of the order history.": "အော်ဒါမှတ်တမ်းအဆုံးသို့ ရောက်ပါပြီ။", "No orders found": "အော်ဒါမတွေ့ပါ", "There are no orders for this date.": "ဤရက်စွဲတွင် အော်ဒါမရှိပါ။", "Orders will appear here as they are placed.": "အော်ဒါတင်သည်နှင့် ဤနေရာတွင် ပေါ်လာပါမည်။", "Retry": "ထပ်ကြိုးစားရန်",
+  },
+  th: {
+    Orders: "คำสั่งซื้อ", "Order history": "ประวัติคำสั่งซื้อ", "Service · Order history": "บริการ · ประวัติคำสั่งซื้อ", "Browse orders by date, or scroll through the complete order history.": "ดูคำสั่งซื้อตามวันที่ หรือเลื่อนดูประวัติคำสั่งซื้อทั้งหมด",
+    "Filter by date": "กรองตามวันที่", "Orders for selected date": "คำสั่งซื้อในวันที่เลือก", "All dates": "ทุกวันที่", "Clear date": "ล้างวันที่", "Loading orders": "กำลังโหลดคำสั่งซื้อ", "of": "จาก", orders: "คำสั่งซื้อ",
+    "Served by": "พนักงานบริการ", "Collected by": "ผู้รับอาหาร", "You’ve reached the end of the order history.": "ถึงท้ายประวัติคำสั่งซื้อแล้ว", "No orders found": "ไม่พบคำสั่งซื้อ", "There are no orders for this date.": "ไม่มีคำสั่งซื้อในวันนี้", "Orders will appear here as they are placed.": "คำสั่งซื้อจะแสดงที่นี่เมื่อมีการสั่ง", "Retry": "ลองอีกครั้ง",
+  },
+};
+
+const brandingText: Record<Exclude<Language, "en">, Record<string, string>> = {
+  my: {
+    "Restaurant identity": "စားသောက်ဆိုင်အမှတ်တံဆိပ်", "Set the restaurant name and logo shown in the sidebar for your team.": "အဖွဲ့ဝင်များ၏ ဘေးဘားတွင် ပြသမည့် စားသောက်ဆိုင်အမည်နှင့် လိုဂိုကို သတ်မှတ်ပါ။", "Restaurant name": "စားသောက်ဆိုင်အမည်", "Restaurant logo preview": "စားသောက်ဆိုင်လိုဂို အစမ်းကြည့်ရန်", "Upload logo": "လိုဂိုတင်ရန်", Remove: "ဖယ်ရှားရန်", "Saving…": "သိမ်းဆည်းနေသည်…", "Save restaurant identity": "စားသောက်ဆိုင်အမှတ်တံဆိပ် သိမ်းရန်", "Restaurant identity saved.": "စားသောက်ဆိုင်အမှတ်တံဆိပ်ကို သိမ်းဆည်းပြီးပါပြီ။",
+  },
+  th: {
+    "Restaurant identity": "ข้อมูลร้านอาหาร", "Set the restaurant name and logo shown in the sidebar for your team.": "ตั้งชื่อและโลโก้ร้านอาหารที่จะแสดงในแถบด้านข้างของทีม", "Restaurant name": "ชื่อร้านอาหาร", "Restaurant logo preview": "ตัวอย่างโลโก้ร้านอาหาร", "Upload logo": "อัปโหลดโลโก้", Remove: "ลบออก", "Saving…": "กำลังบันทึก…", "Save restaurant identity": "บันทึกข้อมูลร้านอาหาร", "Restaurant identity saved.": "บันทึกข้อมูลร้านอาหารแล้ว",
+  },
+};
+
 const taskText: Record<Exclude<Language, "en">, Record<string, string>> = {
   my: {
     Tasks: "လုပ်ငန်းတာဝန်များ", "Team workspace": "အဖွဲ့လုပ်ငန်းခွင်", "Create and assign work, then follow its progress.": "လုပ်ငန်းတာဝန်များဖန်တီးပြီး တာဝန်ပေးကာ တိုးတက်မှုကိုကြည့်ပါ။", "See the work assigned to you and keep its status up to date.": "သင့်တာဝန်များကိုကြည့်ပြီး အခြေအနေကို အပ်ဒိတ်လုပ်ပါ။", "Assign task": "တာဝန်ပေးရန်", "To do": "လုပ်ဆောင်ရန်", "In progress": "လုပ်ဆောင်နေသည်", "Task status": "တာဝန်အခြေအနေ", "Task title": "တာဝန်ခေါင်းစဉ်", "Instructions (optional)": "ညွှန်ကြားချက် (ရွေးချယ်နိုင်သည်)", "Assign to": "တာဝန်ပေးမည့်သူ", "Select an employee": "ဝန်ထမ်းရွေးပါ", "Due date (optional)": "ပြီးစီးရမည့်ရက် (ရွေးချယ်နိုင်သည်)", "No due date": "သတ်မှတ်ရက်မရှိပါ", "Assigned to": "တာဝန်ပေးထားသူ", "Assigned by": "တာဝန်ပေးသူ", "Former employee": "ဝန်ထမ်းဟောင်း", "No tasks assigned": "တာဝန်ပေးထားခြင်းမရှိပါ", "Assign a task to get the team started.": "အဖွဲ့စတင်ရန် တာဝန်တစ်ခု ပေးပါ။", "Tasks assigned to you will appear here.": "သင့်အားပေးထားသောတာဝန်များ ဤနေရာတွင်ပေါ်လာပါမည်။", "Task assigned successfully.": "တာဝန်ပေးပြီးပါပြီ။", "Task status updated.": "တာဝန်အခြေအနေပြင်ဆင်ပြီးပါပြီ။", "Task deleted.": "တာဝန်ဖျက်ပြီးပါပြီ။", "Assigning…": "တာဝန်ပေးနေသည်…", "Delete task": "တာဝန်ဖျက်ရန်",
@@ -103,7 +140,7 @@ const uiText: Record<Exclude<Language, "en">, Record<string, string>> = {
 export function translateUiText(language: Language, text: string): string {
   if (language === "en") return text;
   const trimmed = text.trim();
-  const translated = uiText[language][trimmed] ?? taskText[language][trimmed] ?? pageText[language][trimmed];
+  const translated = uiText[language][trimmed] ?? taskText[language][trimmed] ?? pageText[language][trimmed] ?? tableText[language][trimmed] ?? ordersText[language][trimmed] ?? brandingText[language][trimmed];
   if (translated) return text.replace(trimmed, translated);
   const breakStarted = trimmed.match(/^Short break in progress · started (.+)$/);
   if (breakStarted) {
