@@ -181,7 +181,7 @@ export function AppLayout() {
         </Link>
       </aside>
       <div className={`min-h-screen ${sidebarCollapsed ? "md:pl-[72px]" : "md:pl-[220px]"}`}>
-        {location.pathname !== "/tables" && <header className="sticky top-0 z-20 flex h-[72px] items-center justify-between border-b border-line/80 bg-white/85 px-4 backdrop-blur-xl sm:px-7 lg:px-9">
+        <header className="sticky top-0 z-20 flex h-[72px] items-center justify-between border-b border-line/80 bg-white/85 px-4 backdrop-blur-xl sm:px-7 lg:px-9">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setSidebarOpen(true)}
@@ -225,7 +225,7 @@ export function AppLayout() {
               <ChevronDown size={14} className="text-muted" />
             </Link>
           </div>
-        </header>}
+        </header>
         <main className={`mx-auto min-h-[calc(100vh-70px)] w-full ${location.pathname === "/tables" ? "p-4 sm:p-5" : "p-4 sm:p-7 lg:px-9 lg:py-8"} ${fullCanvas ? "max-w-none" : "max-w-[1500px]"}`}>
           <Outlet />
         </main>

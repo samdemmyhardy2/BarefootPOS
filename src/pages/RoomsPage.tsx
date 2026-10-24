@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { BedDouble, ClipboardList, Plus, ReceiptText, Trash2, UserRound, Users, Wallet } from "lucide-react";
+import { BedDouble, ClipboardList, Plus, Printer, ReceiptText, Trash2, UserRound, Users, Wallet } from "lucide-react";
 import { Field, Modal, PageHeader, Panel, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import { money, type Room, type RoomChargeKind, type RoomSize, type RoomStay } from "../lib/types";
@@ -7,6 +7,7 @@ import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { translate, translateFacility } from "../lib/translations";
 import { hasJobPermission } from "../lib/access";
+import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
 
 type ModalKind = "room" | "checkin" | "charge" | null;
 const dateTime = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -19,6 +20,7 @@ export function RoomsPage() {
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [timeline, setTimeline] = useState<RoomStay | null>(null);
+  const [checkoutReceipt, setCheckoutReceipt] = useState<CheckoutReceipt | null>(null);
   const [stayHistory, setStayHistory] = useState<RoomStay[] | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
   const [size, setSize] = useState<RoomSize>("NORMAL");
@@ -39,6 +41,20 @@ export function RoomsPage() {
   const notify = useUiStore((state) => state.notify);
   const language = useUiStore((state) => state.language);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
+  const restaurantName = useUiStore((state) => state.restaurantName);
+  const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
+
+  const createFolioReceipt = (stay: RoomStay): CheckoutReceipt => ({
+    locationLabel: `Room ${stay.room?.roomNumber ?? ""} · Folio checkout`,
+    orders: stay.orders ?? [],
+    folioCharges: stay.charges ?? [],
+    paymentMethod: "ROOM_CHECKOUT",
+    receiptKind: "STAY_CHECKOUT",
+    room: stay.room ? { roomNumber: stay.room.roomNumber, guestName: stay.primaryGuestName } : null,
+    totalAmount: Number(stay.folioTotal ?? (stay.charges ?? []).reduce((sum, charge) => sum + Number(charge.amount), 0)),
+    checkedOutAt: stay.checkedOutAt ?? new Date().toISOString(),
+    cashierName: currentUser?.name ?? "Restaurant staff",
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -111,12 +127,26 @@ export function RoomsPage() {
     try { const { data } = await api.get<RoomStay[]>(`/rooms/${room.id}/stays`); setStayHistory(data); }
     catch (e) { setError(errorMessage(e)); }
   };
+  const printFolioReceipt = async (stayId: string) => {
+    setError("");
+    try {
+      const { data } = await api.get<RoomStay>(`/rooms/stays/${stayId}/timeline`);
+      if (!data.checkedOutAt) {
+        setError("The folio receipt is available after checkout.");
+        return;
+      }
+      setCheckoutReceipt(createFolioReceipt(data));
+      setStayHistory(null);
+    } catch (e) { setError(errorMessage(e)); }
+  };
   const checkOut = async () => {
     if (!timeline || !window.confirm(`Check out ${timeline.primaryGuestName}? Folio total: ${money(timeline.folioTotal)}.`)) return;
     setBusy(true); setError("");
     try {
       const { data } = await api.post<RoomStay>(`/rooms/stays/${timeline.id}/check-out`);
-      setTimeline(data); notify("Guest checked out. Room folio closed."); await load();
+      setTimeline(data);
+      setCheckoutReceipt(createFolioReceipt(data));
+      notify("Guest checked out. Room folio closed."); await load();
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   };
@@ -145,7 +175,8 @@ export function RoomsPage() {
       paid: true,
     })),
   ].sort((a, b) => +new Date(a.at) - +new Date(b.at)) : [];
-  return <div className="page-enter min-h-full w-full">
+  return <>
+  <div className="page-enter min-h-full w-full">
     <PageHeader eyebrow="Front desk · Guest stays" title={t("rooms")} description="Check guests in, record room usage, and review their itemized checkout timeline." action={isAdmin ? <button onClick={() => openRoom()} className="inline-flex h-10 items-center gap-2 rounded-xl bg-olive px-4 text-xs font-bold text-white"><Plus size={15} /> {t("addRoom")}</button> : undefined} />
     {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
     <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -174,7 +205,9 @@ export function RoomsPage() {
     {modal === "room" && <Modal title={editingRoom ? t("editRoom") : t("addRoom")} onClose={() => setModal(null)}><form onSubmit={(event) => void saveRoom(event)} className="space-y-4"><Field label={t("roomNumber")} type="number" required min="1" value={roomNumber} onChange={(e) => setRoomNumber(e.target.value)} /><SelectField label={t("roomSize")} value={size} onChange={(e) => setSize(e.target.value as RoomSize)}><option value="NORMAL">{t("normal")}</option><option value="FAMILY">{t("family")}</option></SelectField><Field label={t("roomFee")} type="number" required min="0" step="0.01" value={usageFee} onChange={(e) => setUsageFee(e.target.value)} /><p className="-mt-2 text-[10px] text-muted">{t("roomFeeHelp")}</p><fieldset><legend className="mb-2 text-xs font-semibold text-ink">{t("roomFacilities")}</legend><div className="grid grid-cols-2 gap-2">{roomFacilities.map((facility) => <label key={facility} className="flex cursor-pointer items-center gap-2 rounded-lg border border-line px-2.5 py-2 text-[11px] text-ink"><input type="checkbox" checked={facilities.includes(facility)} onChange={(event) => setFacilities((current) => event.target.checked ? [...current, facility] : current.filter((item) => item !== facility))} className="accent-olive" />{translateFacility(language, facility)}</label>)}</div><p className="mt-2 text-[10px] text-muted">{t("selectAmenities")}</p></fieldset><button disabled={busy} className="h-11 w-full rounded-xl bg-olive text-sm font-bold text-white disabled:opacity-50">{editingRoom ? t("saveRoom") : t("addRoom")}</button></form></Modal>}
     {modal === "checkin" && <Modal title={`Check in · Room ${selectedRoom?.roomNumber}`} onClose={() => setModal(null)}><form onSubmit={(event) => void checkIn(event)} className="space-y-4"><Field label="Primary guest" required value={guestName} onChange={(e) => setGuestName(e.target.value)} placeholder="Guest full name" /><label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">Other people staying in this room</span><textarea value={occupants} onChange={(e) => setOccupants(e.target.value)} rows={3} placeholder="One name per line" className="w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm outline-none focus:border-olive" /></label><p className="-mt-2 text-[10px] text-muted">The primary guest is included automatically. Room fee {money(selectedRoom?.usageFee)} will be posted to checkout.</p><button disabled={busy} className="h-11 w-full rounded-xl bg-olive text-sm font-bold text-white">Check in guests</button></form></Modal>}
     {modal === "charge" && <Modal title={`Record room usage · ${selectedRoom?.stays[0]?.primaryGuestName ?? "Guest"}`} onClose={() => setModal(null)}><form onSubmit={(event) => void addCharge(event)} className="space-y-4"><SelectField label="Usage type" value={chargeKind} onChange={(e) => setChargeKind(e.target.value as RoomChargeKind)}><option value="WATER">Water</option><option value="FOOD">Food</option><option value="OTHER">Other room usage</option></SelectField><Field label="Description" required value={chargeDescription} onChange={(e) => setChargeDescription(e.target.value)} placeholder="e.g. 2 bottles of water" /><div className="grid grid-cols-2 gap-3"><Field label="Quantity" type="number" required min="1" value={chargeQuantity} onChange={(e) => setChargeQuantity(e.target.value)} /><Field label="Price each" type="number" required min="0" step="0.01" value={chargePrice} onChange={(e) => setChargePrice(e.target.value)} /></div><button disabled={busy} className="h-11 w-full rounded-xl bg-olive text-sm font-bold text-white">Add to guest folio</button></form></Modal>}
-    {stayHistory && <Modal title="Room stay history" wide onClose={() => setStayHistory(null)}><div className="max-h-[65vh] divide-y divide-line overflow-y-auto">{stayHistory.length ? stayHistory.map((stay) => <div key={stay.id} className="flex flex-wrap items-center gap-3 py-3"><div className="min-w-0 flex-1"><p className="text-sm font-bold">{stay.primaryGuestName}</p><p className="mt-1 text-[10px] text-muted">{dateTime(stay.checkedInAt)}{stay.checkedOutAt ? ` → ${dateTime(stay.checkedOutAt)}` : " · In house"} · {stay.occupants.length} guest(s)</p></div><span className="text-xs font-bold">{money((stay.charges ?? []).reduce((sum, charge) => sum + Number(charge.amount), 0))}</span><button onClick={() => { setStayHistory(null); void openTimeline(stay.id); }} className="rounded-lg border border-line px-3 py-2 text-[10px] font-bold hover:bg-canvas">Timeline</button></div>) : <p className="py-8 text-center text-sm text-muted">No previous stays for this room.</p>}</div></Modal>}
-    {timeline && <Modal title={`Guest folio · Room ${timeline.room?.roomNumber}`} wide onClose={() => setTimeline(null)}><div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1"><div className="rounded-xl bg-canvas p-4"><p className="font-bold">{timeline.primaryGuestName}</p><p className="mt-1 text-xs text-muted">Guests: {timeline.occupants.map((person) => person.name).join(", ")}</p><p className="mt-1 text-xs text-muted">Check-in {dateTime(timeline.checkedInAt)}{timeline.checkedOutAt ? ` · Check-out ${dateTime(timeline.checkedOutAt)}` : ""}</p></div><div className="flex items-center justify-between"><h3 className="font-display text-sm font-bold">Usage timeline</h3><span className="text-sm font-extrabold">{money(timeline.folioTotal)}</span></div>{timelineEntries.map((entry) => <div key={entry.id} className="flex gap-3 border-l-2 border-line pl-3"><ReceiptText size={14} className="mt-0.5 shrink-0 text-olive" /><div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><p className="text-xs font-bold">{entry.title}</p><span className="text-xs font-bold">{money(entry.amount)}</span></div>{entry.order && <><p className="mt-1 text-xs leading-5 text-ink">{entry.order.items.map((line) => `${line.quantity}× ${line.menuItem.name}`).join(", ")}</p><p className="mt-1 text-[10px] text-muted">Table {entry.order.table?.tableNumber ?? "—"} · Served by {entry.order.servedBy?.name ?? "Not recorded"}</p></>}<p className="mt-1 text-[10px] text-muted">{dateTime(entry.at)} · {entry.detail}{entry.paid ? " · settled" : ""}</p></div></div>)}<div className="border-t border-line pt-3"><div className="flex justify-between text-sm font-extrabold"><span>Amount due at checkout</span><span>{money(timeline.folioTotal)}</span></div><p className="mt-1 text-[10px] text-muted">Cash restaurant orders remain in the history but are excluded from the room folio balance.</p></div></div>{!timeline.checkedOutAt && canManageFolios && <button disabled={busy} onClick={() => void checkOut()} className="mt-5 h-11 w-full rounded-xl bg-olive text-sm font-bold text-white">Check out & close folio</button>}</Modal>}
-  </div>;
+    {stayHistory && <Modal title="Room stay history" wide onClose={() => setStayHistory(null)}><div className="max-h-[65vh] divide-y divide-line overflow-y-auto">{stayHistory.length ? stayHistory.map((stay) => <div key={stay.id} className="flex flex-wrap items-center gap-3 py-3"><div className="min-w-0 flex-1"><p className="text-sm font-bold">{stay.primaryGuestName}</p><p className="mt-1 text-[10px] text-muted">{dateTime(stay.checkedInAt)}{stay.checkedOutAt ? ` → ${dateTime(stay.checkedOutAt)}` : " · In house"} · {stay.occupants.length} guest(s)</p></div><span className="text-xs font-bold">{money((stay.charges ?? []).reduce((sum, charge) => sum + Number(charge.amount), 0))}</span><button onClick={() => { setStayHistory(null); void openTimeline(stay.id); }} className="rounded-lg border border-line px-3 py-2 text-[10px] font-bold hover:bg-canvas">Timeline</button>{stay.checkedOutAt && canManageFolios && <button onClick={() => void printFolioReceipt(stay.id)} className="inline-flex items-center gap-1.5 rounded-lg border border-pink-200 px-3 py-2 text-[10px] font-bold text-[#b90b6b] hover:bg-pink-50"><Printer size={12} /> Print receipt</button>}</div>) : <p className="py-8 text-center text-sm text-muted">No previous stays for this room.</p>}</div></Modal>}
+    {timeline && <Modal title={`Guest folio · Room ${timeline.room?.roomNumber}`} wide onClose={() => setTimeline(null)}><div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1"><div className="rounded-xl bg-canvas p-4"><p className="font-bold">{timeline.primaryGuestName}</p><p className="mt-1 text-xs text-muted">Guests: {timeline.occupants.map((person) => person.name).join(", ")}</p><p className="mt-1 text-xs text-muted">Check-in {dateTime(timeline.checkedInAt)}{timeline.checkedOutAt ? ` · Check-out ${dateTime(timeline.checkedOutAt)}` : ""}</p></div><div className="flex items-center justify-between"><h3 className="font-display text-sm font-bold">Usage timeline</h3><span className="text-sm font-extrabold">{money(timeline.folioTotal)}</span></div>{timelineEntries.map((entry) => <div key={entry.id} className="flex gap-3 border-l-2 border-line pl-3"><ReceiptText size={14} className="mt-0.5 shrink-0 text-olive" /><div className="min-w-0 flex-1"><div className="flex justify-between gap-2"><p className="text-xs font-bold">{entry.title}</p><span className="text-xs font-bold">{money(entry.amount)}</span></div>{entry.order && <><p className="mt-1 text-xs leading-5 text-ink">{entry.order.items.map((line) => `${line.quantity}× ${line.menuItem.name}`).join(", ")}</p><p className="mt-1 text-[10px] text-muted">Table {entry.order.table?.tableNumber ?? "—"} · Served by {entry.order.servedBy?.name ?? "Not recorded"}</p></>}<p className="mt-1 text-[10px] text-muted">{dateTime(entry.at)} · {entry.detail}{entry.paid ? " · settled" : ""}</p></div></div>)}<div className="border-t border-line pt-3"><div className="flex justify-between text-sm font-extrabold"><span>Amount due at checkout</span><span>{money(timeline.folioTotal)}</span></div><p className="mt-1 text-[10px] text-muted">Cash restaurant orders remain in the history but are excluded from the room folio balance.</p></div></div>{timeline.checkedOutAt && canManageFolios && <button onClick={() => setCheckoutReceipt(createFolioReceipt(timeline))} className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-line bg-white text-xs font-bold text-olive hover:bg-canvas"><ReceiptText size={14} /> Print folio receipt</button>}{!timeline.checkedOutAt && canManageFolios && <button disabled={busy} onClick={() => void checkOut()} className="mt-5 h-11 w-full rounded-xl bg-olive text-sm font-bold text-white">Check out & close folio</button>}</Modal>}
+  </div>
+  {checkoutReceipt && <ReceiptPreview receipt={checkoutReceipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setCheckoutReceipt(null)} />}
+  </>;
 }

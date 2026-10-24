@@ -71,3 +71,43 @@ html.dark .bg-\[\#f8edf2\] { background-color: #45212b !important; }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 
 .focus-ring:focus-visible { outline: 3px solid rgba(64,83,68,.28); outline-offset: 2px; }
+
+@media print {
+  @page { size: auto; margin: 0; }
+  html { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  body.printing-receipt { position: fixed !important; inset: 0 !important; width: 100% !important; height: 100% !important; overflow: hidden !important; }
+  body.printing-receipt #root { position: fixed !important; inset: 0 !important; width: 100% !important; height: 100% !important; overflow: hidden !important; }
+  body * { visibility: hidden !important; }
+  .receipt-print-root, .receipt-print-root * { visibility: visible !important; }
+  .receipt-print-root { position: fixed !important; inset: 0 !important; display: block !important; width: 100% !important; height: 100% !important; overflow: hidden !important; padding: 0 !important; background: #fff !important; }
+  .receipt-print-root > div { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; min-height: 0 !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; }
+  .receipt-print-root .receipt-paper { width: 90mm !important; max-width: 90mm !important; margin: 5mm auto 0 !important; padding: 4mm !important; overflow: visible !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; font-size: 9pt !important; line-height: 1.25 !important; break-inside: avoid !important; page-break-inside: avoid !important; }
+  .receipt-print-root .receipt-paper header { margin-bottom: 3mm !important; }
+  .receipt-print-root .receipt-paper .receipt-logo { height: 10mm !important; margin-bottom: 1mm !important; padding: 1mm !important; }
+  .receipt-print-root .receipt-paper .receipt-item { margin-bottom: 2mm !important; break-inside: avoid !important; page-break-inside: avoid !important; }
+  .receipt-print-root .receipt-paper .mt-7 { margin-top: 3mm !important; }
+  .receipt-print-root .receipt-paper .mt-9 { margin-top: 4mm !important; }
+  .receipt-print-root .receipt-paper .mt-8 { margin-top: 3mm !important; }
+  .receipt-print-root .receipt-paper .mt-6 { margin-top: 2mm !important; }
+  .receipt-print-root .receipt-paper .py-7 { padding-top: 0 !important; padding-bottom: 0 !important; }
+  .receipt-print-root .receipt-paper .py-4 { padding-top: 2mm !important; padding-bottom: 2mm !important; }
+  .receipt-print-root .no-print { display: none !important; }
+}
+
+html.dark .receipt-print-root > div { background-color: #fff7fb !important; color: #1e293b !important; }
+html.dark .receipt-print-root .receipt-paper { background-color: #fffafd !important; color: #1e293b !important; }
+html.dark .receipt-print-root .receipt-paper .bg-white,
+html.dark .receipt-print-root .receipt-paper [class~="bg-white/80"] { background-color: #ffffff !important; }
+html.dark .receipt-print-root .receipt-paper [class*="text-[#"] { color: #b90b6b !important; }
+html.dark .receipt-print-root .receipt-paper .text-slate-900 { color: #0f172a !important; }
+html.dark .receipt-print-root .receipt-paper .text-slate-800 { color: #1e293b !important; }
+html.dark .receipt-print-root .receipt-paper .text-slate-600 { color: #475569 !important; }
+html.dark .receipt-print-root .receipt-paper .text-slate-500 { color: #64748b !important; }
+html.dark .receipt-print-root .receipt-dialog-shell,
+html.dark .receipt-print-root .receipt-ui-surface { background-color: #fff7fb !important; color: #1e293b !important; }
+html.dark .receipt-print-root .receipt-ui-surface .text-slate-500 { color: #64748b !important; }
+html.dark .receipt-print-root .receipt-mode-group { background-color: #ffffff !important; border-color: #f3c8dc !important; }
+html.dark .receipt-print-root .receipt-mode-button { background-color: #ffffff !important; color: #475569 !important; }
+html.dark .receipt-print-root .receipt-mode-button.is-active { background-color: #fce7f3 !important; color: #9d174d !important; }
+html.dark .receipt-print-root .receipt-action-secondary { background-color: #ffffff !important; color: #334155 !important; border-color: #f3c8dc !important; }
+html.dark .receipt-print-root .receipt-action-primary { background-color: #f71591 !important; color: #ffffff !important; }

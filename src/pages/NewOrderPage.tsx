@@ -14,6 +14,8 @@ import type { Category, DiningTable, MenuItem, OrderPaymentMethod } from "../lib
 import { money } from "../lib/types";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
+import { useAuthStore } from "../stores/authStore";
+import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
 import { localizedFoodLabels, splitFoodLabels } from "../lib/foodTranslations";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -34,7 +36,6 @@ const categoryColors = [
   "from-[#ece7d8] to-[#f6f3e9]",
 ];
 type ActiveRoomStay = { id: string; primaryGuestName: string; room: { roomNumber: number } };
-
 export function NewOrderPage() {
   const { tableId = "" } = useParams();
   const navigate = useNavigate();
@@ -48,11 +49,15 @@ export function NewOrderPage() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState<CheckoutReceipt | null>(null);
   const createOrder = useOrderStore((state) => state.createOrder);
   const orders = useOrderStore((state) => state.orders);
   const fetchOrders = useOrderStore((state) => state.fetchOrders);
   const notify = useUiStore((state) => state.notify);
   const language = useUiStore((state) => state.language);
+  const restaurantName = useUiStore((state) => state.restaurantName);
+  const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
+  const currentUser = useAuthStore((state) => state.user);
   useEffect(() => {
     void Promise.all([
       api.get<Category[]>("/categories"),
@@ -151,9 +156,20 @@ export function NewOrderPage() {
     setPlacing(true);
     setError("");
     try {
-      const { data } = await api.post<{ totalAmount: number; tableNumber: number }>(`/tables/${tableId}/checkout`, {
+      const receiptOrders = activeTableOrders.map((order) => ({ ...order, items: order.items.map((line) => ({ ...line })) }));
+      const { data } = await api.post<{ totalAmount: number; tableNumber: number; room: { roomNumber: number } | null; checkedOutAt: string }>(`/tables/${tableId}/checkout`, {
         paymentMethod: checkoutMethod,
         ...(checkoutMethod === "ROOM_CHECKOUT" ? { roomStayId } : {}),
+      });
+      const chargedStay = checkoutMethod === "ROOM_CHECKOUT" ? activeStays.find((stay) => stay.id === roomStayId) : undefined;
+      setReceipt({
+        tableNumber: data.tableNumber,
+        orders: receiptOrders,
+        paymentMethod: checkoutMethod,
+        room: data.room && chargedStay ? { roomNumber: data.room.roomNumber, guestName: chargedStay.primaryGuestName } : null,
+        totalAmount: Number(data.totalAmount),
+        checkedOutAt: data.checkedOutAt,
+        cashierName: currentUser?.name ?? "Restaurant staff",
       });
       notify(checkoutMethod === "CASH" ? `Table ${data.tableNumber} paid in cash and checked out.` : `Table ${data.tableNumber} added to the guest folio.`);
       setRoomStayId("");
@@ -167,6 +183,7 @@ export function NewOrderPage() {
   };
 
   return (
+    <>
     <div className="page-enter">
       <PageHeader
         eyebrow="Floor · Table service"
@@ -422,5 +439,7 @@ export function NewOrderPage() {
         </Panel>
       </div>
     </div>
+    {receipt && <ReceiptPreview receipt={receipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setReceipt(null)} />}
+    </>
   );
 }

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CalendarDays, ClipboardList, RefreshCw } from "lucide-react";
+import { CalendarDays, ClipboardList, Printer, RefreshCw } from "lucide-react";
 import { EmptyState, OrderBadge, PageHeader, Panel } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import { money, orderLocation, type Order, type OrderPage } from "../lib/types";
 import { useUiStore } from "../stores/uiStore";
 import { translateUiText } from "../lib/translations";
+import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
 
 const PAGE_SIZE = 10;
 const localDateBounds = (value: string) => {
@@ -25,6 +26,9 @@ export function OrdersPage() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState<CheckoutReceipt | null>(null);
+  const restaurantName = useUiStore((state) => state.restaurantName);
+  const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const offsetRef = useRef(0);
   const versionRef = useRef(0);
@@ -78,7 +82,8 @@ export function OrdersPage() {
 
   const refresh = () => { const version = ++versionRef.current; loadingRef.current = false; offsetRef.current = 0; setOrders([]); setHasMore(true); void fetchPage(0, version); };
 
-  return <div className="page-enter min-h-full w-full">
+  return <>
+  <div className="page-enter min-h-full w-full">
     <PageHeader eyebrow={t("Service · Order history")} title={t("Order history")} description={t("Browse orders by date, or scroll through the complete order history.")} action={<button type="button" onClick={refresh} disabled={initialLoading} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3.5 text-xs font-bold text-ink disabled:opacity-50"><RefreshCw size={14} className={initialLoading ? "animate-spin" : ""} /> {t("Refresh")}</button>} />
     <Panel className="mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:items-end sm:justify-between">
       <div><label htmlFor="orders-date" className="mb-1.5 flex items-center gap-2 text-xs font-bold text-ink"><CalendarDays size={14} /> {t("Filter by date")}</label><input id="orders-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} className="h-10 rounded-lg border border-line bg-white px-3 text-xs text-ink" /></div>
@@ -90,12 +95,14 @@ export function OrdersPage() {
       {initialLoading ? <div className="space-y-3 p-4 sm:p-5">{Array.from({ length: 6 }, (_, index) => <div key={index} className="h-[88px] animate-pulse rounded-xl bg-canvas" />)}</div> : orders.length ? <div className="divide-y divide-line">
         {orders.map((order) => <article key={order.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:px-5">
           <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-bold">{orderLocation(order)}</h3><span className="text-[10px] text-muted">#{order.id.slice(0, 8)}</span><span className="text-[10px] text-muted">{dateTime(order.createdAt)}</span></div><p className="mt-1 truncate text-xs text-muted">{order.items.map((item) => `${item.quantity}× ${item.menuItem.name}`).join(" · ")}</p><p className="mt-1 text-[10px] text-muted">{t("Served by")} {order.waiter.name}{order.servedBy ? ` · ${t("Collected by")} ${order.servedBy.name}` : ""}</p></div>
-          <div className="flex items-center justify-between gap-3 sm:justify-end"><OrderBadge status={order.status} /><span className="min-w-20 text-right text-sm font-extrabold">{money(order.totalAmount)}</span></div>
+          <div className="flex items-center justify-between gap-3 sm:justify-end"><OrderBadge status={order.status} /><span className="min-w-20 text-right text-sm font-extrabold">{money(order.totalAmount)}</span>{order.table && order.paymentStatus !== "UNPAID" && <button type="button" onClick={() => setReceipt({ tableNumber: order.table!.tableNumber, orders: [order], paymentMethod: order.paymentMethod, room: order.roomStay?.room ? { roomNumber: order.roomStay.room.roomNumber, guestName: order.roomStay.primaryGuestName } : null, totalAmount: Number(order.totalAmount), checkedOutAt: order.paidAt ?? order.updatedAt, cashierName: order.paidBy?.name ?? order.waiter.name })} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line px-2.5 text-[10px] font-bold text-olive hover:bg-canvas"><Printer size={13} /> {t("Receipt")}</button>}</div>
         </article>)}
         {loadingMore && <div className="space-y-3 p-4 sm:p-5">{Array.from({ length: 3 }, (_, index) => <div key={index} className="h-[76px] animate-pulse rounded-xl bg-canvas" />)}</div>}
         <div ref={sentinelRef} className="h-2" />
         {!hasMore && <p className="px-4 py-5 text-center text-xs text-muted">{t("You’ve reached the end of the order history.")}</p>}
       </div> : <EmptyState icon={ClipboardList} title={t("No orders found")} body={date ? t("There are no orders for this date.") : t("Orders will appear here as they are placed.")} />}
     </Panel>
-  </div>;
+  </div>
+  {receipt && <ReceiptPreview receipt={receipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setReceipt(null)} />}
+  </>;
 }
