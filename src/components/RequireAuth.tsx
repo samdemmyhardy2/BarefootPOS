@@ -17,6 +17,6 @@ export function RequireJobPermission({ permission }: { permission: JobPermission
   const user = useAuthStore((state) => state.user);
   const location = useLocation();
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  if (!hasJobPermission(user, permission)) return <Navigate to="/tasks" replace />;
+  if (!hasJobPermission(user, permission)) return <Navigate to="/account" replace />;
   return <Outlet />;
 }

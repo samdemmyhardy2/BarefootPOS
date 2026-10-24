@@ -236,7 +236,7 @@ export function OverviewPage() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold">
-                      Table {table.tableNumber}
+                      {table.tableNumber}
                     </span>
                     <span
                       className={`h-2 w-2 rounded-full ${table.status === "AVAILABLE" ? "bg-emerald-500" : table.status === "OCCUPIED" ? "bg-rose-400" : "bg-amber-400"}`}
@@ -295,7 +295,7 @@ export function OverviewPage() {
                 className="flex items-center gap-3 rounded-xl bg-canvas px-3.5 py-3"
               >
                 <span className="text-xs font-bold">
-                  {order.table ? `T${order.table.tableNumber}` : order.roomStay?.room ? `R${order.roomStay.room.roomNumber}` : "Room"}
+                  {order.table ? order.table.tableNumber : order.roomStay?.room ? `R${order.roomStay.room.roomNumber}` : "Room"}
                 </span>
                 <span className="h-1 w-1 rounded-full bg-[#b4b8ae]" />
                 <span className="min-w-0 flex-1 truncate text-xs text-[#73796f]">

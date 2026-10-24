@@ -5,8 +5,9 @@ export type TableStatus = "AVAILABLE" | "OCCUPIED" | "RESERVED";
 export type TableShape = "ROUND" | "SQUARE" | "RECTANGLE" | "OVAL" | "BOOTH" | "BAR";
 export type RoomSize = "NORMAL" | "FAMILY";
 export type RoomStatus = "AVAILABLE" | "OCCUPIED" | "MAINTENANCE" | "ARCHIVED";
-export type OrderPaymentMethod = "CASH" | "ROOM_CHECKOUT";
+export type OrderPaymentMethod = "CASH" | "CARD" | "ROOM_CHECKOUT";
 export type OrderPaymentStatus = "UNPAID" | "PAID" | "ROOM_FOLIO";
+export type RoomPaymentMethod = "CASH" | "CARD";
 export type RoomChargeKind = "ROOM_FEE" | "WATER" | "FOOD" | "RESTAURANT_ORDER" | "OTHER";
 export type TaskStatus = "TODO" | "IN_PROGRESS" | "COMPLETED";
 
@@ -63,7 +64,7 @@ export interface MenuItem {
 
 export interface DiningTable {
   id: string;
-  tableNumber: number;
+  tableNumber: string;
   capacity: number;
   status: TableStatus;
   shape: TableShape;
@@ -71,6 +72,7 @@ export interface DiningTable {
   positionY: number;
   width: number;
   height: number;
+  assignedRoomStays?: Pick<RoomStay, "id" | "primaryGuestName" | "room" | "occupants">[];
 }
 
 export interface RoomOccupant {
@@ -87,6 +89,16 @@ export interface RoomCharge {
   unitPrice: number | string;
   amount: number | string;
   occurredAt: string;
+  settledAt?: string | null;
+}
+
+export interface RoomPayment {
+  id: string;
+  amount: number | string;
+  method: RoomPaymentMethod;
+  note?: string | null;
+  paidAt: string;
+  receivedBy?: Pick<User, "id" | "name"> | null;
 }
 
 export interface RoomStay {
@@ -96,10 +108,18 @@ export interface RoomStay {
   primaryGuestName: string;
   occupants: RoomOccupant[];
   checkedInAt: string;
+  expectedCheckoutAt?: string | null;
   checkedOutAt?: string | null;
+  guestNotes?: string | null;
+  cashOnly?: boolean;
+  chargeLimit?: number | string | null;
+  payments?: RoomPayment[];
   charges?: RoomCharge[];
   orders?: Order[];
   folioTotal?: number;
+  grossTotal?: number;
+  paidTotal?: number;
+  balanceDue?: number;
 }
 
 export interface Room {
@@ -132,6 +152,7 @@ export interface Order {
   table?: DiningTable | null;
   roomStayId?: string | null;
   roomStay?: RoomStay | null;
+  roomGuestsSnapshot?: { roomNumber: number; guestName: string; guestNames: string[] }[] | null;
   paymentMethod: OrderPaymentMethod;
   paymentStatus: OrderPaymentStatus;
   paidAt?: string | null;
@@ -178,7 +199,7 @@ export const money = (value: number | string | null | undefined) =>
   );
 
 export const orderLocation = (order: Pick<Order, "table" | "roomStay">) =>
-  order.table ? `Table ${order.table.tableNumber}` : order.roomStay?.room ? `Room ${order.roomStay.room.roomNumber}` : "Room service";
+  order.table ? order.table.tableNumber : order.roomStay?.room ? `Room ${order.roomStay.room.roomNumber}` : "Room service";
 
 export const initials = (name: string) =>
   name

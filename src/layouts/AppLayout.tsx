@@ -6,22 +6,19 @@ import {
   useLocation,
 } from "react-router-dom";
 import {
-  Activity,
   BarChart3,
   Bell,
   BedDouble,
   ChefHat,
   ChevronDown,
-  Clock3,
   ClipboardList,
   ChevronsLeft,
   ChevronsRight,
   LayoutDashboard,
+  Languages,
   Menu,
-  Salad,
   Utensils,
   Users,
-  ServerCog,
   X,
 } from "lucide-react";
 import { useAuthStore } from "../stores/authStore";
@@ -30,7 +27,6 @@ import { useUiStore } from "../stores/uiStore";
 import { initials } from "../lib/types";
 import { Toast } from "../components/Toast";
 import { observeUiTranslations } from "../lib/uiLocalization";
-import { translate } from "../lib/translations";
 import { hasJobPermission, type JobPermission } from "../lib/access";
 import { api } from "../lib/api";
 import type { RestaurantIdentity } from "../lib/types";
@@ -41,14 +37,13 @@ const baseNav = [
   { label: "Business overview", to: "/business-overview", icon: BarChart3, permission: "REPORTS" },
   { label: "Tables", to: "/tables", icon: Utensils, permission: "TABLES" },
   { label: "Rooms & folios", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
-  { label: "My attendance", to: "/attendance" as const, icon: Clock3 },
-  { label: "Tasks", to: "/tasks" as const, icon: ClipboardList },
   { label: "Kitchen display", to: "/kitchen", icon: ChefHat, permission: "KITCHEN" },
   { label: "Ready to serve", to: "/ready", icon: Bell, permission: "ORDER_SERVE" },
-  { label: "Menu", to: "/menu", icon: Salad, adminOnly: true },
   { label: "Team", to: "/team", icon: Users, adminOnly: true },
-  { label: "Technical status", to: "/technical", icon: ServerCog, adminOnly: true },
 ];
+
+const languageLabels = { en: "English", my: "မြန်မာ", th: "ไทย" } as const;
+const languageFlags = { en: "🇬🇧", my: "🇲🇲", th: "🇹🇭" } as const;
 
 export function AppLayout() {
   const user = useAuthStore((state) => state.user)!;
@@ -66,7 +61,7 @@ export function AppLayout() {
   const language = useUiStore((state) => state.language);
   const setLanguage = useUiStore((state) => state.setLanguage);
   const location = useLocation();
-  const fullCanvas = location.pathname === "/menu" || location.pathname.startsWith("/tables");
+  const fullCanvas = location.pathname === "/menu" || location.pathname.startsWith("/tables") || location.pathname.startsWith("/rooms");
   const nav = baseNav.filter((item) => user.role === "ADMIN" || (!item.adminOnly && (!item.permission || hasJobPermission(user, item.permission as JobPermission))));
 
   useEffect(() => {
@@ -152,20 +147,25 @@ export function AppLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className={`rounded-2xl bg-[#f2f5ed] p-4 ${sidebarCollapsed ? "md:mx-auto md:bg-transparent md:p-2" : ""}`} title={sidebarCollapsed ? "Live orders" : undefined}>
-          <div className={`mb-2 flex items-center gap-2 text-[11px] font-bold text-olive ${sidebarCollapsed ? "md:mb-0 md:justify-center" : ""}`}>
-            <Activity size={14} /> <span className={sidebarCollapsed ? "md:hidden" : ""}>Live orders</span>
-            <span
-              className={`${sidebarCollapsed ? "ml-auto md:ml-0" : "ml-auto"} h-2 w-2 rounded-full ${liveState === "live" ? "bg-emerald-500" : liveState === "connecting" ? "animate-pulse bg-amber-400" : "bg-rose-400"}`}
-            />
-          </div>
-          <p className={`text-xs leading-5 text-[#747d70] ${sidebarCollapsed ? "md:hidden" : ""}`}>
-            {liveState === "live"
-              ? "Kitchen and floor are in sync."
-              : liveState === "connecting"
-                ? "Connecting to your team…"
-                : "Reconnecting to live updates…"}
+        <div className={`mb-1 ${sidebarCollapsed ? "md:mx-auto" : ""}`} title={sidebarCollapsed ? "Localization" : undefined}>
+          <p className={`mb-2 flex items-center gap-2 px-2 text-[10px] font-bold uppercase tracking-[.14em] text-[#a3a79e] ${sidebarCollapsed ? "md:hidden" : ""}`}>
+            <Languages size={13} /> Localization
           </p>
+          <label className={`relative flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3 text-xs font-semibold text-ink hover:bg-canvas ${sidebarCollapsed ? "md:h-9 md:w-10 md:justify-center md:px-0" : ""}`}>
+            <span className="text-base leading-none" aria-hidden="true">{languageFlags[language]}</span>
+            <span className={`min-w-0 flex-1 ${sidebarCollapsed ? "md:hidden" : ""}`}>{languageLabels[language]}</span>
+            <ChevronDown size={13} className={`shrink-0 text-muted ${sidebarCollapsed ? "md:hidden" : ""}`} />
+            <select
+              value={language}
+              onChange={(event) => setLanguage(event.target.value as "en" | "my" | "th")}
+              aria-label="Localization"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            >
+              <option value="en">🇬🇧 English</option>
+              <option value="my">🇲🇲 မြန်မာ</option>
+              <option value="th">🇹🇭 ไทย</option>
+            </select>
+          </label>
         </div>
         <Link to="/account" title={sidebarCollapsed ? user.name : undefined} className={`mt-4 flex items-center gap-3 rounded-2xl border border-line p-3 hover:bg-canvas ${sidebarCollapsed ? "md:justify-center md:px-1" : ""}`}>
           <div className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-full bg-citrus text-xs font-bold text-olive">
@@ -181,52 +181,14 @@ export function AppLayout() {
         </Link>
       </aside>
       <div className={`min-h-screen ${sidebarCollapsed ? "md:pl-[72px]" : "md:pl-[220px]"}`}>
-        <header className="sticky top-0 z-20 flex h-[72px] items-center justify-between border-b border-line/80 bg-white/85 px-4 backdrop-blur-xl sm:px-7 lg:px-9">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="grid h-9 w-9 place-items-center rounded-xl border border-line bg-white text-ink md:hidden"
-              aria-label="Open navigation"
-            >
-              <Menu size={18} />
-            </button>
-            <div>
-              <p className="text-[11px] font-medium text-muted">
-                Good to see you, {user.name.split(" ")[0]}
-              </p>
-              <p className="mt-0.5 text-xs font-bold">
-                {new Intl.DateTimeFormat("en-US", {
-                  weekday: "long",
-                  month: "short",
-                  day: "numeric",
-                }).format(new Date())}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div
-              className={`hidden items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-semibold sm:flex ${liveState === "live" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${liveState === "live" ? "bg-emerald-500" : "animate-pulse bg-amber-400"}`}
-              />
-              {liveState === "live" ? "Live sync on" : "Connecting"}
-            </div>
-            <label className="flex h-9 items-center gap-1.5 rounded-xl border border-line bg-white px-2 text-xs font-semibold text-ink" aria-label={translate(language, "language")}>
-              <span className="sr-only">{translate(language, "language")}</span>
-              <select value={language} onChange={(event) => setLanguage(event.target.value as "en" | "my" | "th")} className="max-w-[100px] cursor-pointer bg-transparent text-xs font-semibold outline-none sm:max-w-none" aria-label={translate(language, "language")}>
-                <option value="en">English</option><option value="my">မြန်မာ</option><option value="th">ไทย</option>
-              </select>
-            </label>
-            <Link to="/account" className="flex items-center gap-2 rounded-full border border-line bg-white p-1 pr-2.5">
-              <span className="grid h-7 w-7 place-items-center overflow-hidden rounded-full bg-[#ecefe7] text-[10px] font-bold text-olive">
-                {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="h-full w-full object-cover" /> : initials(user.name)}
-              </span>
-              <ChevronDown size={14} className="text-muted" />
-            </Link>
-          </div>
-        </header>
-        <main className={`mx-auto min-h-[calc(100vh-70px)] w-full ${location.pathname === "/tables" ? "p-4 sm:p-5" : "p-4 sm:p-7 lg:px-9 lg:py-8"} ${fullCanvas ? "max-w-none" : "max-w-[1500px]"}`}>
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="fixed left-4 top-4 z-30 grid h-10 w-10 place-items-center rounded-xl border border-line bg-white text-ink shadow-card md:hidden"
+          aria-label="Open navigation"
+        >
+          <Menu size={18} />
+        </button>
+        <main className={`mx-auto min-h-screen w-full ${location.pathname === "/tables" ? "pt-16 px-4 pb-4 sm:px-5 md:pt-5" : location.pathname.startsWith("/rooms") ? "pt-16 px-4 pb-4 sm:px-5 md:pt-5" : "pt-16 px-4 pb-4 sm:px-7 lg:px-9 md:pt-8"} ${fullCanvas ? "max-w-none" : "max-w-[1500px]"}`}>
           <Outlet />
         </main>
       </div>

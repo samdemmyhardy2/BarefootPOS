@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   Plus,
   Search,
   ShoppingBag,
@@ -18,6 +19,7 @@ import { useAuthStore } from "../stores/authStore";
 import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
 import { localizedFoodLabels, splitFoodLabels } from "../lib/foodTranslations";
 import { useNavigate, useParams } from "react-router-dom";
+import { translateUiText } from "../lib/translations";
 
 type CartLine = {
   id: string;
@@ -35,7 +37,7 @@ const categoryColors = [
   "from-[#e0edf0] to-[#f1f7f7]",
   "from-[#ece7d8] to-[#f6f3e9]",
 ];
-type ActiveRoomStay = { id: string; primaryGuestName: string; room: { roomNumber: number } };
+type ActiveRoomStay = { id: string; primaryGuestName: string; occupants: { id: string; name: string }[]; room: { roomNumber: number } };
 export function NewOrderPage() {
   const { tableId = "" } = useParams();
   const navigate = useNavigate();
@@ -44,6 +46,10 @@ export function NewOrderPage() {
   const [activeStays, setActiveStays] = useState<ActiveRoomStay[]>([]);
   const [checkoutMethod, setCheckoutMethod] = useState<OrderPaymentMethod>("CASH");
   const [roomStayId, setRoomStayId] = useState("");
+  const [assignedRoomStayIds, setAssignedRoomStayIds] = useState<string[]>([]);
+  const [savingRoomAssignments, setSavingRoomAssignments] = useState(false);
+  const [roomPickerOpen, setRoomPickerOpen] = useState(false);
+  const roomPickerRef = useRef<HTMLDivElement>(null);
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -55,9 +61,23 @@ export function NewOrderPage() {
   const fetchOrders = useOrderStore((state) => state.fetchOrders);
   const notify = useUiStore((state) => state.notify);
   const language = useUiStore((state) => state.language);
+  const t = (text: string) => translateUiText(language, text);
   const restaurantName = useUiStore((state) => state.restaurantName);
   const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
   const currentUser = useAuthStore((state) => state.user);
+  useEffect(() => {
+    if (!roomPickerOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !roomPickerRef.current?.contains(event.target)) setRoomPickerOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setRoomPickerOpen(false); };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [roomPickerOpen]);
   useEffect(() => {
     void Promise.all([
       api.get<Category[]>("/categories"),
@@ -71,6 +91,11 @@ export function NewOrderPage() {
     void fetchOrders().catch(() => undefined);
   }, [fetchOrders]);
   const selectedTable = tables.find((table) => table.id === tableId);
+  useEffect(() => {
+    const assignedIds = selectedTable?.assignedRoomStays?.map((stay) => stay.id) ?? [];
+    setAssignedRoomStayIds(assignedIds);
+    setRoomStayId(assignedIds.length === 1 ? assignedIds[0] : "");
+  }, [tableId, selectedTable?.assignedRoomStays]);
   const activeTableOrders = orders
     .filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status))
     .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
@@ -157,21 +182,30 @@ export function NewOrderPage() {
     setError("");
     try {
       const receiptOrders = activeTableOrders.map((order) => ({ ...order, items: order.items.map((line) => ({ ...line })) }));
-      const { data } = await api.post<{ totalAmount: number; tableNumber: number; room: { roomNumber: number } | null; checkedOutAt: string }>(`/tables/${tableId}/checkout`, {
+      const { data } = await api.post<{ totalAmount: number; tableNumber: string; room: { roomNumber: number } | null; checkedOutAt: string }>(`/tables/${tableId}/checkout`, {
         paymentMethod: checkoutMethod,
         ...(checkoutMethod === "ROOM_CHECKOUT" ? { roomStayId } : {}),
       });
       const chargedStay = checkoutMethod === "ROOM_CHECKOUT" ? activeStays.find((stay) => stay.id === roomStayId) : undefined;
+      const receiptStays = checkoutMethod === "ROOM_CHECKOUT"
+        ? (chargedStay ? [chargedStay] : [])
+        : (selectedTable?.assignedRoomStays ?? []);
+      const receiptRooms = receiptStays.flatMap((stay) => stay.room ? [{
+        roomNumber: stay.room.roomNumber,
+        guestName: stay.primaryGuestName,
+        guestNames: [...new Set([stay.primaryGuestName, ...stay.occupants.map((occupant) => occupant.name)])],
+      }] : []);
       setReceipt({
         tableNumber: data.tableNumber,
         orders: receiptOrders,
         paymentMethod: checkoutMethod,
-        room: data.room && chargedStay ? { roomNumber: data.room.roomNumber, guestName: chargedStay.primaryGuestName } : null,
+        room: null,
+        rooms: receiptRooms,
         totalAmount: Number(data.totalAmount),
         checkedOutAt: data.checkedOutAt,
         cashierName: currentUser?.name ?? "Restaurant staff",
       });
-      notify(checkoutMethod === "CASH" ? `Table ${data.tableNumber} paid in cash and checked out.` : `Table ${data.tableNumber} added to the guest folio.`);
+      notify(checkoutMethod === "CASH" ? `${data.tableNumber} paid in cash and checked out.` : `${data.tableNumber} added to the guest folio.`);
       setRoomStayId("");
       setCheckoutMethod("CASH");
       await Promise.all([fetchOrders(), api.get<DiningTable[]>("/tables").then((result) => setTables(result.data))]);
@@ -182,12 +216,29 @@ export function NewOrderPage() {
     }
   };
 
+  const assignRoomsToTable = async (nextRoomStayIds: string[]) => {
+    if (!selectedTable) return;
+    setError("");
+    setSavingRoomAssignments(true);
+    try {
+      const { data } = await api.patch<DiningTable>(`/tables/${tableId}/room-assignment`, {
+        roomStayIds: nextRoomStayIds,
+      });
+      setTables((current) => current.map((table) => table.id === data.id ? data : table));
+      notify(t(nextRoomStayIds.length ? "Guest rooms assigned to this table." : "Guest room assignments cleared."));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSavingRoomAssignments(false);
+    }
+  };
+
   return (
     <>
     <div className="page-enter">
       <PageHeader
         eyebrow="Floor · Table service"
-        title={selectedTable ? `Table ${selectedTable.tableNumber}` : "Table not found"}
+        title={selectedTable ? selectedTable.tableNumber : "Table not found"}
         description="Review this table’s open tickets, add items, send them to the kitchen, then settle the bill."
         action={
           <button onClick={() => navigate("/tables")} className="rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold">Back to tables</button>
@@ -324,8 +375,28 @@ export function NewOrderPage() {
           <div className="p-5">
             {selectedTable && <section className="mb-4 rounded-2xl border border-line bg-[#fbfcf9] p-4" aria-label={`Table ${selectedTable.tableNumber} open orders`}>
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
-                <div><h3 className="text-sm font-bold">Table {selectedTable.tableNumber} · Open tab</h3><p className="mt-1 text-[10px] text-muted">{selectedTable.capacity} seats · {activeTableOrders.length} active tickets</p></div>
+                <div><h3 className="text-sm font-bold">{selectedTable.tableNumber} · Open tab</h3><p className="mt-1 text-[10px] text-muted">{selectedTable.capacity} seats · {activeTableOrders.length} active tickets</p></div>
                 <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-olive">{selectedTable.status}</span>
+              </div>
+              <div className="mt-3" ref={roomPickerRef}>
+                <label className="mb-2 block text-xs font-semibold text-ink">{t("Assign guest rooms to this table")}</label>
+                {activeStays.length ? <div className="relative">
+                  <button type="button" aria-haspopup="listbox" aria-expanded={roomPickerOpen} disabled={savingRoomAssignments} onClick={() => setRoomPickerOpen((open) => !open)} className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-line bg-white px-3 py-2 text-left text-xs font-semibold text-ink hover:bg-canvas disabled:opacity-60">
+                    <span className="min-w-0 truncate">{assignedRoomStayIds.length ? `${assignedRoomStayIds.length} ${t("guest rooms assigned")}` : t("Select guest rooms")}</span>
+                    <ChevronDown size={15} className={`shrink-0 text-muted transition-transform ${roomPickerOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {roomPickerOpen && <div role="listbox" aria-multiselectable="true" aria-label={t("Assign guest rooms to this table")} className="absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
+                    {activeStays.map((stay) => <label key={stay.id} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-ink hover:bg-canvas">
+                      <input type="checkbox" checked={assignedRoomStayIds.includes(stay.id)} disabled={savingRoomAssignments} onChange={(event) => {
+                        const next = event.target.checked ? [...assignedRoomStayIds, stay.id] : assignedRoomStayIds.filter((id) => id !== stay.id);
+                        void assignRoomsToTable(next);
+                      }} />
+                      <span className="truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
+                      {assignedRoomStayIds.includes(stay.id) && <Check size={13} className="ml-auto shrink-0 text-olive" />}
+                    </label>)}
+                  </div>}
+                </div> : <p className="rounded-xl border border-line bg-white px-3 py-2.5 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
+                {assignedRoomStayIds.length > 0 && <p className="mt-2 text-[10px] text-muted">{t("Choose the guest room to receive the table bill at folio checkout.")}</p>}
               </div>
               {activeTableOrders.length ? <div className="mt-3 space-y-3">
                 {activeTableOrders.map((order) => <article key={order.id} className="rounded-xl border border-line bg-white p-3">
@@ -340,10 +411,11 @@ export function NewOrderPage() {
                 <SelectField label="Checkout payment" value={checkoutMethod} onChange={(event) => setCheckoutMethod(event.target.value as OrderPaymentMethod)}>
                   <option value="CASH">Pay with cash</option><option value="ROOM_CHECKOUT">Add to room folio</option>
                 </SelectField>
-                {checkoutMethod === "ROOM_CHECKOUT" && <SelectField label="Guest room to charge" value={roomStayId} onChange={(event) => setRoomStayId(event.target.value)}>
-                  <option value="">Choose the guest who ordered</option>
-                  {activeStays.map((stay) => <option key={stay.id} value={stay.id}>Room {stay.room?.roomNumber} · {stay.primaryGuestName}</option>)}
+                {checkoutMethod === "ROOM_CHECKOUT" && assignedRoomStayIds.length > 1 && <SelectField label={t("Guest room to charge") } value={roomStayId} onChange={(event) => setRoomStayId(event.target.value)}>
+                  <option value="">{t("Choose an assigned guest room")}</option>
+                  {activeStays.filter((stay) => assignedRoomStayIds.includes(stay.id)).map((stay) => <option key={stay.id} value={stay.id}>Room {stay.room?.roomNumber} · {stay.primaryGuestName}</option>)}
                 </SelectField>}
+                {checkoutMethod === "ROOM_CHECKOUT" && !roomStayId && <p className="mt-2 text-[10px] font-semibold text-rose-700">{t("Assign a guest room above before charging the room folio.")}</p>}
                 {!allOrdersServed && <p className="mt-2 text-[10px] text-muted">All active tickets must be marked served before checkout.</p>}
                 <button onClick={() => void checkoutTable()} disabled={placing || !allOrdersServed || (checkoutMethod === "ROOM_CHECKOUT" && !roomStayId)} className="mt-3 h-11 w-full rounded-xl border border-olive bg-white text-xs font-bold text-olive hover:bg-[#edf2e9] disabled:cursor-not-allowed disabled:opacity-40">{placing ? "Checking out…" : checkoutMethod === "CASH" ? "Record cash payment & close table" : "Charge room folio & close table"}</button>
               </div>}

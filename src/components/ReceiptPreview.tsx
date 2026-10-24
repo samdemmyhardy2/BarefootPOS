@@ -3,13 +3,14 @@ import { Printer, X } from "lucide-react";
 import { money, type Order, type OrderPaymentMethod, type RoomCharge } from "../lib/types";
 
 export type CheckoutReceipt = {
-  tableNumber?: number;
+  tableNumber?: string;
   locationLabel?: string;
   orders: Order[];
   folioCharges?: RoomCharge[];
   paymentMethod: OrderPaymentMethod;
   receiptKind?: "DINING" | "STAY_CHECKOUT";
-  room: { roomNumber: number; guestName: string } | null;
+  room: { roomNumber: number; guestName: string; guestNames?: string[] } | null;
+  rooms?: { roomNumber: number; guestName: string; guestNames?: string[] }[];
   totalAmount: number;
   checkedOutAt: string;
   cashierName: string;
@@ -44,6 +45,7 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
   const paperRef = useRef<HTMLDivElement>(null);
   const isFolio = receipt.paymentMethod === "ROOM_CHECKOUT";
   const showSignature = isFolio && signatureCopy;
+  const receiptRooms = receipt.rooms?.length ? receipt.rooms : receipt.room ? [receipt.room] : [];
   useEffect(() => {
     const clearPrintMode = () => {
       document.body.classList.remove("printing-receipt");
@@ -81,7 +83,7 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
           {restaurantLogoUrl && <img src={restaurantLogoUrl} alt="" className="receipt-logo mx-auto mb-3 h-14 max-w-36 rounded-xl border border-pink-100 bg-white p-1.5 object-contain shadow-sm" />}
           <p className="text-[9px] font-bold uppercase tracking-[.22em] text-[#d80c7c]">{showSignature ? "Room charge authorization" : isFolio ? "Restaurant receipt · Guest copy" : "Restaurant receipt"}</p>
           <h1 className="mt-1 font-display text-xl font-extrabold tracking-tight text-slate-900">{restaurantName}</h1>
-          <div className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full bg-pink-100 px-3 py-1 text-[11px] font-bold text-[#b90b6b]"><span className="h-1.5 w-1.5 rounded-full bg-[#f71591]" />{receipt.locationLabel ?? `Table ${receipt.tableNumber}`}</div>
+          <div className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full bg-pink-100 px-3 py-1 text-[11px] font-bold text-[#b90b6b]"><span className="h-1.5 w-1.5 rounded-full bg-[#f71591]" />{receipt.locationLabel ?? receipt.tableNumber}</div>
           <p className="mt-2 text-[10px] text-slate-500">{new Date(receipt.checkedOutAt).toLocaleString()}</p>
         </header>
         <div className="relative border-y border-dashed border-pink-300 py-3">
@@ -90,7 +92,7 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
             return <div key={charge.id} className="receipt-item mb-3 last:mb-0">
               <div className="flex justify-between gap-3 py-1"><span className="font-semibold">{order ? `Restaurant order #${order.id.slice(0, 8)}` : charge.description}</span><span className="shrink-0 font-semibold tabular-nums">{money(charge.amount)}</span></div>
               {order ? <>
-                <p className="ml-3 text-[10px] text-slate-500">Table {order.table?.tableNumber ?? "—"} · Served by {order.servedBy?.name ?? "—"}</p>
+                <p className="ml-3 text-[10px] text-slate-500">{order.table?.tableNumber ?? "—"} · Served by {order.servedBy?.name ?? "—"}</p>
                 {order.items.map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="ml-3 flex justify-between gap-3 py-0.5 text-[10px]"><span>{line.quantity}× {line.menuItem.name}{line.addExtras ? ` · ${line.addExtras}` : ""}{line.removeIngredients ? ` · No ${line.removeIngredients}` : ""}</span><span className="shrink-0 tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>)}
               </> : <p className="ml-3 text-[10px] text-slate-500">{charge.quantity} × {money(charge.unitPrice)}</p>}
             </div>;
@@ -105,8 +107,8 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
         </div>
         <div className="relative space-y-2 border-b border-dashed border-pink-300 py-4">
           <div className="flex justify-between gap-2 rounded-xl bg-pink-100/80 px-3 py-2.5 font-display text-sm font-extrabold text-slate-900"><span>Total</span><span className="tabular-nums">{money(receipt.totalAmount)}</span></div>
-          <div className="flex justify-between gap-2 px-1 pt-1"><span className="text-slate-500">Payment</span><span className="font-bold text-[#b90b6b]">{receipt.paymentMethod === "CASH" ? "Cash · Paid" : "Room folio"}</span></div>
-          {receipt.room && <><div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Room</span><span className="font-semibold">{receipt.room.roomNumber}</span></div><div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Guest</span><span className="font-semibold">{receipt.room.guestName}</span></div></>}
+          <div className="flex justify-between gap-2 px-1 pt-1"><span className="text-slate-500">Payment</span><span className="font-bold text-[#b90b6b]">{receipt.paymentMethod === "CASH" ? "Cash · Paid" : receipt.paymentMethod === "CARD" ? "Card · Paid" : "Room folio"}</span></div>
+          {receiptRooms.map((room) => <div key={room.roomNumber} className="space-y-1"><div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Room</span><span className="font-semibold">{room.roomNumber}</span></div><div className="flex justify-between gap-2 px-1"><span className="shrink-0 text-slate-500">Guests</span><span className="text-right font-semibold">{(room.guestNames?.length ? room.guestNames : [room.guestName]).join(", ")}</span></div></div>)}
           <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Served by</span><span className="text-right font-semibold">{[...new Set(receipt.orders.map((order) => order.servedBy?.name).filter(Boolean))].join(", ") || "—"}</span></div>
           <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Processed by</span><span className="text-right font-semibold">{receipt.cashierName}</span></div>
         </div>

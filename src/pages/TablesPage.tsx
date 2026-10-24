@@ -27,6 +27,26 @@ function TableShapeSurface({ shape }: { shape: TableShape }) {
   return null;
 }
 
+function TableStatusButton({ status, label, onClick, disabled = false }: { status: TableStatus; label: string; onClick: () => void; disabled?: boolean }) {
+  const tone = status === "AVAILABLE"
+    ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+    : status === "OCCUPIED"
+      ? "bg-rose-50 text-rose-700 hover:bg-rose-100"
+      : "bg-amber-50 text-amber-700 hover:bg-amber-100";
+  const dot = status === "AVAILABLE" ? "bg-emerald-500" : status === "OCCUPIED" ? "bg-rose-500" : "bg-amber-500";
+  return <button
+    type="button"
+    onClick={(event) => { event.stopPropagation(); onClick(); }}
+    disabled={disabled}
+    title={disabled ? label : `${label} · tap to change`}
+    aria-label={disabled ? label : `${label} · tap to change status`}
+    className={`pointer-events-auto inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[9px] font-extrabold uppercase tracking-wide transition-colors disabled:cursor-default ${tone}`}
+  >
+    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+    <span className="truncate">{label}</span>
+  </button>;
+}
+
 export function TablesPage() {
   const navigate = useNavigate();
   const [tables, setTables] = useState<DiningTable[]>([]);
@@ -38,7 +58,6 @@ export function TablesPage() {
   const [number, setNumber] = useState("");
   const [capacity, setCapacity] = useState("2");
   const [newShape, setNewShape] = useState<TableShape>("ROUND");
-  const [newStatus, setNewStatus] = useState<TableStatus>("AVAILABLE");
   const [draggedId, setDraggedId] = useState("");
   const [mobileZoom, setMobileZoom] = useState(0.55);
   const floorRef = useRef<HTMLDivElement>(null);
@@ -98,11 +117,33 @@ export function TablesPage() {
   }, [load, fetchOrders]);
 
   const displayTables = useMemo(() => editing ? draft : tables, [editing, draft, tables]);
-  const tableBills = (tableId: string) => orders.filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status)).length;
+  const activeOrdersForTable = (tableId: string) => orders.filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status));
+  const tableBills = (tableId: string) => activeOrdersForTable(tableId).length;
+  const tableOrderSummary = (tableId: string) => {
+    const activeOrders = activeOrdersForTable(tableId);
+    const table = tables.find((item) => item.id === tableId);
+    const itemCounts = new Map<string, number>();
+    for (const order of activeOrders) {
+      for (const item of order.items) itemCounts.set(item.menuItem.name, (itemCounts.get(item.menuItem.name) ?? 0) + item.quantity);
+    }
+    return {
+      items: [...itemCounts].map(([name, quantity]) => `${quantity}× ${name}`),
+      rooms: [...new Set([
+        ...(activeOrders.flatMap((order) => order.roomStay?.room ? [String(order.roomStay.room.roomNumber)] : [])),
+        ...(table?.assignedRoomStays?.flatMap((stay) => stay.room ? [String(stay.room.roomNumber)] : []) ?? []),
+      ])],
+    };
+  };
+  const tableSurface = (status: TableStatus) => status === "AVAILABLE"
+    ? "border-emerald-200 bg-white"
+    : status === "OCCUPIED"
+      ? "border-rose-200 bg-white"
+      : "border-amber-200 bg-white";
+  const tableStatus = (table: DiningTable): TableStatus => tableBills(table.id) > 0 ? "OCCUPIED" : table.status;
   const counts = {
-    AVAILABLE: tables.filter((table) => table.status === "AVAILABLE").length,
-    OCCUPIED: tables.filter((table) => table.status === "OCCUPIED").length,
-    RESERVED: tables.filter((table) => table.status === "RESERVED").length,
+    AVAILABLE: tables.filter((table) => tableStatus(table) === "AVAILABLE").length,
+    OCCUPIED: tables.filter((table) => tableStatus(table) === "OCCUPIED").length,
+    RESERVED: tables.filter((table) => tableStatus(table) === "RESERVED").length,
   };
   const rowCount = Math.max(8, ...displayTables.map((table) => table.positionY + table.height + 2));
 
@@ -119,11 +160,17 @@ export function TablesPage() {
     } catch (cause) { setError(errorMessage(cause)); }
   };
 
-  const updateStatus = async (table: DiningTable, status: TableStatus) => {
+  const updateStatus = async (table: DiningTable) => {
+    if (tableBills(table.id) > 0) {
+      setTables((current) => current.map((item) => item.id === table.id ? { ...item, status: "OCCUPIED" } : item));
+      return;
+    }
+    const currentStatus = table.status;
+    const nextStatus = statuses[(statuses.indexOf(currentStatus) + 1) % statuses.length];
     try {
-      const { data } = await api.patch<DiningTable>(`/tables/${table.id}/status`, { status });
+      const { data } = await api.patch<DiningTable>(`/tables/${table.id}/status`, { status: nextStatus });
       setTables((current) => current.map((item) => item.id === table.id ? data : item));
-      notify(`Table ${table.tableNumber} is ${status.toLowerCase()}.`);
+      notify(`${table.tableNumber} is ${nextStatus.toLowerCase()}.`);
     } catch (cause) { setError(errorMessage(cause)); }
   };
 
@@ -188,14 +235,47 @@ export function TablesPage() {
     event.preventDefault();
     setError("");
     try {
-      const payload = { tableNumber: Number(number), capacity: Number(capacity), shape: newShape, status: newStatus };
+      const tableLabel = number.trim();
+      if (!tableLabel) throw new Error('Enter a table name or number.');
+      if (tableLabel.length > 40) throw new Error('Table labels can be up to 40 characters.');
+      if (/[\u0000-\u001f\u007f]/u.test(tableLabel)) throw new Error('Table labels cannot contain control characters.');
+      const payload: { tableNumber: string; capacity: number; shape: TableShape; positionX?: number; positionY?: number } = { tableNumber: tableLabel, capacity: Number(capacity), shape: newShape };
       if (editingTable) {
         const { data } = await api.patch<DiningTable>(`/tables/${editingTable.id}`, payload);
         setTables((current) => current.map((table) => table.id === data.id ? { ...table, ...data } : table));
         setDraft((current) => current.map((table) => table.id === data.id ? { ...table, ...data, positionX: table.positionX, positionY: table.positionY, width: table.width, height: table.height } : table));
         notify("Table updated.");
       } else {
-        await api.post("/tables", payload);
+        if (editing) {
+          const width = newShape === "BAR" ? 4 : 2;
+          const height = 2;
+          const occupied = new Set<string>();
+          for (const table of [...tables, ...draft]) {
+            for (let x = table.positionX; x < table.positionX + table.width; x += 1) {
+              for (let y = table.positionY; y < table.positionY + table.height; y += 1) {
+                occupied.add(`${x}:${y}`);
+              }
+            }
+          }
+          let freePosition: { x: number; y: number } | undefined;
+          for (let y = 0; freePosition === undefined && y < rowCount + 100; y += 1) {
+            for (let x = 0; x <= 7; x += 1) {
+              const fits = Array.from({ length: width }, (_, offsetX) =>
+                Array.from({ length: height }, (_, offsetY) => !occupied.has(`${x + offsetX}:${y + offsetY}`)),
+              ).flat().every(Boolean);
+              if (fits) {
+                freePosition = { x, y };
+                break;
+              }
+            }
+          }
+          if (!freePosition) throw new Error("No open floor space remains for another table.");
+          payload.positionX = freePosition.x;
+          payload.positionY = freePosition.y;
+        }
+        const { data } = await api.post<DiningTable>("/tables", { ...payload, status: "AVAILABLE" });
+        setTables((current) => [...current, data]);
+        setDraft((current) => editing ? [...current, data] : current);
         notify("Table added to the floor.");
       }
       setModal(false);
@@ -203,8 +283,8 @@ export function TablesPage() {
       setNumber("");
       setCapacity("2");
       setNewShape("ROUND");
-      setNewStatus("AVAILABLE");
-      await load();
+      if (editing) setLoading(false);
+      else await load();
     } catch (cause) { setError(errorMessage(cause)); }
   };
 
@@ -213,7 +293,6 @@ export function TablesPage() {
     setNumber("");
     setCapacity("2");
     setNewShape("ROUND");
-    setNewStatus("AVAILABLE");
     setError("");
     setModal(true);
   };
@@ -223,7 +302,6 @@ export function TablesPage() {
     setNumber(String(table.tableNumber));
     setCapacity(String(table.capacity));
     setNewShape(table.shape);
-    setNewStatus(table.status);
     setError("");
     setModal(true);
   };
@@ -269,22 +347,27 @@ export function TablesPage() {
       {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : displayTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
         {displayTables.map((table) => {
           const bills = tableBills(table.id);
+          const status = tableStatus(table);
           const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
-          const statusClass = table.status === "AVAILABLE" ? "bg-emerald-50 text-emerald-700" : table.status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700";
-          return <article key={table.id} onPointerMove={movePointerEdit} onPointerUp={endPointerEdit} onPointerCancel={endPointerEdit} onClick={(event) => { if ((event.target as HTMLElement).closest("select,button")) return; openTable(table.id); }} aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(table.status.toLowerCase())}, ${bills} ${t("Bills")}`} className={`relative flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border bg-white p-5 shadow-[0_5px_16px_rgba(74,35,56,.06)] ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91]" : "cursor-pointer border-[#f2dce7]"} ${draggedId === table.id ? "opacity-70" : ""}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
+          const statusSurface = tableSurface(status);
+          const orderSummary = tableOrderSummary(table.id);
+          return <article key={table.id} onPointerMove={movePointerEdit} onPointerUp={endPointerEdit} onPointerCancel={endPointerEdit} onClick={(event) => { if ((event.target as HTMLElement).closest("select,button")) return; openTable(table.id); }} aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`} className={`relative flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border p-5 shadow-[0_5px_16px_rgba(74,35,56,.06)] ${statusSurface} ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91]" : "cursor-pointer"} ${draggedId === table.id ? "opacity-70" : ""}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
             {editing && <button type="button" aria-label={`Move table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "move")} className="absolute inset-0 z-10 cursor-move touch-none" />}
             <div className={`relative z-20 flex min-w-0 items-center gap-1 ${table.shape === "ROUND" || table.shape === "OVAL" ? "flex-col justify-center" : "justify-between"}`}>
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-[#f5e7ee] bg-white text-[#f71591]"><Utensils size={15} /></span>
-              <select value={table.status} aria-label={`${t("Status")} ${t("Table")} ${table.tableNumber}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onChange={(event) => { event.stopPropagation(); void updateStatus(table, event.target.value as TableStatus); }} className={`min-w-0 max-w-[150px] rounded-full border-0 px-2 py-1.5 text-sm font-bold uppercase outline-none ${statusClass}`}><option value="AVAILABLE">{t("Available")}</option><option value="OCCUPIED">{t("Occupied")}</option><option value="RESERVED">{t("Reserved")}</option></select>
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/90 text-[#e41483] shadow-sm dark:border-slate-600"><Utensils size={15} /></span>
+              <TableStatusButton status={status} label={t(status.toLowerCase())} disabled={bills > 0} onClick={() => void updateStatus(table)} />
             </div>
-            <div className={`pointer-events-none relative z-[5] min-w-0 ${table.shape === "ROUND" || table.shape === "OVAL" ? "w-full text-center" : ""}`}><p className="truncate text-base font-extrabold leading-5 text-[#30242c]">{table.shape === "BAR" ? t("Bar") : `${t("Table")} ${table.tableNumber}`}</p><p className="mt-1 truncate text-xs leading-4 text-[#8c7c85]">{table.capacity} {t("seats")} · {bills} {t(bills === 1 ? "Bill" : "Bills")}</p></div>
+            <div className={`pointer-events-none relative z-[5] min-w-0 ${table.shape === "ROUND" || table.shape === "OVAL" ? "w-full text-center" : ""}`}><p className="truncate text-base font-extrabold leading-5 text-ink">{table.tableNumber}</p><p className="mt-1 truncate text-xs leading-4 text-muted">{table.capacity} {t("seats")} · {bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
+              {orderSummary.items.length > 0 && <div className="mt-1 space-y-0.5"><p className="truncate text-[9px] font-bold text-ink">{t("Current order")}</p>{orderSummary.items.slice(0, 2).map((item) => <p key={item} className="truncate text-[9px] leading-3 text-muted">{item}</p>)}{orderSummary.items.length > 2 && <p className="truncate text-[9px] text-muted">+{orderSummary.items.length - 2} {t("more items")}</p>}</div>}
+              {orderSummary.rooms.length > 0 && <p className="mt-1 truncate text-[9px] font-semibold text-[#a20b62] dark:text-pink-300">{t("Guest rooms")}: {orderSummary.rooms.join(", ")}</p>}
+            </div>
             {editing && <select value={table.shape} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => updateShape(table.id, event.target.value as TableShape)} aria-label={`${t("Shape for table")} ${table.tableNumber}`} className="relative z-20 w-full rounded-md border border-[#f3d9e7] bg-white px-1 py-0.5 text-[8px] font-bold text-[#5c4652] outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar")}</option></select>}
             {editing && admin && <div className="relative z-20 flex gap-1" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => openEdit(table)} className="flex flex-1 items-center justify-center gap-1 rounded-md border border-[#f3d9e7] bg-white px-1 py-1 text-[8px] font-bold text-[#d80c7c]"><Pencil size={10} /> {t("Edit")}</button><button type="button" onClick={() => void deleteTable(table)} className="flex items-center justify-center gap-1 rounded-md border border-rose-100 bg-white px-2 py-1 text-[8px] font-bold text-rose-600"><Trash2 size={10} /> {t("Delete")}</button></div>}
             {editing && <button type="button" aria-label={`Resize table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "resize")} className="absolute -bottom-2 -right-2 z-30 grid h-7 w-7 cursor-nwse-resize touch-none place-items-center rounded-full border-2 border-white bg-[#f71591] text-xs leading-none text-white shadow-md">↘</button>}
           </article>;
         })}
       </div></div></div> : <div className="relative flex min-h-[calc(100vh-260px)] flex-col items-center justify-center p-6 text-center" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "26px 26px" }}><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#ffedf6] text-[#e91488]"><Armchair size={24} /></span><h2 className="mt-4 font-display text-lg font-extrabold text-[#30242c]">Your floor is ready for a layout</h2><p className="mt-1 max-w-sm text-sm text-[#8c7c85]">Add your first table to start arranging your restaurant floor.</p></div>}
-      {admin && !editing && <button onClick={openCreate} className="flex min-h-12 w-full items-center justify-center gap-2 border-t border-[#f1dce7] bg-white text-sm font-bold text-[#d80c7c]"><Plus size={18} /> {t("Add table")}</button>}
+      {admin && editing && <button onClick={openCreate} className="flex min-h-12 w-full items-center justify-center gap-2 border-t border-[#f1dce7] bg-white text-sm font-bold text-[#d80c7c]"><Plus size={18} /> {t("Add table")}</button>}
     </div>
 
     <div className="hidden w-full overflow-x-auto overscroll-x-contain rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block">
@@ -293,8 +376,10 @@ export function TablesPage() {
         {loading ? <div className="relative grid grid-cols-4 gap-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : displayTables.length ? <div ref={floorRef} data-floor-grid data-mobile-floor="false" className="relative grid min-h-[calc(100vh-245px)] w-full touch-pan-y grid-cols-12 auto-rows-[72px] gap-3" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)` }}>
           {displayTables.map((table) => {
             const bills = tableBills(table.id);
-            const statusTone = table.status === "AVAILABLE" ? "available" : table.status === "OCCUPIED" ? "occupied" : "reserved";
+            const status = tableStatus(table);
             const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
+            const statusSurface = tableSurface(status);
+            const orderSummary = tableOrderSummary(table.id);
             return <article
               key={table.id}
               onPointerMove={movePointerEdit}
@@ -304,25 +389,23 @@ export function TablesPage() {
               onKeyDown={(event) => openTableKey(event, table.id)}
               role={editing ? undefined : "button"}
               tabIndex={editing ? undefined : 0}
-              aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(table.status.toLowerCase())}, ${bills} ${t("Bills")}`}
-              className={`group relative col-span-2 row-span-2 place-self-stretch flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border bg-white p-3 text-left shadow-[0_5px_16px_rgba(74,35,56,.06)] transition duration-150 ${shapeClass} ${["ROUND", "OVAL"].includes(table.shape) && !editing ? "items-center text-center" : ""} ${editing ? "border-2 border-dashed border-[#fa0b91] hover:shadow-[0_8px_22px_rgba(236,17,135,.12)]" : "cursor-pointer border-[#f2dce7] hover:-translate-y-0.5 hover:border-[#e8b6d0] hover:shadow-[0_10px_25px_rgba(74,35,56,.10)]"} ${draggedId === table.id ? "opacity-70" : ""}`}
+              aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`}
+              className={`group relative col-span-2 row-span-2 place-self-stretch flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border p-3 text-left shadow-[0_5px_16px_rgba(74,35,56,.06)] transition duration-150 ${statusSurface} ${shapeClass} ${["ROUND", "OVAL"].includes(table.shape) && !editing ? "items-center text-center" : ""} ${editing ? "border-2 border-dashed border-[#fa0b91] hover:shadow-[0_8px_22px_rgba(236,17,135,.12)]" : "cursor-pointer hover:-translate-y-0.5 hover:shadow-[0_10px_25px_rgba(74,35,56,.10)]"} ${draggedId === table.id ? "opacity-70" : ""}`}
               style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}
             >
               {editing && <button type="button" aria-label={`Move table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "move")} className="absolute inset-0 z-[5] cursor-move touch-none" title="Drag to move" />}
               <TableShapeSurface shape={table.shape} />
               <div className={`pointer-events-none relative z-10 flex w-full items-center justify-between gap-1 ${table.shape === "ROUND" || table.shape === "OVAL" ? "flex-col justify-center" : ""}`}>
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-[#f5e7ee] bg-white text-[#f71591] shadow-sm"><Utensils size={15} /></span>
-                {editing ? <span className="grid h-7 w-7 place-items-center rounded-full bg-[#fff0f7] text-[#d80c7c]"><Move size={13} /></span> : table.status === "OCCUPIED" ? <span className="rounded-full bg-rose-50 px-2 py-1 text-[8px] font-bold uppercase tracking-wider text-rose-700">{t("Occupied")}</span> : <select
-                  aria-label={`Set table ${table.tableNumber} status`}
-                  value={table.status}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => { event.stopPropagation(); void updateStatus(table, event.target.value as TableStatus); }}
-                  className={`pointer-events-auto rounded-full border-0 px-2 py-1 text-[8px] font-bold uppercase tracking-wider outline-none ${statusTone === "available" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}
-                ><option value="AVAILABLE">{t("Available")}</option><option value="RESERVED">{t("Reserved")}</option></select>}
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/90 text-[#e41483] shadow-sm dark:border-slate-600"><Utensils size={15} /></span>
+                {editing
+                  ? <span className="grid h-7 w-7 place-items-center rounded-full bg-white/80 text-[#d80c7c]"><Move size={13} /></span>
+                  : <TableStatusButton status={status} label={t(status.toLowerCase())} disabled={bills > 0} onClick={() => void updateStatus(table)} />}
               </div>
               <div className={`pointer-events-none relative z-10 min-w-0 ${["ROUND", "OVAL"].includes(table.shape) ? "mt-1 w-full text-center" : "mt-auto"}`}>
-                <p className="truncate font-display text-[15px] font-extrabold leading-5 tracking-tight text-[#30242c]">{table.shape === "BAR" ? t("Bar") : `${t("Table")} ${table.tableNumber}`}</p>
-                <p className={`mt-1 flex items-center gap-1 text-[10px] font-medium text-[#8c7c85] ${["ROUND", "OVAL"].includes(table.shape) ? "justify-center" : ""}`}><Users size={11} /> {table.capacity} {t("seats")} <span className="text-[#d7c5cf]">·</span> {bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
+                <p className="truncate font-display text-[15px] font-extrabold leading-5 tracking-tight text-ink">{table.tableNumber}</p>
+                <p className={`mt-1 flex items-center gap-1 text-[10px] font-medium text-muted ${["ROUND", "OVAL"].includes(table.shape) ? "justify-center" : ""}`}><Users size={11} /> {table.capacity} {t("seats")} <span className="text-muted">·</span> {bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
+                {orderSummary.items.length > 0 && <div className="mt-1 w-full text-left"><p className="truncate text-[9px] font-bold text-ink">{t("Current order")}</p>{orderSummary.items.slice(0, 2).map((item) => <p key={item} className="truncate text-[9px] leading-3 text-muted">{item}</p>)}{orderSummary.items.length > 2 && <p className="truncate text-[9px] text-muted">+{orderSummary.items.length - 2} {t("more items")}</p>}</div>}
+                {orderSummary.rooms.length > 0 && <p className="mt-1 w-full truncate text-left text-[9px] font-semibold text-[#a20b62] dark:text-pink-300">{t("Guest rooms")}: {orderSummary.rooms.join(", ")}</p>}
               </div>
               {editing && <div className="pointer-events-auto relative z-10 mt-2 flex items-center justify-between gap-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
                 <select value={table.shape} onChange={(event) => updateShape(table.id, event.target.value as TableShape)} aria-label={`${t("Shape for table")} ${table.tableNumber}`} className="min-w-0 flex-1 rounded-lg border border-[#f3d9e7] bg-white px-2 py-1.5 text-[9px] font-bold text-[#5c4652] outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar")}</option></select>
@@ -333,16 +416,14 @@ export function TablesPage() {
             </article>;
           })}
         </div> : <div className="relative flex min-h-[480px] flex-col items-center justify-center text-center"><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#ffedf6] text-[#e91488]"><Armchair size={24} /></span><h2 className="mt-4 font-display text-lg font-extrabold text-[#30242c]">Your floor is ready for a layout</h2><p className="mt-1 max-w-sm text-sm text-[#8c7c85]">Add your first table to start arranging your restaurant floor.</p></div>}
-        {admin && !editing && <button onClick={openCreate} className="relative z-10 mx-auto mt-7 flex h-12 w-12 items-center justify-center rounded-full bg-[#f71591] text-white shadow-[0_8px_20px_rgba(247,21,145,.24)] transition hover:scale-105 hover:bg-[#dc0d7e]" aria-label={t("Add table")}><Plus size={22} /></button>}
-        {admin && !editing && tables.length > 0 && <p className="relative z-10 mt-1 text-center text-[10px] font-semibold text-[#8c7c85]">{t("Add table")}</p>}
+        {admin && editing && <button onClick={openCreate} className="relative z-10 mx-auto mt-7 flex h-12 items-center justify-center gap-2 rounded-full bg-[#f71591] px-5 text-white shadow-[0_8px_20px_rgba(247,21,145,.24)] transition hover:scale-105 hover:bg-[#dc0d7e]" aria-label={t("Add table")}><Plus size={20} /><span className="text-xs font-bold">{t("Add table")}</span></button>}
       </div>
     </div>
 
     {modal && <Modal title={t(editingTable ? "Edit table" : "Add a table")} onClose={() => { setModal(false); setEditingTable(null); }}><form onSubmit={(event) => void create(event)} className="space-y-4">
-      <Field label={t("Table number")} type="number" min="1" required value={number} onChange={(event) => setNumber(event.target.value)} placeholder="e.g. 12" />
+      <Field label={t("Table name or number")} type="text" maxLength={40} required value={number} onChange={(event) => setNumber(event.target.value)} placeholder="e.g. 12, Patio A, VIP-1" autoComplete="off" />
       <Field label={t("Seat capacity")} type="number" min="1" required value={capacity} onChange={(event) => setCapacity(event.target.value)} />
       <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">{t("Table shape")}</span><select value={newShape} onChange={(event) => setNewShape(event.target.value as TableShape)} className="focus-ring w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm text-ink outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar counter")}</option></select></label>
-      <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">{t("Status")}</span><select value={newStatus} onChange={(event) => setNewStatus(event.target.value as TableStatus)} className="focus-ring w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm text-ink outline-none"><option value="AVAILABLE">{t("Available")}</option><option value="OCCUPIED">{t("Occupied")}</option><option value="RESERVED">{t("Reserved")}</option></select></label>
       <button className="mt-2 h-11 w-full rounded-xl bg-[#f71591] text-sm font-bold text-white hover:bg-[#dc0d7e]">{t(editingTable ? "Save changes" : "Add to floor")}</button>
     </form></Modal>}
   </div>;
