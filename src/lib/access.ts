@@ -1,12 +1,13 @@
 import type { User } from "./types";
 
-export type JobPermission = "ORDER_CREATE" | "ORDER_VIEW" | "ORDER_SERVE" | "KITCHEN" | "TABLES" | "ROOM_VIEW" | "ROOM_MANAGE" | "ROOM_FOLIO" | "TASK_ASSIGN" | "REPORTS";
+export type JobPermission = "ORDER_CREATE" | "ORDER_VIEW" | "ORDER_SERVE" | "KITCHEN" | "BAR" | "TABLES" | "ROOM_VIEW" | "ROOM_MANAGE" | "ROOM_FOLIO" | "TASK_ASSIGN" | "REPORTS";
 
 const access: Record<JobPermission, string[]> = {
   ORDER_CREATE: ["waiter", "guestwelcomer", "bungalowmanager"],
-  ORDER_VIEW: ["waiter", "chef"],
+  ORDER_VIEW: ["waiter", "chef", "bartender", "barista", "barman"],
   ORDER_SERVE: ["waiter"],
   KITCHEN: ["chef"],
+  BAR: ["bartender", "barista", "barman"],
   TABLES: ["waiter"],
   ROOM_VIEW: ["bungalowmanager", "guestwelcomer", "chiefaccountant", "cashier"],
   ROOM_MANAGE: ["bungalowmanager", "guestwelcomer"],

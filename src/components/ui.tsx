@@ -117,11 +117,13 @@ export function Modal({
   onClose,
   children,
   wide = false,
+  extraWide = false,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  extraWide?: boolean;
 }) {
   const modal = (
     <div
@@ -131,7 +133,7 @@ export function Modal({
       }}
     >
       <div
-        className={`max-h-[min(90vh,900px)] w-full overflow-y-auto rounded-[24px] border border-line bg-white p-5 shadow-float sm:p-7 ${wide ? "max-w-2xl" : "max-w-lg"
+        className={`max-h-[min(94vh,1000px)] w-full overflow-y-auto rounded-[24px] border border-line bg-white p-5 shadow-float sm:p-7 ${extraWide ? "max-w-5xl" : wide ? "max-w-2xl" : "max-w-lg"
           }`}
       >
         <div className="mb-6 flex items-center justify-between">

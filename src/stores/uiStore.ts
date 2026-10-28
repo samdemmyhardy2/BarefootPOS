@@ -7,6 +7,7 @@ interface UiState {
   sidebarCollapsed: boolean;
   theme: "light" | "dark";
   language: "en" | "my" | "th";
+  modifierPickerMode: "list" | "step";
   restaurantName: string;
   restaurantLogoUrl: string | null;
   toast: { message: string; tone: "success" | "error" } | null;
@@ -16,6 +17,7 @@ interface UiState {
   clearToast: () => void;
   setTheme: (theme: "light" | "dark") => void;
   setLanguage: (language: "en" | "my" | "th") => void;
+  setModifierPickerMode: (mode: "list" | "step") => void;
   setRestaurantIdentity: (name: string, logoUrl: string | null) => void;
 }
 
@@ -24,6 +26,7 @@ export const useUiStore = create<UiState>()(persist((set) => ({
     sidebarCollapsed: false,
     theme: "light",
     language: "en",
+    modifierPickerMode: "list",
     restaurantName: "Table & Thyme",
     restaurantLogoUrl: null,
     toast: null,
@@ -39,7 +42,8 @@ export const useUiStore = create<UiState>()(persist((set) => ({
       set({ theme });
     },
     setLanguage: (language) => set({ language }),
+    setModifierPickerMode: (modifierPickerMode) => set({ modifierPickerMode }),
     setRestaurantIdentity: (restaurantName, restaurantLogoUrl) => set({ restaurantName, restaurantLogoUrl }),
-  }), { name: "restaurant-ui-preferences", partialize: ({ theme, language, sidebarCollapsed, restaurantName, restaurantLogoUrl }) => ({ theme, language, sidebarCollapsed, restaurantName, restaurantLogoUrl }) as UiState, onRehydrateStorage: () => (state) => {
+  }), { name: "restaurant-ui-preferences", partialize: ({ theme, language, modifierPickerMode, sidebarCollapsed, restaurantName, restaurantLogoUrl }) => ({ theme, language, modifierPickerMode, sidebarCollapsed, restaurantName, restaurantLogoUrl }) as UiState, onRehydrateStorage: () => (state) => {
     document.documentElement.classList.toggle("dark", state?.theme === "dark");
   } }));

@@ -22,6 +22,7 @@ interface OrderState {
       removeIngredients?: string;
       addExtras?: string;
       selectedAllergens?: string[];
+      modifierSelections?: { groupId: string; optionIds: string[] }[];
       specialNotes?: string;
     }>,
   ) => Promise<Order>;

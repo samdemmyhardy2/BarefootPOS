@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { BedDouble, Plus, ReceiptText, Trash2, Users, X, Pencil, Search, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { Field, Modal, Panel, SelectField } from "../components/ui";
@@ -23,6 +23,15 @@ const stayDateRange = (from: string, to?: string | null) => {
     : `${day(start)} ${month(start)} to ${day(end)} ${month(end)}`;
 };
 const roomFacilities = ["Air conditioning", "Wi-Fi", "Family-size bed", "Mini fridge", "Television", "Hot water", "Private bathroom", "Balcony", "In-room safe", "Hair dryer"];
+const HISTORY_PAGE_SIZE = 10;
+
+type PageResponse<T> = {
+  data: T[];
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
 
 export function RoomsPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -33,6 +42,14 @@ export function RoomsPage() {
   const [focusedRoomId, setFocusedRoomId] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<RoomStay | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
+  const [stayHistoryValue, setStayHistory] = useState<RoomStay[]>([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [selectedStayId, setSelectedStayId] = useState<string | null>(null);
+  const historyScrollRef = useRef<HTMLDivElement | null>(null);
+  const historyRequestRef = useRef(0);
   const [checkoutReceipt, setCheckoutReceipt] = useState<CheckoutReceipt | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
   const [size, setSize] = useState<RoomSize>("NORMAL");
@@ -172,7 +189,59 @@ export function RoomsPage() {
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   };
+  const loadStayHistory = useCallback(async (roomId: string, page = 1, append = false) => {
+    const requestId = ++historyRequestRef.current;
+    if (append) setHistoryLoadingMore(true);
+    else setHistoryLoading(true);
+    try {
+      const response = await api.get<PageResponse<RoomStay> | RoomStay[]>(
+        `/rooms/${roomId}/stays?page=${page}&limit=${HISTORY_PAGE_SIZE}`,
+      );
+      if (requestId !== historyRequestRef.current) return;
+
+      // Support the expected paginated response and the legacy array response.
+      // This prevents a response-shape mismatch from setting stayHistoryValue to undefined.
+      const payload = response?.data;
+      const pageRows: RoomStay[] = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.data)
+          ? payload.data
+          : [];
+      const responsePage = !Array.isArray(payload) && Number.isFinite(payload?.page)
+        ? payload.page
+        : page;
+      const responseTotalPages = !Array.isArray(payload) && Number.isFinite(payload?.totalPages)
+        ? payload.totalPages
+        : 1;
+
+      setStayHistory((current) => {
+        const safeCurrent = Array.isArray(current) ? current : [];
+        if (!append) return pageRows;
+        const known = new Set(safeCurrent.map((stay) => stay.id));
+        return [...safeCurrent, ...pageRows.filter((stay) => !known.has(stay.id))];
+      });
+      setHistoryPage(responsePage);
+      setHistoryTotalPages(responseTotalPages);
+      return pageRows;
+    } catch (e) {
+      if (requestId === historyRequestRef.current) setError(errorMessage(e));
+      return undefined;
+    } finally {
+      if (requestId === historyRequestRef.current) {
+        setHistoryLoading(false);
+        setHistoryLoadingMore(false);
+      }
+    }
+  }, []);
+
+  const loadMoreStayHistory = async () => {
+    if (!focusedRoomId || historyLoading || historyLoadingMore || historyPage >= historyTotalPages) return;
+    await loadStayHistory(focusedRoomId, historyPage + 1, true);
+  };
+
   const openTimeline = async (stayId: string) => {
+    setSelectedStayId(stayId);
+    setTimeline(null);
     setTimelineLoading(true);
     setError("");
 
@@ -190,6 +259,12 @@ export function RoomsPage() {
   };
   const focusRoom = (room: Room) => {
     setFocusedRoomId(room.id);
+    setTimeline(null);
+    setStayHistory([]);
+    setSelectedStayId(null);
+    setHistoryPage(1);
+    setHistoryTotalPages(1);
+    setError("");
   };
   const checkOut = async () => {
     if (!timeline) return;
@@ -246,27 +321,43 @@ export function RoomsPage() {
     return matchesFilter && (!query || String(room.roomNumber).toLowerCase().includes(query) || stay?.primaryGuestName.toLowerCase().includes(query) || stay?.occupants.some((guest) => guest.name.toLowerCase().includes(query)));
   });
   const focusedRoom = rooms.find((room) => room.id === focusedRoomId) ?? null;
-  const focusedStay = focusedRoom?.stays?.[0] ?? null; // Keep focusedStay for active stay logic
+  // Defensive guard for stale React Fast Refresh state or unexpected runtime values.
+  const safeStayHistory = Array.isArray(stayHistoryValue) ? stayHistoryValue : [];
+  const focusedStay = safeStayHistory.find((stay) => stay.id === selectedStayId)
+    ?? focusedRoom?.stays?.[0]
+    ?? null;
+  const isFocusedStayActive = !!focusedStay && !focusedStay.checkedOutAt;
+
   useEffect(() => {
-    if (!focusedRoom) {
+    if (!focusedRoomId) {
+      historyRequestRef.current += 1;
+      setStayHistory([]);
+      setSelectedStayId(null);
       setTimeline(null);
+      setHistoryPage(1);
+      setHistoryTotalPages(1);
       return;
     }
 
-    // Find the most recent stay for the focused room (active or completed)
-    // Assuming focusedRoom.stays is sorted such that the most recent stay is at index 0
-    const mostRecentStay = focusedRoom.stays?.[0];
-
-    if (mostRecentStay) {
-      // Only load if the timeline is not already showing this stay
-      if (timeline?.id !== mostRecentStay.id) {
-        void openTimeline(mostRecentStay.id);
+    let cancelled = false;
+    const roomId = focusedRoomId;
+    setStayHistory([]);
+    setSelectedStayId(null);
+    setTimeline(null);
+    setHistoryPage(1);
+    setHistoryTotalPages(1);
+    void (async () => {
+      const rows = await loadStayHistory(roomId, 1, false);
+      if (cancelled || !rows) return;
+      const defaultStay = rows.find((stay) => !stay.checkedOutAt) ?? rows[0] ?? null;
+      if (defaultStay) void openTimeline(defaultStay.id);
+      else {
+        setSelectedStayId(null);
+        setTimeline(null);
       }
-    } else {
-      // If no stays at all for this room, clear the timeline
-      setTimeline(null);
-    }
-  }, [focusedRoom, timeline, openTimeline]); // Depend on focusedRoom, timeline, and openTimeline
+    })();
+    return () => { cancelled = true; };
+  }, [focusedRoomId, loadStayHistory]);
   return <>
     <div className="page-enter min-h-full w-full">
       <div className="mb-5 flex items-center justify-between gap-4"><div><p className="mb-1 text-[9px] font-bold uppercase tracking-[.2em] text-[#ec1593]">Front desk · Guest stays</p><h1 className="font-display text-2xl font-extrabold tracking-tight text-ink">Rooms</h1><p className="mt-1 text-[11px] text-muted">Who’s staying, what’s on their tab, and who arrives or leaves today.</p></div><div className="flex shrink-0 items-center gap-2">{isAdmin && <button type="button" onClick={() => setEditMode((value) => !value)} title={editMode ? "Done editing rooms" : "Edit rooms"} className={`grid h-9 w-9 place-items-center rounded-xl border ${editMode ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-line bg-white text-muted hover:text-ink"}`}><Pencil size={14} /></button>}{canManageStays && <button type="button" disabled={!rooms.some((room) => room.status === "AVAILABLE")} onClick={() => { const available = rooms.find((room) => room.status === "AVAILABLE"); if (available) openCheckIn(available); }} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#f01898] px-3.5 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"><Plus size={13} /> Check in</button>}</div></div>
@@ -298,18 +389,43 @@ export function RoomsPage() {
       })}</div> : <Panel className="p-10 text-center"><p className="text-sm font-semibold">No rooms match this view.</p><p className="mt-1 text-xs text-muted">Change the filter or search term to see other rooms.</p></Panel> : <Panel className="p-12 text-center"><BedDouble className="mx-auto text-muted" /><p className="mt-3 font-semibold">No rooms configured</p><p className="mt-1 text-sm text-muted">Add a room to begin managing guest stays and folios.</p></Panel>}
 
       {focusedRoom && createPortal(<div className="fixed inset-0 z-40 flex h-[100dvh] w-screen justify-end bg-[#291923]/35 backdrop-blur-[1px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setFocusedRoomId(null); }}><aside className="flex h-full w-full flex-col overflow-hidden border-l border-line bg-white shadow-float md:w-[min(70vw,960px)] lg:w-[min(60vw,1040px)]"><div className="flex items-center justify-between border-b border-[#f4e6ed] px-6 py-4"><div><div className="flex items-center gap-2"><h2 className="font-display text-2xl font-extrabold">Room {focusedRoom.roomNumber}</h2><span className={`rounded-full px-2 py-1 text-xs font-bold ${focusedRoom.status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}>{focusedRoom.status === "OCCUPIED" ? "Occupied" : "Vacant"}</span></div><p className="mt-0.5 text-[13px] text-muted">{focusedRoom.facilities?.[0] ? translateFacility(language, focusedRoom.facilities[0]) : focusedRoom.size === "FAMILY" ? t("familyRoom") : t("normalRoom")}</p></div><button type="button" onClick={() => setFocusedRoomId(null)} aria-label="Close room details" className="grid h-10 w-10 place-items-center rounded-full text-muted hover:bg-canvas"><X size={20} /></button></div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{timeline ? <>
-          <section className="border-b border-[#f3e7ed] pb-3"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-full bg-pink-100 text-[13px] font-bold text-[#bd0d72]">{focusedStay.primaryGuestName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{[...new Set([focusedStay.primaryGuestName, ...focusedStay.occupants.map((person) => person.name)])].join(" and ")}</p><p className="mt-0.5 text-[13px] text-muted">{focusedStay.occupants.length} guests · {new Date(focusedStay.checkedInAt).toLocaleDateString()}{focusedStay.expectedCheckoutAt ? ` to ${new Date(focusedStay.expectedCheckoutAt).toLocaleDateString()}` : ""}{focusedStay.expectedCheckoutAt ? ` · ${Math.max(1, Math.ceil((new Date(focusedStay.expectedCheckoutAt).getTime() - new Date(focusedStay.checkedInAt).getTime()) / 86400000))} nights` : ""}</p></div><button onClick={() => openEditStay(focusedRoom)} className="shrink-0 text-[13px] font-bold text-[#d20b79]">Edit stay →</button></div>{focusedStay.guestNotes && <div className="mt-3 rounded-lg bg-amber-50 px-2.5 py-3 text-[13px] font-medium text-amber-900"><span className="font-bold">Guest note:</span> {focusedStay.guestNotes}</div>}
-            <div className="mt-3 flex items-center gap-5"><button type="button" disabled={busy} onClick={() => void toggleCashOnly()} className="flex items-center gap-2 text-left"><span className={`relative h-6 w-11 rounded-full transition ${timeline.cashOnly ? "bg-[#f01898]" : "bg-[#e4d8df]"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${timeline.cashOnly ? "left-6" : "left-1"}`} /></span><span><strong className="block text-[13px]">Cash only</strong><small className="block text-xs text-muted">{timeline.cashOnly ? "Can’t add to the tab" : "Room charges allowed"}</small></span></button><div><strong className="block text-[13px]">Charge limit</strong><small className="block text-xs text-muted">{timeline.chargeLimit == null ? "No limit" : money(timeline.chargeLimit)}</small></div></div></section>
-          {(() => {
-            const charges = timeline.charges ?? []; const openCharges = charges.filter((charge) => !charge.settledAt); const settledCharges = charges.filter((charge) => !!charge.settledAt); const orders = timeline.orders ?? []; const orderFor = (charge: typeof charges[number]) => charge.orderId ? orders.find((order) => order.id === charge.orderId) : undefined; const openTotal = Number(timeline.balanceDue ?? timeline.folioTotal ?? 0); const paidOrders = orders.filter((order) => order.paymentStatus === "PAID"); return <>
-              <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-2 flex items-center justify-between"><div><h3 className="text-sm font-extrabold">Open tab</h3><p className="mt-0.5 text-xs text-muted">{openCharges.length ? `${openCharges.length} bill${openCharges.length === 1 ? "" : "s"} · Tap a bill to review` : "Nothing on the tab"}</p></div><strong className="text-sm">{money(openTotal)}</strong></div>{openCharges.length ? <div className="divide-y divide-[#f4e7ed]">{openCharges.map((charge) => { const order = orderFor(charge); return <div key={charge.id} className="py-3"><div className="flex items-start justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">Bill #{(order?.id ?? charge.id).slice(0, 6).toUpperCase()} · {order ? `Restaurant · Table ${order.table?.tableNumber ?? "—"}` : charge.kind === "ROOM_FEE" ? "Room fee" : charge.description}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order?.createdAt ?? charge.occurredAt)}{order ? ` · Signed by ${focusedStay.primaryGuestName}` : ""}</p></div></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">On tab</span><strong className="text-[13px]">{money(charge.amount)}</strong></div></div>{order?.items.map((line) => <div key={line.id} className="ml-6 mt-1 flex justify-between gap-2 text-xs text-muted"><span>{line.quantity} × {line.menuItem.name}{line.modifierSelections?.length ? <small className="block pl-4 text-[10px] text-muted">{line.modifierSelections.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ")}</small> : null}</span><span>{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>)}{!order && <div className="ml-6 mt-1 flex justify-between text-xs text-muted"><span>{charge.quantity} × {money(charge.unitPrice)}</span></div>}</div>; })}</div> : <p className="pb-1 text-xs text-muted">No room or restaurant charges are waiting for payment.</p>}</section>
-              <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-1 flex items-center justify-between"><h3 className="text-sm font-extrabold">History</h3><span className="text-[11px] text-muted">Paid bills stay here for receipts</span></div>{paidOrders.length || settledCharges.length ? <div className="divide-y divide-[#f4e7ed]">{paidOrders.map((order) => <div key={order.id} className="py-2"><div className="flex items-center justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">Bill #{order.id.slice(0, 6).toUpperCase()} · {order.table ? `Restaurant · Table ${order.table.tableNumber}` : "Room service"}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order.paidAt ?? order.updatedAt)} · {order.paymentMethod === "CARD" ? "Paid by card" : "Paid at the table"}</p></div></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">Paid · {order.paymentMethod === "CARD" ? "Card" : "Cash"}</span><strong className="text-[13px]">{money(order.totalAmount)}</strong></div></div>{order.items?.map((line) => <div key={line.id} className="ml-6 mt-1 flex justify-between gap-3 text-xs text-muted"><span>{line.quantity} × {line.menuItem.name}{line.modifierSelections?.length ? <small className="block pl-4 text-[10px] text-muted">{line.modifierSelections.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ")}</small> : null}</span><span>{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>)}</div>)}{settledCharges.filter((charge) => !charge.orderId).map((charge) => <div key={charge.id} className="flex justify-between gap-2 py-3 text-[13px]"><span>{charge.description}</span><span>{money(charge.amount)}</span></div>)}</div> : <p className="py-3 text-xs text-muted">No settled bills yet.</p>}</section>
-              <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><h3 className="text-sm font-extrabold">Deposits and payments</h3>{timeline.payments?.length ? timeline.payments.map((payment) => <div key={payment.id} className="mt-2 flex items-start gap-2 border-t border-[#f4e7ed] pt-2"><ReceiptText size={15} className="mt-0.5 shrink-0 text-[#e91488]" /><div className="min-w-0 flex-1"><p className="text-[13px] font-bold">{payment.method === "CARD" ? "Tab settled by card" : "Tab settled by cash"}</p><p className="mt-0.5 text-[11px] text-muted">{dateTime(payment.paidAt)}{payment.receivedBy?.name ? ` · Taken by ${payment.receivedBy.name}` : ""}</p></div><strong className="shrink-0 text-[13px]">{money(payment.amount)}</strong></div>) : <p className="mt-1 text-xs text-muted">No payments recorded</p>}<div className="mt-2 flex justify-between border-t border-[#f4e7ed] pt-2 text-base font-extrabold"><span>Balance</span><span>{money(openTotal)}</span></div></section>
-            </>;
-          })()}
-        </> : <div className="py-12 text-center text-xs text-muted">Loading room folio…</div>}</div>
-        <div className="flex flex-wrap items-center gap-2 border-t border-[#f3e7ed] bg-white px-5 py-2.5"><button disabled={!canManageFolios || timeline?.cashOnly} onClick={() => { setSelectedRoom(focusedRoom); setChargeKind("OTHER"); setChargeDescription(""); setChargeQuantity("1"); setChargePrice(""); setModal("charge"); }} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Add charge</button><button disabled={!timeline} onClick={() => timeline && setCheckoutReceipt(createFolioReceipt(timeline))} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">View receipt</button><span className="flex-1" />{focusedStay && canManageFolios && <><button disabled={busy} onClick={() => void checkOut()} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Check out</button>{Number(timeline?.folioTotal ?? 0) > 0 && <button disabled={busy} onClick={() => { setSelectedRoom(focusedRoom); setRoomPaymentMethod("CASH"); setModal("settle"); }} className="h-12 rounded-lg bg-[#f01898] px-5 text-sm font-bold text-white disabled:opacity-40">Settle tab · {money(timeline?.folioTotal ?? 0)}</button>}</>}</div></aside></div>, document.body)}
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <section className="mb-4 rounded-xl border border-[#f2e6ec] p-3.5">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div><h3 className="text-sm font-extrabold">Stay history</h3><p className="mt-0.5 text-xs text-muted">Select a current or past stay to view its folio.</p></div>
+              <span className="text-[11px] text-muted">{safeStayHistory.length}{historyLoading ? " · Loading…" : ""}</span>
+            </div>
+            {historyLoading && safeStayHistory.length === 0 ? <div className="space-y-2">{Array.from({ length: 3 }, (_, i) => <div key={i} className="h-14 animate-pulse rounded-lg bg-[#fbf1f6]" />)}</div>
+              : safeStayHistory.length ? <div ref={historyScrollRef} onScroll={(event) => {
+                const el = event.currentTarget;
+                if (el.scrollHeight - el.scrollTop - el.clientHeight < 64) void loadMoreStayHistory();
+              }} className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                {safeStayHistory.map((stay) => {
+                  const active = !stay.checkedOutAt;
+                  const selected = stay.id === selectedStayId;
+                  const guestNames = [...new Set([stay.primaryGuestName, ...(stay.occupants ?? []).map((person) => person.name)])].join(" and ");
+                  return <button key={stay.id} type="button" onClick={() => void openTimeline(stay.id)} className={`w-full rounded-lg border p-3 text-left transition ${selected ? "border-[#f01898] bg-pink-50" : "border-[#f1e3ea] hover:bg-[#fff9fc]"}`}>
+                    <div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-[13px] font-bold">{guestNames || "Guest stay"}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{active ? "Current" : "Checked out"}</span></div>
+                    <p className="mt-1 text-[11px] text-muted">{dateTime(stay.checkedInAt)}{stay.checkedOutAt ? ` · Checked out ${dateTime(stay.checkedOutAt)}` : stay.expectedCheckoutAt ? ` · Expected ${dateTime(stay.expectedCheckoutAt)}` : ""}</p>
+                  </button>;
+                })}
+                {historyLoadingMore && <div className="space-y-2 py-1" aria-label="Loading more stays">{Array.from({ length: 2 }, (_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-[#fbf1f6]" />)}</div>}
+                {!historyLoadingMore && historyPage < historyTotalPages && <button type="button" onClick={() => void loadMoreStayHistory()} className="w-full rounded-lg py-2 text-xs font-bold text-[#d20b79] hover:bg-pink-50">Load more stays</button>}
+                {historyPage >= historyTotalPages && <p className="py-1 text-center text-[10px] text-muted">All stays loaded</p>}
+              </div> : <p className="py-3 text-xs text-muted">No stays recorded for this room yet.</p>}
+          </section>
+          {focusedStay && timeline ? <>
+            <section className="border-b border-[#f3e7ed] pb-3"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-full bg-pink-100 text-[13px] font-bold text-[#bd0d72]">{focusedStay.primaryGuestName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{[...new Set([focusedStay.primaryGuestName, ...focusedStay.occupants.map((person) => person.name)])].join(" and ")}</p><p className="mt-0.5 text-[13px] text-muted">{focusedStay.occupants.length} guests · {new Date(focusedStay.checkedInAt).toLocaleDateString()}{focusedStay.expectedCheckoutAt ? ` to ${new Date(focusedStay.expectedCheckoutAt).toLocaleDateString()}` : ""}{focusedStay.expectedCheckoutAt ? ` · ${Math.max(1, Math.ceil((new Date(focusedStay.expectedCheckoutAt).getTime() - new Date(focusedStay.checkedInAt).getTime()) / 86400000))} nights` : ""}</p></div>{isFocusedStayActive && <button onClick={() => openEditStay(focusedRoom)} className="shrink-0 text-[13px] font-bold text-[#d20b79]">Edit stay →</button>}</div>{focusedStay.guestNotes && <div className="mt-3 rounded-lg bg-amber-50 px-2.5 py-3 text-[13px] font-medium text-amber-900"><span className="font-bold">Guest note:</span> {focusedStay.guestNotes}</div>}
+              <div className="mt-3 flex items-center gap-5"><button type="button" disabled={busy} onClick={() => void toggleCashOnly()} className="flex items-center gap-2 text-left"><span className={`relative h-6 w-11 rounded-full transition ${timeline.cashOnly ? "bg-[#f01898]" : "bg-[#e4d8df]"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${timeline.cashOnly ? "left-6" : "left-1"}`} /></span><span><strong className="block text-[13px]">Cash only</strong><small className="block text-xs text-muted">{timeline.cashOnly ? "Can’t add to the tab" : "Room charges allowed"}</small></span></button><div><strong className="block text-[13px]">Charge limit</strong><small className="block text-xs text-muted">{timeline.chargeLimit == null ? "No limit" : money(timeline.chargeLimit)}</small></div></div></section>
+            {(() => {
+              const charges = timeline.charges ?? []; const openCharges = charges.filter((charge) => !charge.settledAt); const settledCharges = charges.filter((charge) => !!charge.settledAt); const orders = timeline.orders ?? []; const orderFor = (charge: typeof charges[number]) => charge.orderId ? orders.find((order) => order.id === charge.orderId) : undefined; const openTotal = Number(timeline.balanceDue ?? timeline.folioTotal ?? 0); const paidOrders = orders.filter((order) => order.paymentStatus === "PAID"); return <>
+                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-2 flex items-center justify-between"><div><h3 className="text-sm font-extrabold">Open tab</h3><p className="mt-0.5 text-xs text-muted">{openCharges.length ? `${openCharges.length} bill${openCharges.length === 1 ? "" : "s"} · Tap a bill to review` : "Nothing on the tab"}</p></div><strong className="text-sm">{money(openTotal)}</strong></div>{openCharges.length ? <div className="divide-y divide-[#f4e7ed]">{openCharges.map((charge) => { const order = orderFor(charge); return <div key={charge.id} className="py-3"><div className="flex items-start justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">Bill #{(order?.id ?? charge.id).slice(0, 6).toUpperCase()} · {order ? `Restaurant · Table ${order.table?.tableNumber ?? "—"}` : charge.kind === "ROOM_FEE" ? "Room fee" : charge.description}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order?.createdAt ?? charge.occurredAt)}{order ? ` · Signed by ${focusedStay.primaryGuestName}` : ""}</p></div></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">On tab</span><strong className="text-[13px]">{money(charge.amount)}</strong></div></div>{order?.items.map((line) => <div key={line.id} className="ml-6 mt-1 flex justify-between gap-2 text-xs text-muted"><span>{line.quantity} × {line.menuItem.name}{line.modifierSelections?.length ? <small className="block pl-4 text-[10px] text-muted">{line.modifierSelections.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ")}</small> : null}</span><span>{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>)}{!order && <div className="ml-6 mt-1 flex justify-between text-xs text-muted"><span>{charge.quantity} × {money(charge.unitPrice)}</span></div>}</div>; })}</div> : <p className="pb-1 text-xs text-muted">No room or restaurant charges are waiting for payment.</p>}</section>
+                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-1 flex items-center justify-between"><h3 className="text-sm font-extrabold">History</h3><span className="text-[11px] text-muted">Paid bills stay here for receipts</span></div>{paidOrders.length || settledCharges.length ? <div className="divide-y divide-[#f4e7ed]">{paidOrders.map((order) => <div key={order.id} className="py-2"><div className="flex items-center justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">Bill #{order.id.slice(0, 6).toUpperCase()} · {order.table ? `Restaurant · Table ${order.table.tableNumber}` : "Room service"}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order.paidAt ?? order.updatedAt)} · {order.paymentMethod === "CARD" ? "Paid by card" : "Paid at the table"}</p></div></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">Paid · {order.paymentMethod === "CARD" ? "Card" : "Cash"}</span><strong className="text-[13px]">{money(order.totalAmount)}</strong></div></div>{order.items?.map((line) => <div key={line.id} className="ml-6 mt-1 flex justify-between gap-3 text-xs text-muted"><span>{line.quantity} × {line.menuItem.name}{line.modifierSelections?.length ? <small className="block pl-4 text-[10px] text-muted">{line.modifierSelections.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ")}</small> : null}</span><span>{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>)}</div>)}{settledCharges.filter((charge) => !charge.orderId).map((charge) => <div key={charge.id} className="flex justify-between gap-2 py-3 text-[13px]"><span>{charge.description}</span><span>{money(charge.amount)}</span></div>)}</div> : <p className="py-3 text-xs text-muted">No settled bills yet.</p>}</section>
+                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><h3 className="text-sm font-extrabold">Deposits and payments</h3>{timeline.payments?.length ? timeline.payments.map((payment) => <div key={payment.id} className="mt-2 flex items-start gap-2 border-t border-[#f4e7ed] pt-2"><ReceiptText size={15} className="mt-0.5 shrink-0 text-[#e91488]" /><div className="min-w-0 flex-1"><p className="text-[13px] font-bold">{payment.method === "CARD" ? "Tab settled by card" : "Tab settled by cash"}</p><p className="mt-0.5 text-[11px] text-muted">{dateTime(payment.paidAt)}{payment.receivedBy?.name ? ` · Taken by ${payment.receivedBy.name}` : ""}</p></div><strong className="shrink-0 text-[13px]">{money(payment.amount)}</strong></div>) : <p className="mt-1 text-xs text-muted">No payments recorded</p>}<div className="mt-2 flex justify-between border-t border-[#f4e7ed] pt-2 text-base font-extrabold"><span>Balance</span><span>{money(openTotal)}</span></div></section>
+              </>;
+            })()}
+          </> : <div className="py-12 text-center text-xs text-muted">{timelineLoading ? "Loading room folio…" : focusedStay ? "Select a stay to load its folio." : "Choose a stay from the history above."}</div>}</div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-[#f3e7ed] bg-white px-5 py-2.5"><button disabled={!canManageFolios || !isFocusedStayActive || timeline?.cashOnly} onClick={() => { setSelectedRoom(focusedRoom); setChargeKind("OTHER"); setChargeDescription(""); setChargeQuantity("1"); setChargePrice(""); setModal("charge"); }} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Add charge</button><button disabled={!timeline} onClick={() => timeline && setCheckoutReceipt(createFolioReceipt(timeline))} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">View receipt</button><span className="flex-1" />{isFocusedStayActive && canManageFolios && <><button disabled={busy} onClick={() => void checkOut()} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Check out</button>{Number(timeline?.folioTotal ?? 0) > 0 && <button disabled={busy} onClick={() => { setSelectedRoom(focusedRoom); setRoomPaymentMethod("CASH"); setModal("settle"); }} className="h-12 rounded-lg bg-[#f01898] px-5 text-sm font-bold text-white disabled:opacity-40">Settle tab · {money(timeline?.folioTotal ?? 0)}</button>}</>}</div></aside></div>, document.body)}
 
       {modal === "room" && <Modal title={editingRoom ? t("editRoom") : t("addRoom")} onClose={() => setModal(null)}><form onSubmit={(event) => void saveRoom(event)} className="space-y-4"><Field label={t("roomNumber")} type="number" required min="1" value={roomNumber} onChange={(e) => setRoomNumber(e.target.value)} /><SelectField label={t("roomSize")} value={size} onChange={(e) => setSize(e.target.value as RoomSize)}><option value="NORMAL">{t("normal")}</option><option value="FAMILY">{t("family")}</option></SelectField><Field label={t("roomFee")} type="number" required min="0" step="0.01" value={usageFee} onChange={(e) => setUsageFee(e.target.value)} /><p className="-mt-2 text-[10px] text-muted">{t("roomFeeHelp")}</p><fieldset><legend className="mb-2 text-xs font-semibold text-ink">{t("roomFacilities")}</legend><div className="grid grid-cols-2 gap-2">{roomFacilities.map((facility) => <label key={facility} className="flex cursor-pointer items-center gap-2 rounded-lg border border-line px-2.5 py-2 text-[11px] text-ink"><input type="checkbox" checked={facilities.includes(facility)} onChange={(event) => setFacilities((current) => event.target.checked ? [...current, facility] : current.filter((item) => item !== facility))} className="accent-olive" />{translateFacility(language, facility)}</label>)}</div><p className="mt-2 text-[10px] text-muted">{t("selectAmenities")}</p></fieldset><button disabled={busy} className="h-11 w-full rounded-xl bg-olive text-sm font-bold text-white disabled:opacity-50">{editingRoom ? t("saveRoom") : t("addRoom")}</button></form></Modal>}
       {(modal === "checkin" || modal === "editStay") && <Modal title={modal === "checkin" ? "Check in" : `Edit stay · Room ${selectedRoom?.roomNumber}`} onClose={() => setModal(null)}><form onSubmit={(event) => void (modal === "checkin" ? checkIn(event) : editStay(event))} className="space-y-3.5">

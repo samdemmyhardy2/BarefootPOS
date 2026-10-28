@@ -4,8 +4,8 @@ import { PageHeader, Panel, OrderBadge, EmptyState } from "../components/ui";
 import { useOrderStore } from "../stores/orderStore";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
-import { errorMessage } from "../lib/api";
-import { money } from "../lib/types";
+import { api, errorMessage } from "../lib/api";
+import { money, type PrepStation, type Order } from "../lib/types";
 import { orderLocation } from "../lib/types";
 import { formatOrderDuration } from "../lib/orderTiming";
 
@@ -16,12 +16,14 @@ export function OrderTrackerPage() {
   const liveState = useOrderStore((state) => state.liveState);
   const changeStatus = useOrderStore((state) => state.changeStatus);
   const deleteOrder = useOrderStore((state) => state.deleteOrder);
+  const upsertOrder = useOrderStore((state) => state.upsertOrder);
   const isAdmin = useAuthStore((state) => state.user?.role === "ADMIN");
   const notify = useUiStore((state) => state.notify);
   const [filter, setFilter] = useState("All active");
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
+  const [redirectingTicketId, setRedirectingTicketId] = useState("");
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -60,6 +62,16 @@ export function OrderTrackerPage() {
     } catch (e) {
       setError(errorMessage(e));
     }
+  };
+  const redirectTicket = async (ticketId: string, station: PrepStation) => {
+    setRedirectingTicketId(ticketId);
+    setError("");
+    try {
+      const { data } = await api.patch<Order>(`/orders/prep-tickets/${ticketId}/redirect`, { station });
+      upsertOrder(data);
+      notify(`Ticket redirected to the ${station === "BAR" ? "bar" : "kitchen"}.`);
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setRedirectingTicketId(""); }
   };
   return (
     <div className="page-enter">
@@ -150,6 +162,7 @@ export function OrderTrackerPage() {
                     </div>
                   ))}
                 </div>
+                {order.prepTickets?.length ? <div className="mb-3 space-y-2">{order.prepTickets.map((ticket) => <div key={ticket.id} className="flex items-center justify-between gap-2 rounded-lg bg-canvas px-3 py-2 text-[10px]"><span className="font-semibold">{ticket.station === "BAR" ? "Bar" : "Kitchen"} · {ticket.status.toLowerCase()}</span>{ticket.status === "PENDING" && <button type="button" disabled={Boolean(redirectingTicketId)} onClick={() => void redirectTicket(ticket.id, ticket.station === "BAR" ? "KITCHEN" : "BAR")} className="font-bold text-[#d90c7d] disabled:opacity-50">{redirectingTicketId === ticket.id ? "Moving…" : `Send to ${ticket.station === "BAR" ? "kitchen" : "bar"}`}</button>}</div>)}</div> : null}
                 <div className="mb-3 rounded-xl bg-canvas px-3 py-2 text-[10px] text-muted">
                   {order.readyAt ? (
                     <p>Preparation: {formatOrderDuration(order.preparingAt ?? order.createdAt, order.readyAt)}</p>

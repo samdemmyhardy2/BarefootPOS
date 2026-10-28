@@ -14,6 +14,7 @@ export type CheckoutReceipt = {
   totalAmount: number;
   checkedOutAt: string;
   cashierName: string;
+  signature?: { name: string; data: string };
 };
 
 export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onClose }: {
@@ -93,13 +94,14 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
               <div className="flex justify-between gap-3 py-1"><span className="font-semibold">{order ? `Restaurant order #${order.id.slice(0, 8)}` : charge.description}</span><span className="shrink-0 font-semibold tabular-nums">{money(charge.amount)}</span></div>
               {order ? <>
                 <p className="ml-3 text-[10px] text-slate-500">{order.table?.tableNumber ?? "—"} · Served by {order.servedBy?.name ?? "—"}</p>
-                {order.items.map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="ml-3 flex justify-between gap-3 py-0.5 text-[10px]"><span>{line.quantity}× {line.menuItem.name}{line.addExtras ? ` · ${line.addExtras}` : ""}{line.removeIngredients ? ` · No ${line.removeIngredients}` : ""}</span><span className="shrink-0 tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>)}
+                {order.items.map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="ml-3 py-0.5 text-[10px]"><div className="flex justify-between gap-3"><span>{line.quantity}× {line.menuItem.name}{line.addExtras ? ` · ${line.addExtras}` : ""}{line.removeIngredients ? ` · No ${line.removeIngredients}` : ""}</span><span className="shrink-0 tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>{line.modifierSelections?.map((selection) => <p key={selection.groupId} className="ml-4 mt-0.5 text-slate-500">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}</div>)}
               </> : <p className="ml-3 text-[10px] text-slate-500">{charge.quantity} × {money(charge.unitPrice)}</p>}
             </div>;
           }) : receipt.orders.map((order) => <div key={order.id} className="receipt-item mb-3 last:mb-0">
             <div className="mb-2 flex justify-between gap-2 text-[10px] font-bold text-slate-500"><span className="font-mono uppercase tracking-wide">Order #{order.id.slice(0, 8)}</span><span>{order.waiter?.name ?? ""}</span></div>
             {order.items.map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="mb-1">
               <div className="flex justify-between gap-3 py-1"><span className="font-semibold"><span className="mr-1 text-[#d80c7c]">{line.quantity}×</span>{line.menuItem.name}</span><span className="shrink-0 font-semibold tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity)}</span></div>
+              {line.modifierSelections?.map((selection) => <p key={selection.groupId} className="ml-5 text-[10px] leading-4 text-slate-500">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}
               {(line.removeIngredients || line.addExtras || line.selectedAllergens?.length || line.specialNotes) && <p className="ml-5 rounded-lg bg-pink-50 px-2 py-1 text-[10px] leading-4 text-slate-600">{[line.removeIngredients && `No: ${line.removeIngredients}`, line.addExtras && `Extra: ${line.addExtras}`, line.selectedAllergens?.length && `Allergy: ${line.selectedAllergens.join(", ")}`, line.specialNotes].filter(Boolean).join(" · ")}</p>}
             </div>)}
             <div className="mt-2 flex justify-between border-t border-pink-100 pt-2 text-[10px] font-semibold text-slate-500"><span>Ticket subtotal</span><span className="tabular-nums">{money(order.totalAmount)}</span></div>
@@ -107,12 +109,12 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
         </div>
         <div className="relative space-y-2 border-b border-dashed border-pink-300 py-4">
           <div className="flex justify-between gap-2 rounded-xl bg-pink-100/80 px-3 py-2.5 font-display text-sm font-extrabold text-slate-900"><span>Total</span><span className="tabular-nums">{money(receipt.totalAmount)}</span></div>
-          <div className="flex justify-between gap-2 px-1 pt-1"><span className="text-slate-500">Payment</span><span className="font-bold text-[#b90b6b]">{receipt.paymentMethod === "CASH" ? "Cash · Paid" : receipt.paymentMethod === "CARD" ? "Card · Paid" : "Room folio"}</span></div>
+          <div className="flex justify-between gap-2 px-1 pt-1"><span className="text-slate-500">Payment</span><span className="font-bold text-[#b90b6b]">{receipt.paymentMethod === "CASH" ? "Cash · Paid" : receipt.paymentMethod === "CARD" ? "Card · Paid" : receipt.paymentMethod === "PROMPTPAY" ? "PromptPay QR · Paid" : "Room folio"}</span></div>
           {receiptRooms.map((room) => <div key={room.roomNumber} className="space-y-1"><div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Room</span><span className="font-semibold">{room.roomNumber}</span></div><div className="flex justify-between gap-2 px-1"><span className="shrink-0 text-slate-500">Guests</span><span className="text-right font-semibold">{(room.guestNames?.length ? room.guestNames : [room.guestName]).join(", ")}</span></div></div>)}
           <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Served by</span><span className="text-right font-semibold">{[...new Set(receipt.orders.map((order) => order.servedBy?.name).filter(Boolean))].join(", ") || "—"}</span></div>
           <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Processed by</span><span className="text-right font-semibold">{receipt.cashierName}</span></div>
         </div>
-        {showSignature && <div className="relative mt-7 rounded-xl border border-pink-200 bg-white/80 px-4 pb-3 pt-2 text-center"><p className="font-bold text-[#b90b6b]">Guest signature</p><div className="mt-9 border-t border-slate-400" /><p className="mt-2 text-[10px] leading-4 text-slate-500">I authorize these restaurant charges to be added to my room folio.</p></div>}
+        {showSignature && <div className="relative mt-7 rounded-xl border border-pink-200 bg-white/80 px-4 pb-3 pt-2 text-center"><p className="font-bold text-[#b90b6b]">Guest signature</p>{(receipt.signature?.data ?? receipt.folioCharges?.find((charge) => charge.signatureData)?.signatureData) ? <img src={receipt.signature?.data ?? receipt.folioCharges?.find((charge) => charge.signatureData)?.signatureData ?? ""} alt={`Signature by ${receipt.signature?.name ?? receipt.folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}`} className="mx-auto mt-2 h-16 max-w-full object-contain" /> : <div className="mt-9 border-t border-slate-400" />}<p className="mt-2 border-t border-slate-300 pt-1 text-[10px] font-semibold text-slate-700">{receipt.signature?.name ?? receipt.folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}</p><p className="mt-2 text-[10px] leading-4 text-slate-500">I authorize these restaurant charges to be added to my room folio.</p></div>}
         <p className="relative mt-6 text-center text-[10px] font-semibold tracking-wide text-[#b90b6b]">{thankYouPhrase}</p>
         </div>
       </div>

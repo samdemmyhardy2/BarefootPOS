@@ -18,6 +18,8 @@ export function AccountPage() {
   const setTheme = useUiStore((state) => state.setTheme);
   const language = useUiStore((state) => state.language);
   const setLanguage = useUiStore((state) => state.setLanguage);
+  const modifierPickerMode = useUiStore((state) => state.modifierPickerMode);
+  const setModifierPickerMode = useUiStore((state) => state.setModifierPickerMode);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
   const notify = useUiStore((state) => state.notify);
   const [name, setName] = useState(user.name);
@@ -166,6 +168,17 @@ export function AccountPage() {
             <div className="grid grid-cols-2 gap-3">
               <button onClick={() => setTheme("light")} className={`flex items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold ${theme === "light" ? "border-olive bg-olive-soft text-olive" : "border-line bg-white text-muted"}`}><Sun size={16} /> Light</button>
               <button onClick={() => setTheme("dark")} className={`flex items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold ${theme === "dark" ? "border-olive bg-olive text-white" : "border-line bg-white text-muted"}`}><Moon size={16} /> Dark</button>
+            </div>
+          </Panel>
+          <Panel className="p-5 sm:p-6">
+            <div className="mb-4"><h2 className="font-display text-base font-bold">Modifier picker</h2><p className="mt-1 text-xs text-muted">Choose how dish options appear when adding an item to an order.</p></div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button type="button" onClick={() => setModifierPickerMode("list")} className={`rounded-xl border p-3 text-left ${modifierPickerMode === "list" ? "border-[#ed168c] bg-[#fff5fa] text-[#d90c7d]" : "border-line bg-white text-ink"}`}>
+                <span className="block text-sm font-semibold">Show all groups</span><span className="mt-1 block text-xs text-muted">Scroll through the full list.</span>
+              </button>
+              <button type="button" onClick={() => setModifierPickerMode("step")} className={`rounded-xl border p-3 text-left ${modifierPickerMode === "step" ? "border-[#ed168c] bg-[#fff5fa] text-[#d90c7d]" : "border-line bg-white text-ink"}`}>
+                <span className="block text-sm font-semibold">One group at a time</span><span className="mt-1 block text-xs text-muted">Pick options in a guided sequence.</span>
+              </button>
             </div>
           </Panel>
         </div>

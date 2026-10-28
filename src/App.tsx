@@ -24,7 +24,8 @@ export default function App() {
           <Route element={<RequireJobPermission permission="ORDER_VIEW" />}><Route path="overview" element={<OverviewPage />} /></Route>
           <Route element={<RequireJobPermission permission="ORDER_VIEW" />}><Route path="orders" element={<OrdersPage />} /></Route>
           <Route element={<RequireJobPermission permission="REPORTS" />}><Route path="business-overview" element={<BusinessOverviewPage />} /></Route>
-          <Route element={<RequireJobPermission permission="KITCHEN" />}><Route path="kitchen" element={<KitchenPage />} /></Route>
+          <Route element={<RequireJobPermission permission="KITCHEN" />}><Route path="kitchen" element={<KitchenPage station="KITCHEN" />} /></Route>
+          <Route element={<RequireJobPermission permission="BAR" />}><Route path="bar" element={<KitchenPage station="BAR" />} /></Route>
           <Route element={<RequireJobPermission permission="ORDER_SERVE" />}><Route path="ready" element={<ReadyOrdersPage />} /></Route>
           <Route element={<RequireJobPermission permission="TABLES" />}>
             <Route path="tables" element={<TablesPage />} />
@@ -32,7 +33,7 @@ export default function App() {
           </Route>
           <Route element={<RequireJobPermission permission="ROOM_VIEW" />}><Route path="rooms" element={<RoomsPage />} /></Route>
           <Route element={<RequireAuth roles={["ADMIN"]} />}>
-            <Route path="menu" element={<MenuPage />} />
+            <Route path="menu/*" element={<MenuPage />} />
             <Route path="team" element={<TeamPage />} />
           </Route>
           <Route path="account" element={<AccountPage />} />

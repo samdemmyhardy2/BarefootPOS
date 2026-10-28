@@ -7,8 +7,10 @@ import {
 } from "react-router-dom";
 import {
   BarChart3,
+  Martini,
   Bell,
   BedDouble,
+  BookOpen,
   ChefHat,
   ChevronDown,
   ClipboardList,
@@ -37,7 +39,9 @@ const baseNav = [
   { label: "Business overview", to: "/business-overview", icon: BarChart3, permission: "REPORTS" },
   { label: "Tables", to: "/tables", icon: Utensils, permission: "TABLES" },
   { label: "Rooms & folios", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
+  { label: "Menu", to: "/menu", icon: BookOpen, adminOnly: true },
   { label: "Kitchen display", to: "/kitchen", icon: ChefHat, permission: "KITCHEN" },
+  { label: "Bar display", to: "/bar", icon: Martini, permission: "BAR" },
   { label: "Ready to serve", to: "/ready", icon: Bell, permission: "ORDER_SERVE" },
   { label: "Team", to: "/team", icon: Users, adminOnly: true },
 ];
@@ -61,7 +65,7 @@ export function AppLayout() {
   const language = useUiStore((state) => state.language);
   const setLanguage = useUiStore((state) => state.setLanguage);
   const location = useLocation();
-  const fullCanvas = location.pathname === "/menu" || location.pathname.startsWith("/tables") || location.pathname.startsWith("/rooms");
+  const fullCanvas = location.pathname.startsWith("/menu") || location.pathname.startsWith("/tables") || location.pathname.startsWith("/rooms");
   const nav = baseNav.filter((item) => user.role === "ADMIN" || (!item.adminOnly && (!item.permission || hasJobPermission(user, item.permission as JobPermission))));
 
   useEffect(() => {

@@ -3,23 +3,26 @@ import {
   ArrowRight,
   ChefHat,
   Clock3,
+  Coffee,
   Flame,
   UtensilsCrossed,
 } from "lucide-react";
 import { EmptyState, OrderBadge, PageHeader, Panel } from "../components/ui";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
-import { errorMessage } from "../lib/api";
+import { api, errorMessage } from "../lib/api";
 import { orderLocation } from "../lib/types";
-import { localizedFoodLabels } from "../lib/foodTranslations";
+import type { Order, PrepStation, PrepTicket } from "../lib/types";
 import { formatOrderDuration } from "../lib/orderTiming";
 
-export function KitchenPage() {
+type QueueEntry = { order: Order; ticket: PrepTicket | null };
+
+export function KitchenPage({ station }: { station: PrepStation }) {
   const orders = useOrderStore((state) => state.orders);
   const liveState = useOrderStore((state) => state.liveState);
   const cookAction = useOrderStore((state) => state.cookAction);
+  const upsertOrder = useOrderStore((state) => state.upsertOrder);
   const notify = useUiStore((state) => state.notify);
-  const language = useUiStore((state) => state.language);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
@@ -27,22 +30,28 @@ export function KitchenPage() {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  const queue = useMemo(
-    () =>
-      orders
-        .filter((order) => ["PENDING", "PREPARING"].includes(order.status))
-        .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)),
-    [orders],
-  );
-  const advance = async (id: string, action: "prepare" | "ready") => {
-    setBusy(id);
+  const queues = useMemo<Record<PrepStation, QueueEntry[]>>(() => {
+    const entries = (target: PrepStation) => orders.flatMap<QueueEntry>((order) => {
+      const stationTickets = (order.prepTickets ?? []).filter((ticket) => ticket.station === target && ["PENDING", "PREPARING"].includes(ticket.status));
+      if (stationTickets.length) return stationTickets.map((ticket) => ({ order, ticket }));
+      if (target === "KITCHEN" && !order.prepTickets?.length && ["PENDING", "PREPARING"].includes(order.status)) return [{ order, ticket: null }];
+      return [];
+    }).sort((a, b) => +new Date(a.ticket?.createdAt ?? a.order.createdAt) - +new Date(b.ticket?.createdAt ?? b.order.createdAt));
+    return { KITCHEN: entries("KITCHEN"), BAR: entries("BAR") };
+  }, [orders]);
+  const queue = queues[station];
+  const advance = async (targetStation: PrepStation, orderId: string, ticketId: string | null, action: "prepare" | "ready") => {
+    setBusy(ticketId ?? orderId);
     setError("");
     try {
-      await cookAction(id, action);
+      if (ticketId) {
+        const { data } = await api.patch(`/orders/${targetStation.toLowerCase()}/tickets/${ticketId}/${action}`);
+        upsertOrder(data);
+      } else await cookAction(orderId, action);
       notify(
         action === "ready"
-          ? "Order is ready. The floor team has been notified."
-          : "Order accepted by the kitchen.",
+          ? `${targetStation === "BAR" ? "Bar" : "Kitchen"} ticket is ready.`
+          : `${targetStation === "BAR" ? "Bar" : "Kitchen"} ticket accepted.`,
       );
     } catch (e) {
       setError(errorMessage(e));
@@ -50,12 +59,53 @@ export function KitchenPage() {
       setBusy(null);
     }
   };
+  const renderTicketCards = (targetStation: PrepStation, entries: QueueEntry[]) => <div className="grid gap-4 2xl:grid-cols-2">
+    {entries.map(({ order, ticket }) => {
+      const status = ticket?.status ?? order.status;
+      const ticketItems = ticket?.items ?? order.items.map((item) => ({ menuItemName: item.menuItem.name, quantity: item.quantity, modifierSelections: item.modifierSelections ?? [], removeIngredients: item.removeIngredients, addExtras: item.addExtras, specialNotes: item.specialNotes, selectedAllergens: item.selectedAllergens }));
+      const ticketKey = ticket?.id ?? order.id;
+      return <Panel key={ticketKey} className="overflow-hidden">
+        <div className={`h-1.5 ${status === "PENDING" ? "bg-amber-400" : "bg-sky-400"}`} />
+        <div className="p-5">
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="flex items-center gap-2"><span className="font-display text-[22px] font-extrabold tracking-tight">{orderLocation(order)}</span><OrderBadge status={status} /></div>
+              <p className="mt-1 font-mono text-[10px] text-muted">Order #{order.id.slice(-6).toUpperCase()}</p>
+              <p className="mt-1 text-[11px] font-semibold text-olive">{status === "PREPARING" ? "Preparing" : "Waiting to start"}: {formatOrderDuration(status === "PREPARING" ? ticket?.preparingAt ?? order.preparingAt ?? order.createdAt : order.createdAt, now)}</p>
+            </div>
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted"><Clock3 size={13} />{Math.max(0, Math.floor((Date.now() - +new Date(order.createdAt)) / 60000))} min ago</span>
+          </div>
+          <div className="my-4 space-y-3 border-y border-dashed border-line py-4">
+            {ticketItems.map((item, index) => {
+              const sourceItem = order.items.find((line) => line.menuItem.name === item.menuItemName);
+              const barOptions = item.modifierSelections?.flatMap((selection) => selection.options.map((option) => option.name)) ?? [];
+              const isBarModifierTicket = targetStation === "BAR" && sourceItem?.menuItem.prepStation !== "BAR" && barOptions.length > 0;
+              return <div key={`${ticketKey}-${index}`} className="flex gap-3">
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#edf2e9] text-xs font-bold text-olive">{item.quantity}</span>
+              <div className="min-w-0 flex-1"><p className="text-sm font-bold">{isBarModifierTicket ? barOptions[0] : item.menuItemName}</p>
+                {isBarModifierTicket ? <><div className="ml-3 mt-1 space-y-1 border-l border-[#f3cade] pl-2">{barOptions.slice(1).map((name, optionIndex) => <p key={`${name}-${optionIndex}`} className="text-[11px] font-medium text-[#6f5964]">{name}</p>)}</div><p className="mt-1 text-[11px] font-semibold text-muted">Part of {item.menuItemName}</p></> : item.modifierSelections?.map((selection) => <p key={selection.groupId} className="mt-1 text-[11px] font-medium text-[#6f5964]">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}
+                {item.removeIngredients && <p className="mt-1 text-[11px] text-[#ba694b]">No: {item.removeIngredients}</p>}
+                {item.addExtras && <p className="mt-1 text-[11px] text-olive">Extra: {item.addExtras}</p>}
+                {item.selectedAllergens?.length ? <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">Allergens: {item.selectedAllergens.join(", ")}</p> : null}
+                {item.specialNotes && <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] italic text-amber-800">“{item.specialNotes}”</p>}
+              </div>
+            </div>;
+            })}
+          </div>
+          <div className="mb-4 flex items-center justify-between text-[11px] text-muted"><span>Placed by {order.waiter?.name}</span><span>{new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(order.createdAt))}</span></div>
+          <button disabled={busy === ticketKey} onClick={() => void advance(targetStation, order.id, ticket?.id ?? null, status === "PENDING" ? "prepare" : "ready")} className={`flex h-11 w-full items-center justify-center gap-2 rounded-xl text-xs font-bold text-white transition disabled:opacity-50 ${status === "PENDING" ? "bg-ink hover:bg-[#353c34]" : "bg-olive hover:bg-[#334438]"}`}>
+            {busy === ticketKey ? "Updating ticket…" : status === "PENDING" ? "Start preparing" : "Mark ready"}<ArrowRight size={15} />
+          </button>
+        </div>
+      </Panel>;
+    })}
+  </div>;
   return (
     <div className="page-enter">
       <PageHeader
-        eyebrow="Back of house · Kitchen display"
-        title="On the pass."
-        description="New tickets land here in real time. Start prep, then let the floor know when it’s ready."
+        eyebrow={station === "BAR" ? "Back of house · Bar display" : "Kitchen · Live tickets"}
+        title={station === "BAR" ? "At the bar." : "Kitchen display"}
+        description={station === "BAR" ? "New bar tickets land here in real time. Start prep, then mark each ticket ready." : "Each station only sees its part of the order. The coffee from DIY Breakfast goes to the bar."}
         action={
           <div
             className={`flex items-center gap-2 rounded-full px-3 py-2 text-[11px] font-bold ${liveState === "live" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}
@@ -77,14 +127,14 @@ export function KitchenPage() {
           {error}
         </p>
       )}
-      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+      {station === "BAR" && <div className="mb-5 grid gap-3 sm:grid-cols-3">
         <Panel className="flex items-center gap-3 p-4">
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-amber-50 text-amber-700">
             <Flame size={18} />
           </span>
           <div>
             <p className="font-display text-xl font-bold">
-              {queue.filter((order) => order.status === "PENDING").length}
+              {queue.filter(({ order, ticket }) => (ticket?.status ?? order.status) === "PENDING").length}
             </p>
             <p className="text-[11px] text-muted">New tickets</p>
           </div>
@@ -95,7 +145,7 @@ export function KitchenPage() {
           </span>
           <div>
             <p className="font-display text-xl font-bold">
-              {queue.filter((order) => order.status === "PREPARING").length}
+              {queue.filter(({ order, ticket }) => (ticket?.status ?? order.status) === "PREPARING").length}
             </p>
             <p className="text-[11px] text-muted">In preparation</p>
           </div>
@@ -106,125 +156,29 @@ export function KitchenPage() {
           </span>
           <div>
             <p className="font-display text-xl font-bold">
-              {orders.filter((order) => order.status === "READY").length}
+              {orders.flatMap((order) => (order.prepTickets ?? []).filter((ticket) => ticket.station === station && ticket.status === "READY")).length}
             </p>
             <p className="text-[11px] text-muted">Ready to run</p>
           </div>
         </Panel>
-      </div>
-      {queue.length ? (
-        <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-          {queue.map((order) => (
-            <Panel key={order.id} className="overflow-hidden">
-              <div
-                className={`h-1.5 ${order.status === "PENDING" ? "bg-amber-400" : "bg-sky-400"}`}
-              />
-              <div className="p-5">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-display text-[22px] font-extrabold tracking-tight">
-                        {orderLocation(order)}
-                      </span>
-                      <OrderBadge status={order.status} />
-                    </div>
-                    <p className="mt-1 font-mono text-[10px] text-muted">
-                      Order #{order.id.slice(-6).toUpperCase()}
-                    </p>
-                    <p className="mt-1 text-[11px] font-semibold text-olive">
-                      {order.status === "PREPARING" ? "Preparing" : "Waiting to start"}: {formatOrderDuration(order.status === "PREPARING" ? order.preparingAt ?? order.createdAt : order.createdAt, now)}
-                    </p>
-                  </div>
-                  <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
-                    <Clock3 size={13} />
-                    {Math.max(
-                      0,
-                      Math.floor(
-                        (Date.now() - +new Date(order.createdAt)) / 60000,
-                      ),
-                    )}{" "}
-                    min ago
-                  </span>
-                </div>
-                <div className="my-4 space-y-3 border-y border-dashed border-line py-4">
-                  {order.items.map((item, index) => (
-                    <div
-                      key={item.id ?? `${order.id}-${index}`}
-                      className="flex gap-3"
-                    >
-                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#edf2e9] text-xs font-bold text-olive">
-                        {item.quantity}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-bold">
-                          {item.menuItem.name}
-                        </p>
-                        {item.removeIngredients && (
-                          <p className="mt-1 text-[11px] text-[#ba694b]">
-                            No: {item.removeIngredients}
-                          </p>
-                        )}
-                        {item.addExtras && (
-                          <p className="mt-1 text-[11px] text-olive">
-                            Extra: {item.addExtras}
-                          </p>
-                        )}
-                        {item.selectedAllergens?.length ? (
-                          <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">
-                            {language === "my" ? "ဓာတ်မတည့်မှု:" : language === "th" ? "สารก่อภูมิแพ้:" : "Allergens:"}{" "}
-                            {item.selectedAllergens.map((allergen) => {
-                              const canonical = item.menuItem.allergens ?? [];
-                              const translated = localizedFoodLabels(item.menuItem.allergens, item.menuItem.allergensMy, item.menuItem.allergensTh, language);
-                              const index = canonical.indexOf(allergen);
-                              return index >= 0 ? translated[index] : allergen;
-                            }).join(", ")}
-                          </p>
-                        ) : null}
-                        {item.specialNotes && (
-                          <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] italic text-amber-800">
-                            “{item.specialNotes}”
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mb-4 flex items-center justify-between text-[11px] text-muted">
-                  <span>Placed by {order.waiter?.name}</span>
-                  <span>
-                    {new Intl.DateTimeFormat("en-US", {
-                      hour: "numeric",
-                      minute: "2-digit",
-                    }).format(new Date(order.createdAt))}
-                  </span>
-                </div>
-                <button
-                  disabled={busy === order.id}
-                  onClick={() =>
-                    void advance(
-                      order.id,
-                      order.status === "PENDING" ? "prepare" : "ready",
-                    )
-                  }
-                  className={`flex h-11 w-full items-center justify-center gap-2 rounded-xl text-xs font-bold text-white transition disabled:opacity-50 ${order.status === "PENDING" ? "bg-ink hover:bg-[#353c34]" : "bg-olive hover:bg-[#334438]"}`}
-                >
-                  {busy === order.id
-                    ? "Updating ticket…"
-                    : order.status === "PENDING"
-                      ? "Start preparing"
-                      : "Mark ready"}
-                  <ArrowRight size={15} />
-                </button>
-              </div>
-            </Panel>
-          ))}
-        </div>
+      </div>}
+      {station === "KITCHEN" ? <div className="grid items-start gap-6 xl:grid-cols-2">
+        {(["KITCHEN", "BAR"] as const).map((lane) => {
+          const laneQueue = queues[lane];
+          const Icon = lane === "KITCHEN" ? ChefHat : Coffee;
+          return <section key={lane} className="min-w-0">
+            <header className="mb-4 flex items-center gap-3"><span className={`grid h-10 w-10 place-items-center rounded-xl ${lane === "KITCHEN" ? "bg-[#fff0f7] text-[#ed168c]" : "bg-sky-50 text-sky-700"}`}><Icon size={19} /></span><div><h2 className="font-display text-base font-bold">{lane === "KITCHEN" ? "Kitchen" : "Bar"}</h2><p className="mt-0.5 text-xs text-muted">{laneQueue.length} {laneQueue.length === 1 ? "ticket" : "tickets"}</p></div></header>
+            {laneQueue.length ? renderTicketCards(lane, laneQueue) : <Panel className="p-4 text-xs text-muted">No active {lane === "KITCHEN" ? "kitchen" : "bar"} tickets.</Panel>}
+          </section>;
+        })}
+      </div> : queue.length ? (
+        renderTicketCards(station, queue)
       ) : (
         <Panel>
           <EmptyState
             icon={ChefHat}
-            title="Your kitchen is caught up"
-            body="New orders will show up here as soon as the floor sends them through."
+            title={station === "BAR" ? "Bar is caught up" : "Kitchen is caught up"}
+            body={`New ${station === "BAR" ? "bar" : "kitchen"} tickets will show here as soon as the floor sends them through.`}
           />
         </Panel>
       )}
