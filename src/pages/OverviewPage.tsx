@@ -36,6 +36,7 @@ const timeLabel = (date: string) =>
 export function OverviewPage() {
   const orders = useOrderStore((state) => state.orders);
   const fetchOrders = useOrderStore((state) => state.fetchOrders);
+  const liveState = useOrderStore((state) => state.liveState);
   const user = useAuthStore((state) => state.user)!;
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [shiftCount, setShiftCount] = useState("—");
@@ -57,7 +58,7 @@ export function OverviewPage() {
         setShiftCount(String(count));
       })
       .catch(() => undefined);
-  }, [fetchOrders, user.role]);
+  }, [fetchOrders, liveState, user.role]);
   const todayOrders = useMemo(
     () =>
       orders.filter(

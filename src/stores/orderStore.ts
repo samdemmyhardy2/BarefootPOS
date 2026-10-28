@@ -118,7 +118,13 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       source.addEventListener("snapshot", (raw) => {
         const event = raw as MessageEvent<string>;
         const snapshot = JSON.parse(event.data) as Order[];
-        set({ orders: snapshot });
+        const activeIds = new Set(snapshot.map((order) => order.id));
+        set((state) => ({
+          orders: [
+            ...snapshot,
+            ...state.orders.filter((order) => !activeIds.has(order.id) && (order.status === "COMPLETED" || order.status === "CANCELLED")),
+          ],
+        }));
       });
       for (const type of ["created", "updated"]) {
         source.addEventListener(type, (raw) => {
