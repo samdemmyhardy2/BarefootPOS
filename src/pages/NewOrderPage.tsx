@@ -61,7 +61,7 @@ function modifierLabel(option: { name: string; nameMy?: string; nameTh?: string 
 
 function selectedModifierLines(item: MenuItem, selections: Record<string, string[]>) {
   const groups = itemModifierGroups(item);
-  const result: { id: string; name: string; count: number; amount: number; depth: number }[] = [];
+  const result: { id: string; name: string; count: number; amount: number; depth: number; nested: boolean }[] = [];
   const visit = (group: ModifierGroup, depth: number) => {
     const ids = selections[group.id] ?? [];
     const indexById = new Map<string, number[]>();
@@ -70,7 +70,7 @@ function selectedModifierLines(item: MenuItem, selections: Record<string, string
       const option = group.options.find((candidate) => candidate.id === optionId);
       if (!option) continue;
       const amount = indexes.reduce((sum, index) => sum + (index < group.includedPicks ? 0 : Number(option.priceAdjustment) + Number(group.extraPickPrice ?? 0)), 0);
-      result.push({ id: `${group.id}-${option.id}`, name: option.name, count: indexes.length, amount, depth });
+      result.push({ id: `${group.id}-${option.id}`, name: option.name, count: indexes.length, amount, depth, nested: Boolean(option.opensGroup) });
       const child = option.opensGroup ? groups.find((candidate) => candidate.id === option.opensGroup?.id) : undefined;
       if (child && (selections[child.id]?.length ?? 0) > 0) visit(child, depth + 1);
     }
@@ -459,7 +459,7 @@ export function NewOrderPage() {
         const price = chargeIndex < group.includedPicks ? 0 : Number(option.priceAdjustment) + Number(group.extraPickPrice ?? 0);
         return <div key={option.id}>
           <label className={`flex min-h-[62px] cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition ${isSelected ? "border-[#ed168c] bg-[#fff8fb]" : "border-line bg-white hover:border-[#ed168c]/40"}`}>
-            <input type={group.selectionType === "SINGLE" ? "radio" : "checkbox"} name={`modifier-${group.id}`} checked={isSelected} disabled={!isSelected && atLimit} onChange={(event) => { updateDraftSelection(group, option.id, event.target.checked); if (modifierPickerMode === "step" && group.selectionType === "SINGLE" && event.target.checked) setConfigStep((step) => step + 1); }} className="h-4 w-4 accent-[#ed168c]" />
+            <input type={group.selectionType === "SINGLE" ? "radio" : "checkbox"} name={`modifier-${group.id}`} checked={isSelected} disabled={group.selectionType !== "SINGLE" && !isSelected && atLimit} onChange={(event) => { updateDraftSelection(group, option.id, group.selectionType === "SINGLE" ? true : event.target.checked); if (modifierPickerMode === "step" && group.selectionType === "SINGLE" && event.target.checked) setConfigStep((step) => step + 1); }} className="h-4 w-4 accent-[#ed168c]" />
             <span className="min-w-0 flex-1"><span className="block text-xs font-semibold">{modifierLabel(option, language)}</span>{language !== "en" && option.name !== modifierLabel(option, language) && <span className="block text-[10px] text-muted">{option.name}</span>}</span>
             <span className="shrink-0 text-[10px] font-semibold text-muted">{price > 0 ? `+${money(price)}` : "Included"}</span>
           </label>
@@ -698,7 +698,7 @@ export function NewOrderPage() {
                     {payers.length > 0 && <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>For</span><select value={payers.some((payer) => payer.id === line.payerId) ? line.payerId : payers[0].id} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, payerId: event.target.value } : entry))} className="max-w-[150px] rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink">{payers.map((payer) => <option key={payer.id} value={payer.id}>{payer.name}</option>)}</select></label>}
                     <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>Send dish to</span><select value={line.prepStation} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, prepStation: event.target.value as PrepStation } : entry))} className="rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink"><option value="KITCHEN">Kitchen</option><option value="BAR">Bar</option></select></label>
                     <div className="mt-2 flex items-center justify-between gap-3"><span className="text-xs text-muted">{money(unitPrice * line.quantity)}</span><div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label={`Remove one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity - 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{line.quantity}</span><button type="button" aria-label={`Add one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity + 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button></div></div>
-                    {modifierLines.length > 0 && <div className="mt-2 space-y-1">{modifierLines.map((modifier) => <div key={modifier.id} className={`flex items-start justify-between gap-2 text-[10px] leading-4 text-muted ${modifier.depth ? "ml-3 border-l border-[#f3cade] pl-2" : ""}`}><span className="min-w-0">{modifier.name}{modifier.count > 1 ? ` ×${modifier.count}` : ""}</span><span className="shrink-0">{modifier.amount > 0 ? `+${money(modifier.amount)}` : "Free"}</span></div>)}</div>}
+                    {modifierLines.length > 0 && <div className="mt-2 space-y-1">{modifierLines.map((modifier) => <div key={modifier.id} className={`flex items-start justify-between gap-2 text-[10px] leading-4 text-muted ${modifier.depth ? "ml-3 border-l border-[#f3cade] pl-2" : ""}`}><span className="min-w-0">{modifier.name}{modifier.count > 1 ? ` ×${modifier.count}` : ""}</span>{!(modifier.nested && modifier.amount <= 0) && <span className="shrink-0">{modifier.amount > 0 ? `+${money(modifier.amount)}` : "Free"}</span>}</div>)}</div>}
                     {line.specialNotes && <p className="mt-2 inline-block rounded-lg bg-amber-50 px-2 py-1 text-[10px] italic text-amber-800">“{line.specialNotes}”</p>}
                     {(itemModifierGroups(line.item).length > 0 || line.specialNotes) && <button type="button" onClick={() => editCartLine(line)} className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-[#ed168c] hover:text-[#d80d7c]">Edit choices <ArrowRight size={12} /></button>}
                   </article>;

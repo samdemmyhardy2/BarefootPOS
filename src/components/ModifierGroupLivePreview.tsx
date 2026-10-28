@@ -24,7 +24,7 @@ export function ModifierGroupLivePreview({ name, nameMy, required, appearance, s
   const [sliderValue, setSliderValue] = useState(defaults[0] ?? 0);
   const [textValue, setTextValue] = useState("");
   const totalCount = counts.reduce((sum, count) => sum + count, 0);
-  const toggle = (index: number) => setSelected((current) => selectionType === "SINGLE" ? current.includes(index) ? [] : [index] : current.includes(index) ? current.filter((value) => value !== index) : [...current, index]);
+  const toggle = (index: number) => setSelected((current) => selectionType === "SINGLE" ? [index] : current.includes(index) ? current.filter((value) => value !== index) : current.length >= maxPicks ? current : [...current, index]);
   const changeCount = (index: number, delta: number) => setCounts((current) => {
     const next = [...current];
     const total = next.reduce((sum, count) => sum + count, 0);
