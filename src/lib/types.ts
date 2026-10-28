@@ -144,7 +144,14 @@ export interface DiningTable {
   positionY: number;
   width: number;
   height: number;
+  sectionId?: string;
   assignedRoomStays?: Pick<RoomStay, "id" | "primaryGuestName" | "room" | "occupants">[];
+}
+
+export interface FloorSection {
+  id: string;
+  name: string;
+  position: number;
 }
 
 export interface RoomOccupant {

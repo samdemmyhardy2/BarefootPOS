@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Armchair, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Move, Pencil, Plus, RefreshCw, Trash2, Users, Utensils, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Field, Modal, PageHeader } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import type { DiningTable, TableShape, TableStatus } from "../lib/types";
+import type { DiningTable, FloorSection, TableShape, TableStatus } from "../lib/types";
 import { useAuthStore } from "../stores/authStore";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
@@ -49,6 +49,10 @@ function TableStatusButton({ status, label, onClick, disabled = false }: { statu
 export function TablesPage() {
   const navigate = useNavigate();
   const [tables, setTables] = useState<DiningTable[]>([]);
+  const [sections, setSections] = useState<FloorSection[]>([]);
+  const [activeSectionId, setActiveSectionId] = useState("");
+  const [sectionModal, setSectionModal] = useState(false);
+  const [sectionName, setSectionName] = useState("");
   const [draft, setDraft] = useState<DiningTable[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -65,6 +69,7 @@ export function TablesPage() {
   const pinchRef = useRef<{ distance: number; zoom: number } | null>(null);
   const panRef = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
   const interactionRef = useRef<{ id: string; mode: "move" | "resize"; x: number; y: number; positionX: number; positionY: number; width: number; height: number; cellWidth: number; cellHeight: number; scale: number } | null>(null);
+  const sectionSwipeRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const [error, setError] = useState("");
   const admin = useAuthStore((state) => state.user?.role === "ADMIN");
   const orders = useOrderStore((state) => state.orders);
@@ -100,8 +105,13 @@ export function TablesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get<DiningTable[]>("/tables");
+      const [{ data }, { data: floorSections }] = await Promise.all([
+        api.get<DiningTable[]>("/tables"),
+        api.get<FloorSection[]>("/tables/sections"),
+      ]);
       setTables(data);
+      setSections(floorSections);
+      setActiveSectionId((current) => floorSections.some((section) => section.id === current) ? current : floorSections[0]?.id ?? "");
       setError("");
     } catch (cause) {
       setError(errorMessage(cause));
@@ -116,6 +126,7 @@ export function TablesPage() {
   }, [load, fetchOrders]);
 
   const displayTables = useMemo(() => editing ? draft : tables, [editing, draft, tables]);
+  const visibleTables = useMemo(() => displayTables.filter((table) => !activeSectionId || table.sectionId === activeSectionId), [displayTables, activeSectionId]);
   const activeOrdersForTable = (tableId: string) => orders.filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status));
   const tableBills = (tableId: string) => activeOrdersForTable(tableId).length;
   const tableOrderSummary = (tableId: string) => {
@@ -144,7 +155,41 @@ export function TablesPage() {
     OCCUPIED: tables.filter((table) => tableStatus(table) === "OCCUPIED").length,
     RESERVED: tables.filter((table) => tableStatus(table) === "RESERVED").length,
   };
-  const rowCount = Math.max(8, ...displayTables.map((table) => table.positionY + table.height + 2));
+  const rowCount = Math.max(8, ...visibleTables.map((table) => table.positionY + table.height + 2));
+  const openSectionModal = () => { setSectionName(""); setSectionModal(true); };
+  const showSection = (direction: 1 | -1) => {
+    const index = sections.findIndex((section) => section.id === activeSectionId);
+    const next = sections[index + direction];
+    if (next) setActiveSectionId(next.id);
+    else if (direction > 0 && editing) openSectionModal();
+  };
+  const beginSectionSwipe = (event: PointerEvent<HTMLElement>) => {
+    if (!editing || (event.target as HTMLElement).closest("article,button,select,input")) return;
+    sectionSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  const endSectionSwipe = (event: PointerEvent<HTMLElement>) => {
+    const start = sectionSwipeRef.current;
+    sectionSwipeRef.current = null;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy)) return;
+    showSection(dx < 0 ? 1 : -1);
+  };
+  const createSection = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = sectionName.trim();
+    if (!name) return;
+    setError("");
+    try {
+      const { data } = await api.post<FloorSection>("/tables/sections", { name });
+      setSections((current) => [...current, data].sort((a, b) => a.position - b.position));
+      setActiveSectionId(data.id);
+      setSectionModal(false);
+      setSectionName("");
+      notify(`${name} is ready for tables.`);
+    } catch (cause) { setError(errorMessage(cause)); }
+  };
   const startEditing = () => { setDraft(tables.map((table) => ({ ...table }))); setEditing(true); setError(""); };
   const cancelEditing = () => { setDraft([]); setEditing(false); setDraggedId(""); setError(""); };
   const saveLayout = async () => {
@@ -248,7 +293,7 @@ export function TablesPage() {
           const width = newShape === "BAR" ? 4 : 2;
           const height = 2;
           const occupied = new Set<string>();
-          for (const table of [...tables, ...draft]) {
+          for (const table of draft.filter((item) => item.sectionId === activeSectionId)) {
             for (let x = table.positionX; x < table.positionX + table.width; x += 1) {
               for (let y = table.positionY; y < table.positionY + table.height; y += 1) {
                 occupied.add(`${x}:${y}`);
@@ -271,7 +316,7 @@ export function TablesPage() {
           payload.positionX = freePosition.x;
           payload.positionY = freePosition.y;
         }
-        const { data } = await api.post<DiningTable>("/tables", { ...payload, status: "AVAILABLE" });
+        const { data } = await api.post<DiningTable>("/tables", { ...payload, status: "AVAILABLE", ...(activeSectionId ? { sectionId: activeSectionId } : {}) });
         setTables((current) => [...current, data]);
         setDraft((current) => editing ? [...current, data] : current);
         notify("Table added to the floor.");
@@ -334,16 +379,16 @@ export function TablesPage() {
       {editing && <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold text-[#d80c7c]"><Move size={13} /> {t("Drag tables or use the arrow controls. Choose a shape, then save.")}</span>}
     </div>
 
-    <div ref={mobileViewportRef} className="mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden">
-      {!loading && displayTables.length > 0 && <div className="flex items-center justify-end gap-1.5 border-b border-[#f1dce7] bg-white/90 px-3 py-2">
+    <div ref={mobileViewportRef} onPointerDown={beginSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={() => { sectionSwipeRef.current = null; }} className="mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden">
+      {!loading && visibleTables.length > 0 && <div className="flex items-center justify-end gap-1.5 border-b border-[#f1dce7] bg-white/90 px-3 py-2">
         <span className="mr-auto text-[10px] font-semibold text-[#8c7c85]">{t("Floor plan")}</span>
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.max(0.35, Math.round((zoom - 0.1) * 10) / 10))} aria-label={t("Zoom out floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomOut size={15} /></button>
         <span className="w-10 text-center text-[10px] font-bold text-[#5c4652]">{Math.round(mobileZoom * 100)}%</span>
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.min(1.5, Math.round((zoom + 0.1) * 10) / 10))} aria-label={t("Zoom in floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomIn size={15} /></button>
         <button type="button" onClick={() => { setMobileZoom(0.55); if (mapScrollRef.current) { mapScrollRef.current.scrollLeft = 0; mapScrollRef.current.scrollTop = 0; } }} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-[#d80c7c]">{t("Reset")}</button>
       </div>}
-      {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : displayTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
-        {displayTables.map((table) => {
+      {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
+        {visibleTables.map((table) => {
           const bills = tableBills(table.id);
           const status = tableStatus(table);
           const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
@@ -366,13 +411,14 @@ export function TablesPage() {
         })}
       </div></div></div> : <div className="relative flex min-h-[calc(100vh-260px)] flex-col items-center justify-center p-6 text-center" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "26px 26px" }}><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#ffedf6] text-[#e91488]"><Armchair size={24} /></span><h2 className="mt-4 font-display text-lg font-extrabold text-[#30242c]">Your floor is ready for a layout</h2><p className="mt-1 max-w-sm text-sm text-[#8c7c85]">Add your first table to start arranging your restaurant floor.</p></div>}
       {admin && editing && <button onClick={openCreate} className="flex min-h-12 w-full items-center justify-center gap-2 border-t border-[#f1dce7] bg-white text-sm font-bold text-[#d80c7c]"><Plus size={18} /> {t("Add table")}</button>}
+      {(editing || sections.length > 1) && <div className="flex flex-col items-center gap-2 bg-white py-3"><p className="text-[10px] font-bold text-[#8c7c85]">{sections.find((section) => section.id === activeSectionId)?.name}</p><div className="flex items-center gap-2">{sections.map((section) => <button key={section.id} type="button" aria-label={section.name} aria-current={section.id === activeSectionId} onClick={() => setActiveSectionId(section.id)} className={`h-2 w-2 rounded-full ${section.id === activeSectionId ? "bg-[#f71591]" : "border border-[#f7b5d4] bg-white"}`} />)}{editing && <button type="button" aria-label="Add a floor section" onClick={openSectionModal} className="h-2 w-2 rounded-full border border-[#f7b5d4] bg-white" />}</div></div>}
     </div>
 
-    <div className="hidden w-full overflow-x-auto overscroll-x-contain rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block">
+    <div onPointerDown={beginSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={() => { sectionSwipeRef.current = null; }} className="hidden w-full overflow-x-auto overscroll-x-contain rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block">
       <div className="relative min-h-[calc(100vh-190px)] w-full min-w-[860px] p-4 sm:p-5">
         <div className="pointer-events-none absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px" }} />
-        {loading ? <div className="relative grid grid-cols-4 gap-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : displayTables.length ? <div ref={floorRef} data-floor-grid data-mobile-floor="false" className="relative grid min-h-[calc(100vh-245px)] w-full touch-pan-y grid-cols-12 auto-rows-[72px] gap-3" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)` }}>
-          {displayTables.map((table) => {
+        {loading ? <div className="relative grid grid-cols-4 gap-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={floorRef} data-floor-grid data-mobile-floor="false" className="relative grid min-h-[calc(100vh-245px)] w-full touch-pan-y grid-cols-12 auto-rows-[72px] gap-3" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)` }}>
+          {visibleTables.map((table) => {
             const bills = tableBills(table.id);
             const status = tableStatus(table);
             const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
@@ -415,9 +461,11 @@ export function TablesPage() {
           })}
         </div> : <div className="relative flex min-h-[480px] flex-col items-center justify-center text-center"><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#ffedf6] text-[#e91488]"><Armchair size={24} /></span><h2 className="mt-4 font-display text-lg font-extrabold text-[#30242c]">Your floor is ready for a layout</h2><p className="mt-1 max-w-sm text-sm text-[#8c7c85]">Add your first table to start arranging your restaurant floor.</p></div>}
         {admin && editing && <button onClick={openCreate} className="relative z-10 mx-auto mt-7 flex h-12 items-center justify-center gap-2 rounded-full bg-[#f71591] px-5 text-white shadow-[0_8px_20px_rgba(247,21,145,.24)] transition hover:scale-105 hover:bg-[#dc0d7e]" aria-label={t("Add table")}><Plus size={20} /><span className="text-xs font-bold">{t("Add table")}</span></button>}
+        {(editing || sections.length > 1) && <div className="relative z-10 mt-3 flex flex-col items-center gap-2"><p className="text-[10px] font-bold text-[#8c7c85]">{sections.find((section) => section.id === activeSectionId)?.name}</p><div className="flex items-center gap-2">{sections.map((section) => <button key={section.id} type="button" aria-label={section.name} aria-current={section.id === activeSectionId} onClick={() => setActiveSectionId(section.id)} className={`h-2 w-2 rounded-full ${section.id === activeSectionId ? "bg-[#f71591]" : "border border-[#f7b5d4] bg-white"}`} />)}{editing && <button type="button" aria-label="Add a floor section" onClick={openSectionModal} className="h-2 w-2 rounded-full border border-[#f7b5d4] bg-white" />}</div></div>}
       </div>
     </div>
 
+    {sectionModal && <Modal title="Name this section" onClose={() => setSectionModal(false)}><form onSubmit={(event) => void createSection(event)} className="space-y-4"><Field label="Section name" type="text" maxLength={40} required value={sectionName} onChange={(event) => setSectionName(event.target.value)} placeholder="Patio, Bar, Upstairs" autoComplete="off" /><button className="h-11 w-full rounded-xl bg-[#f71591] text-sm font-bold text-white hover:bg-[#dc0d7e]">Create section</button></form></Modal>}
     {modal && <Modal title={t(editingTable ? "Edit table" : "Add a table")} onClose={() => { setModal(false); setEditingTable(null); }}><form onSubmit={(event) => void create(event)} className="space-y-4">
       <Field label={t("Table name or number")} type="text" maxLength={40} required value={number} onChange={(event) => setNumber(event.target.value)} placeholder="e.g. 12, Patio A, VIP-1" autoComplete="off" />
       <Field label={t("Seat capacity")} type="number" min="1" required value={capacity} onChange={(event) => setCapacity(event.target.value)} />
