@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Coffee, Pencil, Plus, Search, Salad, Trash2, Utensils, GripVertical } from "lucide-react";
+import { Camera, Coffee, Pencil, Plus, Search, Salad, Trash2, Utensils, GripVertical, GripHorizontal, X } from "lucide-react";
 import { Field, Modal, PageHeader, Panel, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import type { Category, MenuItem, ModifierGroup, PrepStation } from "../lib/types";
@@ -62,7 +63,7 @@ export function MenuPage() {
   const notify = useUiStore((state) => state.notify);
   const itemRequestId = useRef(0);
   const closeItemEditor = () => { setModal(false); setEditingItem(null); navigate("/menu"); };
-  const closeGroupEditor = () => { setGroupModal(false); navigate((location.state as { from?: string } | null)?.from || "/menu"); };
+  const closeGroupEditor = () => { setGroupModal(false); if (groupEditorId) navigate((location.state as { from?: string } | null)?.from || "/menu"); };
   const loadReferences = useCallback(async () => {
     setReferencesLoading(true);
     try {
@@ -234,7 +235,7 @@ export function MenuPage() {
     setGroupOptions(group?.options.map((option) => ({ id: option.id, name: option.name, nameMy: option.nameMy, nameTh: option.nameTh, priceAdjustment: String(option.priceAdjustment), defaultSelected: option.defaultSelected, active: option.active, opensGroupId: option.opensGroupId ?? "" })) ?? [{ name: "", nameMy: "", nameTh: "", priceAdjustment: "0", defaultSelected: false, active: true, opensGroupId: "" }]);
     setError("");
     setGroupModal(true);
-    if (navigateToEditor) navigate(`/menu/group-editor/${group?.id ?? "new"}`, { state: { from: location.pathname } });
+    if (navigateToEditor && group) navigate(`/menu/group-editor/${group.id}`, { state: { from: location.pathname } });
   };
   const saveGroup = async (event: FormEvent) => {
     event.preventDefault();
@@ -249,11 +250,14 @@ export function MenuPage() {
     };
     try {
       if (editingGroup) await api.patch(`/modifier-groups/${editingGroup.id}`, payload);
-      else await api.post("/modifier-groups", payload);
+      else {
+        const { data } = await api.post<{ id: string }>("/modifier-groups", payload);
+        if (modal) setSelectedGroupIds((current) => current.includes(data.id) ? current : [...current, data.id]);
+      }
       notify(editingGroup ? "Modifier group updated." : "Modifier group created.");
       setGroupModal(false);
       await load();
-      navigate((location.state as { from?: string } | null)?.from || "/menu");
+      if (groupEditorId) navigate((location.state as { from?: string } | null)?.from || "/menu");
     } catch (cause) { setError(errorMessage(cause)); }
   };
   const removeGroup = async (group: ModifierGroup) => {
@@ -272,7 +276,7 @@ export function MenuPage() {
   }, [groupEditorId, modifierGroups]);
   return (
     <div className="page-enter h-full w-full space-y-5">
-      {!modal && !groupModal && <>
+      {!(modal && editingItem) && !(groupModal && editingGroup) && <>
       <PageHeader
         eyebrow="Admin · Dining room details"
         title="Menu"
@@ -302,7 +306,6 @@ export function MenuPage() {
                 setSelectedGroupIds([]);
                 setError("");
                 setModal(true);
-                navigate("/menu/item-editor/new");
               }}
               disabled={!categories.length}
               className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#ed168c] px-4 text-xs font-bold text-white shadow-sm transition hover:bg-[#d80d7c] disabled:opacity-50"
@@ -450,13 +453,10 @@ export function MenuPage() {
         </div>
       )}
       </>}
-      {modal && !groupModal && (
-        <div className="min-h-[calc(100vh-7rem)] text-ink">
-          <div className="mb-6 flex h-14 items-center justify-between border-b border-[#f1dfe9]"><h1 className="text-[26px] font-bold tracking-tight">Menu</h1><span className="grid h-9 w-9 place-items-center rounded-xl border border-[#f1dfe9] text-muted"><Pencil size={15} /></span></div>
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
-            <div><p className="mb-2 text-[9px] font-extrabold uppercase tracking-[.2em] text-[#ed168c]">Admin · Menu item</p><h2 className="text-[26px] font-bold leading-tight tracking-tight">{editingItem ? editingItem.name : "New dish"}</h2><p className="mt-2 text-[11px] text-muted">{categories.find((category) => category.id === selectedCategory)?.name ?? "Choose a category"} · {Number(position) === 0 ? "1st" : `${Number(position) + 1}th`} in the section{price ? ` · ${money(price)}` : ""}</p></div>
-            <div className="flex gap-2"><button type="button" onClick={closeItemEditor} className="h-9 rounded-xl border border-[#f1dfe9] bg-white px-4 text-[11px] font-bold text-muted">Cancel</button><button type="submit" form="dish-editor-form" className="h-9 rounded-xl bg-[#ed168c] px-4 text-[11px] font-bold text-white hover:bg-[#d80d7c]">Save item</button></div>
-          </div>
+      {modal && (!groupModal || !editingItem) && (() => {
+        const dishSummary = `${categories.find((category) => category.id === selectedCategory)?.name ?? "Choose a category"} · ${Number(position) === 0 ? "1st" : `${Number(position) + 1}th`} in the section${price ? ` · ${money(price)}` : ""}`;
+        const dishActions = <div className="flex gap-2"><button type="button" onClick={closeItemEditor} className="h-9 rounded-xl border border-[#f1dfe9] bg-white px-4 text-[11px] font-bold text-muted">Cancel</button><button type="submit" form="dish-editor-form" className="h-9 rounded-xl bg-[#ed168c] px-4 text-[11px] font-bold text-white hover:bg-[#d80d7c]">Save item</button></div>;
+        const dishForm = (
           <form id="dish-editor-form" onSubmit={(event) => void saveItem(event)} className="grid items-start gap-4 pb-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.08fr)]">
             {error && <p role="alert" className="rounded-xl bg-rose-50 px-4 py-3 text-xs text-rose-700 lg:col-span-2">{error}</p>}
             <section className="overflow-hidden rounded-2xl border border-[#f1dfe9] bg-white">
@@ -478,8 +478,63 @@ export function MenuPage() {
               </div>
             </section>
           </form>
-        </div>
-      )}
+        );
+        if (!editingItem) {
+          const choiceClass = (selected: boolean) => `flex min-h-[52px] items-center gap-2 rounded-xl border px-3 text-left text-[13px] font-semibold ${selected ? "border-[#ed168c] text-ink" : "border-[#f3d5e4] text-ink"}`;
+          return createPortal(
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#291923]/35 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemEditor(); }}>
+              <form onSubmit={(event) => void saveItem(event)} className="flex max-h-[min(92vh,760px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[24px] bg-white shadow-float">
+                <div className="flex items-center gap-3 px-6 pb-2 pt-5">
+                  <span className="grid h-10 w-10 place-items-center rounded-2xl bg-[#fff0f7] text-[#ed168c]"><Utensils size={18} /></span>
+                  <h2 className="flex-1 text-lg font-bold tracking-tight text-ink">New dish</h2>
+                  <button type="button" onClick={closeItemEditor} aria-label="Close dialog" className="grid h-9 w-9 place-items-center rounded-xl text-muted hover:bg-[#fff4f9]"><X size={18} /></button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
+                  {error && <p role="alert" className="rounded-xl bg-rose-50 px-4 py-3 text-xs text-rose-700">{error}</p>}
+                  <section>
+                    <h3 className="text-sm font-bold text-ink">Details</h3>
+                    <p className="mt-0.5 text-xs text-muted">What staff and guests see</p>
+                    <label className="mt-4 block"><span className="mb-1.5 block text-sm font-semibold text-ink">Dish name</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Pad Kra Pao" className="h-11 w-full rounded-xl border border-[#f3d5e4] bg-white px-3 text-sm outline-none focus:border-[#ed168c]" /></label>
+                    <div className="mt-4"><span className="mb-2 block text-sm font-semibold text-ink">Category</span><div className="flex flex-wrap gap-2">{categories.map((category) => <button key={category.id} type="button" onClick={() => setSelectedCategory(category.id)} className={`rounded-xl border px-3 py-2 text-sm ${selectedCategory === category.id ? "border-[#ed168c] bg-[#fff4f9] font-semibold text-[#d90c7d]" : "border-[#f3d5e4] bg-white text-ink"}`}>{category.name}</button>)}</div></div>
+                    <label className="mt-4 block"><span className="mb-1.5 block text-sm font-semibold text-ink">Price</span><span className="flex h-11 items-center rounded-xl border border-[#f3d5e4] bg-white px-3"><input required type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0" className="min-w-0 flex-1 bg-transparent text-sm outline-none" /><span className="text-sm text-muted">THB</span></span></label>
+                    <div className="mt-4"><p className="mb-2 text-sm font-semibold text-ink">Does it need to be sent to the kitchen?</p><div className="grid gap-2 sm:grid-cols-2"><button type="button" onClick={() => setItemPrepStation("KITCHEN")} className={choiceClass(itemPrepStation === "KITCHEN")}><span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${itemPrepStation === "KITCHEN" ? "border-[#ed168c]" : "border-[#d9c3cf]"}`}>{itemPrepStation === "KITCHEN" && <span className="h-2 w-2 rounded-full bg-[#ed168c]" />}</span>Yes, send it to the kitchen</button><button type="button" onClick={() => setItemPrepStation("BAR")} className={choiceClass(itemPrepStation === "BAR")}><span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${itemPrepStation === "BAR" ? "border-[#ed168c]" : "border-[#d9c3cf]"}`}>{itemPrepStation === "BAR" && <span className="h-2 w-2 rounded-full bg-[#ed168c]" />}</span>No, staff serve it straight away</button></div></div>
+                  </section>
+                  <section>
+                    <h3 className="text-sm font-bold text-ink">Photo and description</h3>
+                    <p className="mt-0.5 text-xs text-muted">Optional</p>
+                    <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="A short description" rows={2} className="mt-3 w-full resize-none rounded-xl border border-[#f3d5e4] bg-white px-3 py-2 text-sm outline-none focus:border-[#ed168c]" />
+                    <label className="mt-3 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#f3c6dc] bg-[#fff9fc] px-4 py-8 text-center"><Camera size={18} className="text-[#ed168c]" /><span className="mt-2 text-sm text-muted">{imageUrl ? "Change photo" : "Add a photo"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setImageUrl(file ? URL.createObjectURL(file) : ""); }} className="sr-only" /></label>
+                    {imageUrl.trim() && <img src={imageUrl.trim()} alt="Dish preview" className="mx-auto mt-3 h-28 rounded-lg object-cover" />}
+                  </section>
+                  <section>
+                    <div className="flex items-center justify-between gap-3">
+                      <div><h3 className="text-sm font-bold text-ink">Option groups</h3><p className="mt-0.5 text-xs text-muted">Choices waiters ask for on this dish.</p></div>
+                      <button type="button" onClick={() => openGroupEditor()} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl border border-[#f3d5e4] px-3 text-xs font-bold text-ink"><Plus size={13} /> New group</button>
+                    </div>
+                    <div className="mt-3 space-y-2">{selectedGroupIds.map((id) => { const group = modifierGroups.find((candidate) => candidate.id === id); if (!group) return null; return <div key={id} className="flex items-center gap-2 rounded-xl border border-[#f3d5e4] px-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-ink">{group.name}</p><p className="truncate text-xs text-muted">{group.required ? "Required" : "Optional"} · {group.options.map((option) => option.name).join(", ") || "No options"}</p></div><button type="button" onClick={() => setSelectedGroupIds((current) => current.filter((groupId) => groupId !== id))} aria-label={`Remove ${group.name}`} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-rose-50 hover:text-rose-600"><X size={14} /></button></div>; })}</div>
+                    {modifierGroups.some((group) => !selectedGroupIds.includes(group.id)) && <div className="mt-3 flex flex-wrap gap-2">{modifierGroups.filter((group) => !selectedGroupIds.includes(group.id)).map((group) => <button key={group.id} type="button" onClick={() => setSelectedGroupIds((current) => [...current, group.id])} className="rounded-full border border-[#f3d5e4] bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:border-[#ed168c] hover:text-[#d90c7d]">+ {group.name}</button>)}</div>}
+                  </section>
+                </div>
+                <div className="flex items-center justify-between border-t border-[#f6e8ef] px-6 py-4">
+                  <button type="button" onClick={closeItemEditor} className="h-10 rounded-xl border border-[#f3d5e4] bg-white px-4 text-sm font-semibold text-ink">Cancel</button>
+                  <button className="h-10 rounded-xl bg-[#ed168c] px-5 text-sm font-bold text-white hover:bg-[#d80d7c]">Save</button>
+                </div>
+              </form>
+            </div>,
+            document.body,
+          );
+        }
+        return (
+          <div className="min-h-[calc(100vh-7rem)] text-ink">
+            <div className="mb-6 flex h-14 items-center justify-between border-b border-[#f1dfe9]"><h1 className="text-[26px] font-bold tracking-tight">Menu</h1><span className="grid h-9 w-9 place-items-center rounded-xl border border-[#f1dfe9] text-muted"><Pencil size={15} /></span></div>
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+              <div><p className="mb-2 text-[9px] font-extrabold uppercase tracking-[.2em] text-[#ed168c]">Admin · Menu item</p><h2 className="text-[26px] font-bold leading-tight tracking-tight">{editingItem.name}</h2><p className="mt-2 text-[11px] text-muted">{dishSummary}</p></div>
+              {dishActions}
+            </div>
+            {dishForm}
+          </div>
+        );
+      })()}
       {categoryModal && (
         <Modal title="Add a category" onClose={() => setCategoryModal(false)}>
           <form
@@ -499,7 +554,41 @@ export function MenuPage() {
           </form>
         </Modal>
       )}
-      {groupModal && <section className="min-h-[calc(100vh-7rem)] pb-8">
+      {groupModal && !editingGroup && createPortal(
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#291923]/35 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) closeGroupEditor(); }}>
+          <form onSubmit={(event) => void saveGroup(event)} className="flex h-[min(88vh,760px)] w-full max-w-[680px] flex-col rounded-[28px] bg-white px-7 py-6 shadow-float">
+            <h2 className="text-[22px] font-bold tracking-tight text-[#2a2430]">New option group</h2>
+            <p className="mt-1 text-[13px] text-[#9a8d96]">Saved to the library, so other dishes can use it too.</p>
+            {error && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-4 py-3 text-xs text-rose-700">{error}</p>}
+            <label className="mt-5 block"><span className="mb-2 block text-sm font-semibold text-[#2a2430]">Group name</span><input required value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Egg" className="h-12 w-full rounded-2xl border border-[#f3d5e4] bg-white px-4 text-sm outline-none focus:border-[#ed168c]" /></label>
+            <div className="mt-4 flex items-center gap-3">
+              <button type="button" role="switch" aria-checked={groupRequired} onClick={() => { const next = !groupRequired; setGroupRequired(next); if (next && Number(groupMin) < 1) setGroupMin("1"); if (!next && groupMin === "1") setGroupMin("0"); }} className={`relative h-7 w-12 shrink-0 rounded-full transition ${groupRequired ? "bg-[#ed168c]" : "bg-[#efe4ea]"}`}><span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition ${groupRequired ? "left-[22px]" : "left-0.5"}`} /></button>
+              <span><span className="block text-sm font-semibold text-[#2a2430]">Required</span><span className="block text-[13px] text-[#b0a3ab]">{groupRequired ? "On, so guests must choose" : "Off, so guests can skip it"}</span></span>
+            </div>
+            <div className="mt-5 min-h-0 flex-1 overflow-y-auto">
+              <p className="text-sm font-semibold text-[#2a2430]">Options</p>
+              <div className="mt-1 divide-y divide-[#f6e8ef]">{groupOptions.map((option, index) => <div key={option.id ?? `new-${index}`} className="grid grid-cols-[16px_minmax(0,1fr)_auto_auto_16px_auto] items-center gap-3 py-3">
+                <GripHorizontal size={14} className="text-[#c9b7c0]" />
+                <input value={option.name} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, name: event.target.value } : row))} placeholder="Option name" aria-label={`Option ${index + 1} name`} className="h-9 min-w-0 bg-transparent text-sm font-medium text-[#2a2430] outline-none placeholder:font-normal placeholder:text-[#c9b7c0]" />
+                <div className="flex h-9 items-center rounded-full bg-[#fff1f7] pl-3 pr-1">
+                  <button type="button" onClick={() => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: "0" } : row))} className="pr-2 text-xs font-semibold text-[#c9a3b4]">Free</button>
+                  <span className="flex h-7 items-center rounded-full bg-white px-1 text-[#d9c3cf]"><button type="button" aria-label={`Increase option ${index + 1} price`} onClick={() => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: String(Number(row.priceAdjustment || 0) + 10) } : row))} className="grid h-6 w-6 place-items-center text-sm">+</button><button type="button" aria-label={`Decrease option ${index + 1} price`} onClick={() => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: String(Math.max(0, Number(row.priceAdjustment || 0) - 10)) } : row))} className="grid h-6 w-6 place-items-center text-sm">−</button></span>
+                </div>
+                <span className="flex h-9 min-w-[84px] items-center justify-center rounded-xl border border-[#f3d5e4] px-3 text-sm text-[#6d6168]">{Number(option.priceAdjustment || 0) === 0 ? "0 THB" : `${Number(option.priceAdjustment)} THB`}</span>
+                <input type="checkbox" checked={option.defaultSelected} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, defaultSelected: event.target.checked } : row))} aria-label={`Option ${index + 1} default`} className="h-4 w-4 rounded border-[#e7d5de] accent-[#ed168c]" />
+                <select value={option.opensGroupId} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, opensGroupId: event.target.value } : row))} aria-label={`Option ${index + 1} follow-up group`} className="h-9 rounded-xl border border-[#f3d5e4] bg-white px-2 text-sm text-[#6d6168]"><option value="">None</option>{modifierGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>
+              </div>)}</div>
+              <button type="button" onClick={() => setGroupOptions((current) => [...current, { name: "", nameMy: "", nameTh: "", priceAdjustment: "0", defaultSelected: false, active: true, opensGroupId: "" }])} className="mt-3 inline-flex h-10 items-center gap-1.5 rounded-xl border border-[#f3d5e4] px-3 text-sm font-medium text-[#2a2430]"><Plus size={14} /> Add option</button>
+            </div>
+            <div className="mt-4 flex items-center justify-between">
+              <button type="button" onClick={closeGroupEditor} className="h-11 rounded-2xl border border-[#f3d5e4] bg-white px-5 text-sm font-semibold text-[#2a2430]">Cancel</button>
+              <button className="h-11 rounded-2xl bg-[#ed168c] px-6 text-sm font-bold text-white hover:bg-[#d80d7c]">Save group</button>
+            </div>
+          </form>
+        </div>,
+        document.body,
+      )}
+      {groupModal && editingGroup && <section className="min-h-[calc(100vh-7rem)] pb-8">
         <div className="mb-6 flex h-14 items-center justify-between border-b border-[#f1dfe9]"><h1 className="text-[26px] font-bold tracking-tight">Menu</h1><span className="grid h-9 w-9 place-items-center rounded-xl border border-[#f1dfe9] text-muted"><Pencil size={15} /></span></div>
         <div className="mb-5 flex flex-wrap items-end justify-between gap-4"><div><p className="mb-2 text-[13px] font-extrabold uppercase tracking-[.2em] text-[#ed168c]">Admin · Modifier group</p><h2 className="text-[26px] font-bold leading-tight tracking-tight">{groupName || "New modifier group"}</h2><p className="mt-2 text-[13px] text-muted">{editingGroup?.menuItems?.length ? `Used by ${editingGroup.menuItems.map((link) => link.menuItem.name).join(", ")}. Changes apply everywhere this group is used.` : "Changes apply everywhere this group is used."}</p></div><div className="flex gap-2"><button type="button" onClick={closeGroupEditor} className="h-9 rounded-xl border border-[#f1dfe9] bg-white px-4 text-[13px] font-bold text-muted">Cancel</button><button type="submit" form="modifier-editor-form" className="h-9 rounded-xl bg-[#ed168c] px-4 text-[13px] font-bold text-white">Save group</button></div></div>
         <form id="modifier-editor-form" onSubmit={(event) => void saveGroup(event)} className="grid items-start gap-4 lg:grid-cols-[minmax(0,.8fr)_minmax(0,1.2fr)]">
