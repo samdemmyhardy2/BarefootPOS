@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Camera, Coffee, Pencil, Plus, Search, Salad, Trash2, Utensils, GripVertical, GripHorizontal, X } from "lucide-react";
-import { Field, Modal, PageHeader, Panel, SelectField } from "../components/ui";
+import { Field, Modal, PageHeader, Panel } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import type { Category, MenuItem, ModifierGroup, PrepStation } from "../lib/types";
 import { money } from "../lib/types";
@@ -58,6 +58,7 @@ export function MenuPage() {
   const [groupIncluded, setGroupIncluded] = useState("0");
   const [groupExtraPickPrice, setGroupExtraPickPrice] = useState("0");
   const [groupAllowDuplicates, setGroupAllowDuplicates] = useState(false);
+  const [editingOptionIndex, setEditingOptionIndex] = useState<number | null>(null);
   const [groupOptions, setGroupOptions] = useState<Array<{ id?: string; name: string; nameMy: string; nameTh: string; priceAdjustment: string; defaultSelected: boolean; active: boolean; opensGroupId: string }>>([]);
   const [error, setError] = useState("");
   const notify = useUiStore((state) => state.notify);
@@ -166,7 +167,6 @@ export function MenuPage() {
     setSelectedGroupIds((item.modifierGroups ?? []).map((link) => link.group.id));
     setError("");
     setModal(true);
-    navigate(`/menu/item-editor/${item.id}`);
   };
   useEffect(() => {
     if (!editorItemId) return;
@@ -233,6 +233,7 @@ export function MenuPage() {
     setGroupExtraPickPrice(String(group?.extraPickPrice ?? 0));
     setGroupAllowDuplicates(group?.allowDuplicates ?? false);
     setGroupOptions(group?.options.map((option) => ({ id: option.id, name: option.name, nameMy: option.nameMy, nameTh: option.nameTh, priceAdjustment: String(option.priceAdjustment), defaultSelected: option.defaultSelected, active: option.active, opensGroupId: option.opensGroupId ?? "" })) ?? [{ name: "", nameMy: "", nameTh: "", priceAdjustment: "0", defaultSelected: false, active: true, opensGroupId: "" }]);
+    setEditingOptionIndex(group ? null : 0);
     setError("");
     setGroupModal(true);
     if (navigateToEditor && group) navigate(`/menu/group-editor/${group.id}`, { state: { from: location.pathname } });
@@ -276,7 +277,7 @@ export function MenuPage() {
   }, [groupEditorId, modifierGroups]);
   return (
     <div className="page-enter h-full w-full space-y-5">
-      {!(modal && editingItem) && !(groupModal && editingGroup) && <>
+      {!(groupModal && editingGroup) && <>
       <PageHeader
         eyebrow="Admin · Dining room details"
         title="Menu"
@@ -329,11 +330,11 @@ export function MenuPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="inline-flex rounded-xl bg-[#fff4f9] p-1">
               <button onClick={() => { setActiveView("dishes"); setSearch(""); }} className={`rounded-lg px-3 py-2 text-xs font-bold transition ${activeView === "dishes" ? "bg-white text-[#d90c7d] shadow-sm" : "text-muted"}`}>Dishes</button>
-              <button onClick={() => { setActiveView("groups"); setSearch(""); }} className={`rounded-lg px-3 py-2 text-xs font-bold transition ${activeView === "groups" ? "bg-white text-[#d90c7d] shadow-sm" : "text-muted"}`}>Modifier groups</button>
+              <button onClick={() => { setActiveView("groups"); setSearch(""); }} className={`rounded-lg px-3 py-2 text-xs font-bold transition ${activeView === "groups" ? "bg-white text-[#d90c7d] shadow-sm" : "text-muted"}`}>Options</button>
             </div>
             <div className="flex items-center gap-2 text-[11px] font-medium text-muted">
               <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#fff4f9] text-[#d90c7d]"><Utensils size={14} /></span>
-              {activeView === "dishes" ? `${dishTotal} ${dishTotal === 1 ? "dish" : "dishes"} · ${selectedCategoryName}` : `${shownGroups.length} modifier groups`}
+              {activeView === "dishes" ? `${dishTotal} ${dishTotal === 1 ? "dish" : "dishes"} · ${selectedCategoryName}` : `${shownGroups.length} ${shownGroups.length === 1 ? "option" : "options"}`}
             </div>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -354,7 +355,7 @@ export function MenuPage() {
           </div> : <div className="scrollbar-hide flex gap-1 overflow-x-auto">
             {["All groups", ...new Set(modifierGroups.map((group) => group.category))].map((category) => <button key={category} onClick={() => setGroupCategoryFilter(category)} className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold ${groupCategoryFilter === category ? "bg-[#ed168c] text-white" : "text-muted hover:bg-[#fff4f9]"}`}>{category}</button>)}
           </div>}
-          {activeView === "groups" && <button onClick={() => openGroupEditor()} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#ed168c] px-4 text-xs font-bold text-white hover:bg-[#d80d7c]"><Plus size={15} /> New group</button>}
+          {activeView === "groups" && <button onClick={() => openGroupEditor()} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#ed168c] px-4 text-xs font-bold text-white hover:bg-[#d80d7c]"><Plus size={15} /> New option</button>}
           <div className="relative sm:w-60">
             <Search
               size={15}
@@ -435,7 +436,7 @@ export function MenuPage() {
               <div className="min-w-0 text-center sm:px-3"><p className="text-[9px] font-bold uppercase tracking-[.12em] text-muted">Used by</p><p className="truncate text-[11px] font-semibold text-[#27212a]" title={usedBy.join(", ")}>{usedByPreview || "No dishes yet"}</p></div>
               <div className="flex items-center justify-end gap-1 sm:gap-2"><span className="rounded-full bg-[#fff7fb] px-2.5 py-1 text-[9px] font-semibold text-muted">{appearanceLabel}</span><button onClick={() => openGroupEditor(group)} aria-label={`Edit ${group.name}`} className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-[#fff0f7] hover:text-[#d90c7d]"><Pencil size={15} /></button><button onClick={() => void removeGroup(group)} aria-label={`Delete ${group.name}`} className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></div>
             </article>;
-          })}</div> : <div className="p-12 text-center"><Utensils className="mx-auto text-muted" /><p className="mt-3 text-sm font-semibold">No modifier groups here</p><p className="mt-1 text-xs text-muted">Create a group once and attach it to any dish.</p></div>;
+          })}</div> : <div className="p-12 text-center"><Utensils className="mx-auto text-muted" /><p className="mt-3 text-sm font-semibold">No options here</p><p className="mt-1 text-xs text-muted">Create an option once and attach it to any dish.</p></div>;
         })()}
         {((activeView === "dishes" && !itemsLoading && dishTotalPages > 1) || (activeView === "groups" && !referencesLoading && shownGroups.length > PAGE_SIZE)) && <Pagination page={activeView === "dishes" ? dishPage : groupPage} totalPages={activeView === "dishes" ? dishTotalPages : Math.ceil(shownGroups.length / PAGE_SIZE)} total={activeView === "dishes" ? dishTotal : shownGroups.length} onPageChange={activeView === "dishes" ? setDishPage : setGroupPage} disabled={itemsLoading} />}
       </Panel>
@@ -453,40 +454,14 @@ export function MenuPage() {
         </div>
       )}
       </>}
-      {modal && (!groupModal || !editingItem) && (() => {
-        const dishSummary = `${categories.find((category) => category.id === selectedCategory)?.name ?? "Choose a category"} · ${Number(position) === 0 ? "1st" : `${Number(position) + 1}th`} in the section${price ? ` · ${money(price)}` : ""}`;
-        const dishActions = <div className="flex gap-2"><button type="button" onClick={closeItemEditor} className="h-9 rounded-xl border border-[#f1dfe9] bg-white px-4 text-[11px] font-bold text-muted">Cancel</button><button type="submit" form="dish-editor-form" className="h-9 rounded-xl bg-[#ed168c] px-4 text-[11px] font-bold text-white hover:bg-[#d80d7c]">Save item</button></div>;
-        const dishForm = (
-          <form id="dish-editor-form" onSubmit={(event) => void saveItem(event)} className="grid items-start gap-4 pb-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.08fr)]">
-            {error && <p role="alert" className="rounded-xl bg-rose-50 px-4 py-3 text-xs text-rose-700 lg:col-span-2">{error}</p>}
-            <section className="overflow-hidden rounded-2xl border border-[#f1dfe9] bg-white">
-              <div className="border-b border-[#f1dfe9] px-4 py-3"><p className="text-[13px] font-bold text-ink">Details</p><p className="mt-1 text-[10px] text-muted">What staff and guests see</p></div>
-              <div className="space-y-3.5 p-4">
-                <Field label="Name in English" required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Crispy tofu bowl" />
-                <Field label="Short description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="A short, delicious description" />
-                <div className="grid gap-3 sm:grid-cols-2"><SelectField label="Category" value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</SelectField><label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">Position</span><select value={position} onChange={(event) => setPosition(event.target.value)} className="h-[42px] w-full rounded-xl border border-line bg-white px-3 text-sm text-ink"><option value="0">1st in {categories.find((category) => category.id === selectedCategory)?.name ?? "section"}</option>{Array.from({ length: Math.max(1, visible.length) }, (_, index) => index + 1).map((value) => <option key={value} value={String(value)}>{value + 1}{value === 1 ? "nd" : value === 2 ? "rd" : "th"} in {categories.find((category) => category.id === selectedCategory)?.name ?? "section"}</option>)}</select></label></div>
-                <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">Dish prepared at</span><select value={itemPrepStation} onChange={(event) => setItemPrepStation(event.target.value as PrepStation)} className="h-[42px] w-full rounded-xl border border-line bg-white px-3 text-sm text-ink"><option value="KITCHEN">Kitchen</option><option value="BAR">Bar</option></select></label>
-                <Field label="Price" type="number" required min="0.01" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0.00" />
-                <div className="rounded-xl border border-dashed border-[#e7cbd9] bg-[#fff9fc] p-4 text-center"><label className="flex cursor-pointer flex-col items-center gap-2"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-[#ed168c] shadow-sm"><Plus size={16} /></span><span className="text-[10px] font-bold text-ink">{imageUrl ? "Change photo" : "Add a photo"}</span><span className="text-[9px] text-muted">Shown on the order screen. JPG or PNG.</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setImageUrl(file ? URL.createObjectURL(file) : editingItem?.imageUrl ?? ""); }} className="sr-only" /></label>{imageUrl.trim() && <img src={imageUrl.trim()} alt="Dish preview" className="mx-auto mt-3 h-28 max-w-full rounded-lg object-cover" />}</div>
-              </div>
-            </section>
-            <section className="overflow-hidden rounded-2xl border border-[#f1dfe9] bg-white">
-              <div className="flex items-center justify-between border-b border-[#f1dfe9] px-4 py-3"><div><p className="text-[13px] font-bold text-ink">Modifier groups</p><p className="mt-1 text-[10px] text-muted">Waiters see these in this order. Drag to reorder.</p></div><span className="rounded-full bg-[#fff4f9] px-2.5 py-1 text-[9px] font-semibold text-muted">{selectedGroupIds.length} groups</span></div>
-              <div className="space-y-2 p-4">{selectedGroupIds.map((id, index) => { const group = modifierGroups.find((candidate) => candidate.id === id); if (!group) return null; return <div key={id} className="flex items-center gap-2 rounded-xl border border-[#f1dfe9] p-3"><GripVertical size={15} className="shrink-0 text-muted" /><div className="min-w-0 flex-1"><p className="text-[11px] font-bold text-ink">{group.name} <span className="ml-1 font-normal text-muted">{group.nameMy}</span></p><p className="mt-1 text-[9px] text-muted">{group.required ? "Required" : "Optional"} · {group.selectionType === "SINGLE" ? "Pick 1" : `Pick ${group.minPicks}–${group.maxPicks}`} · {group.options.map((option) => option.name).join(", ")}</p></div><span className="rounded-full bg-[#fff7fb] px-2 py-1 text-[8px] font-semibold text-muted">{group.selectionType === "SINGLE" ? "Radio buttons" : "Checkboxes"}</span><button type="button" title="Move up" disabled={index === 0} onClick={() => setSelectedGroupIds((current) => { const next = [...current]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return next; })} className="px-1 text-muted disabled:opacity-30">↑</button><button type="button" onClick={() => openGroupEditor(group)} aria-label={`Edit ${group.name}`} className="px-1 text-muted hover:text-[#d90c7d]"><Pencil size={13} /></button><button type="button" onClick={() => setSelectedGroupIds((current) => current.filter((groupId) => groupId !== id))} aria-label={`Remove ${group.name}`} className="px-1 text-muted hover:text-rose-600">×</button></div>; })}
-                {modifierGroups.filter((group) => !selectedGroupIds.includes(group.id)).length > 0 && <details className="rounded-xl border border-dashed border-[#e7cbd9] p-3"><summary className="cursor-pointer text-[10px] font-bold text-ink">＋ Add from library</summary><div className="mt-2 max-h-48 space-y-1 overflow-y-auto">{modifierGroups.filter((group) => !selectedGroupIds.includes(group.id)).map((group) => <label key={group.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-[#fff8fb]"><input type="checkbox" checked={false} onChange={(event) => setSelectedGroupIds((current) => event.target.checked ? [...current, group.id] : current)} className="accent-[#ed168c]" /><span className="text-[10px] font-semibold">{group.name}</span><span className="ml-auto text-[9px] text-muted">{group.options.length} options</span></label>)}</div></details>}
-                <button type="button" onClick={() => openGroupEditor()} className="rounded-xl border border-[#f1dfe9] px-3 py-2 text-[10px] font-bold text-ink">＋ New group</button>
-              </div>
-            </section>
-          </form>
-        );
-        if (!editingItem) {
+      {modal && (() => {
           const choiceClass = (selected: boolean) => `flex min-h-[52px] items-center gap-2 rounded-xl border px-3 text-left text-[13px] font-semibold ${selected ? "border-[#ed168c] text-ink" : "border-[#f3d5e4] text-ink"}`;
           return createPortal(
             <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#291923]/35 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemEditor(); }}>
               <form onSubmit={(event) => void saveItem(event)} className="flex max-h-[min(92vh,760px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[24px] bg-white shadow-float">
                 <div className="flex items-center gap-3 px-6 pb-2 pt-5">
                   <span className="grid h-10 w-10 place-items-center rounded-2xl bg-[#fff0f7] text-[#ed168c]"><Utensils size={18} /></span>
-                  <h2 className="flex-1 text-lg font-bold tracking-tight text-ink">New dish</h2>
+                  <h2 className="flex-1 text-lg font-bold tracking-tight text-ink">{editingItem ? "Edit dish" : "New dish"}</h2>
                   <button type="button" onClick={closeItemEditor} aria-label="Close dialog" className="grid h-9 w-9 place-items-center rounded-xl text-muted hover:bg-[#fff4f9]"><X size={18} /></button>
                 </div>
                 <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
@@ -503,13 +478,13 @@ export function MenuPage() {
                     <h3 className="text-sm font-bold text-ink">Photo and description</h3>
                     <p className="mt-0.5 text-xs text-muted">Optional</p>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="A short description" rows={2} className="mt-3 w-full resize-none rounded-xl border border-[#f3d5e4] bg-white px-3 py-2 text-sm outline-none focus:border-[#ed168c]" />
-                    <label className="mt-3 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#f3c6dc] bg-[#fff9fc] px-4 py-8 text-center"><Camera size={18} className="text-[#ed168c]" /><span className="mt-2 text-sm text-muted">{imageUrl ? "Change photo" : "Add a photo"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setImageUrl(file ? URL.createObjectURL(file) : ""); }} className="sr-only" /></label>
+                    <label className="mt-3 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#f3c6dc] bg-[#fff9fc] px-4 py-8 text-center"><Camera size={18} className="text-[#ed168c]" /><span className="mt-2 text-sm text-muted">{imageUrl ? "Change photo" : "Add a photo"}</span><input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0] ?? null; setImageFile(file); setImageUrl(file ? URL.createObjectURL(file) : editingItem?.imageUrl ?? ""); }} className="sr-only" /></label>
                     {imageUrl.trim() && <img src={imageUrl.trim()} alt="Dish preview" className="mx-auto mt-3 h-28 rounded-lg object-cover" />}
                   </section>
                   <section>
                     <div className="flex items-center justify-between gap-3">
-                      <div><h3 className="text-sm font-bold text-ink">Option groups</h3><p className="mt-0.5 text-xs text-muted">Choices waiters ask for on this dish.</p></div>
-                      <button type="button" onClick={() => openGroupEditor()} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl border border-[#f3d5e4] px-3 text-xs font-bold text-ink"><Plus size={13} /> New group</button>
+                      <div><h3 className="text-sm font-bold text-ink">Options</h3><p className="mt-0.5 text-xs text-muted">Choices waiters ask for on this dish.</p></div>
+                      <button type="button" onClick={() => openGroupEditor()} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl border border-[#f3d5e4] px-3 text-xs font-bold text-ink"><Plus size={13} /> New option</button>
                     </div>
                     <div className="mt-3 space-y-2">{selectedGroupIds.map((id) => { const group = modifierGroups.find((candidate) => candidate.id === id); if (!group) return null; return <div key={id} className="flex items-center gap-2 rounded-xl border border-[#f3d5e4] px-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-ink">{group.name}</p><p className="truncate text-xs text-muted">{group.required ? "Required" : "Optional"} · {group.options.map((option) => option.name).join(", ") || "No options"}</p></div><button type="button" onClick={() => setSelectedGroupIds((current) => current.filter((groupId) => groupId !== id))} aria-label={`Remove ${group.name}`} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-rose-50 hover:text-rose-600"><X size={14} /></button></div>; })}</div>
                     {modifierGroups.some((group) => !selectedGroupIds.includes(group.id)) && <div className="mt-3 flex flex-wrap gap-2">{modifierGroups.filter((group) => !selectedGroupIds.includes(group.id)).map((group) => <button key={group.id} type="button" onClick={() => setSelectedGroupIds((current) => [...current, group.id])} className="rounded-full border border-[#f3d5e4] bg-white px-3 py-1.5 text-xs font-semibold text-ink hover:border-[#ed168c] hover:text-[#d90c7d]">+ {group.name}</button>)}</div>}
@@ -523,17 +498,6 @@ export function MenuPage() {
             </div>,
             document.body,
           );
-        }
-        return (
-          <div className="min-h-[calc(100vh-7rem)] text-ink">
-            <div className="mb-6 flex h-14 items-center justify-between border-b border-[#f1dfe9]"><h1 className="text-[26px] font-bold tracking-tight">Menu</h1><span className="grid h-9 w-9 place-items-center rounded-xl border border-[#f1dfe9] text-muted"><Pencil size={15} /></span></div>
-            <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
-              <div><p className="mb-2 text-[9px] font-extrabold uppercase tracking-[.2em] text-[#ed168c]">Admin · Menu item</p><h2 className="text-[26px] font-bold leading-tight tracking-tight">{editingItem.name}</h2><p className="mt-2 text-[11px] text-muted">{dishSummary}</p></div>
-              {dishActions}
-            </div>
-            {dishForm}
-          </div>
-        );
       })()}
       {categoryModal && (
         <Modal title="Add a category" onClose={() => setCategoryModal(false)}>
@@ -557,32 +521,34 @@ export function MenuPage() {
       {groupModal && !editingGroup && createPortal(
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#291923]/35 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) closeGroupEditor(); }}>
           <form onSubmit={(event) => void saveGroup(event)} className="flex h-[min(88vh,760px)] w-full max-w-[680px] flex-col rounded-[28px] bg-white px-7 py-6 shadow-float">
-            <h2 className="text-[22px] font-bold tracking-tight text-[#2a2430]">New option group</h2>
+            <h2 className="text-[22px] font-bold tracking-tight text-[#2a2430]">New option</h2>
             <p className="mt-1 text-[13px] text-[#9a8d96]">Saved to the library, so other dishes can use it too.</p>
             {error && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-4 py-3 text-xs text-rose-700">{error}</p>}
-            <label className="mt-5 block"><span className="mb-2 block text-sm font-semibold text-[#2a2430]">Group name</span><input required value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Egg" className="h-12 w-full rounded-2xl border border-[#f3d5e4] bg-white px-4 text-sm outline-none focus:border-[#ed168c]" /></label>
+            <label className="mt-5 block"><span className="mb-2 block text-sm font-semibold text-[#2a2430]">Name</span><input required value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Egg" className="h-12 w-full rounded-2xl border border-[#f3d5e4] bg-white px-4 text-sm outline-none focus:border-[#ed168c]" /></label>
+            <div className="mt-4"><p className="mb-2 text-sm font-semibold text-[#2a2430]">Type</p><div className="flex flex-wrap gap-2">{([{ type: "RADIO", label: "Pick one" }, { type: "CHECKBOX", label: "Pick several" }, { type: "SLIDER", label: "Level" }] as const).map((choice) => <button key={choice.type} type="button" aria-pressed={groupAppearance === choice.type} onClick={() => { setGroupAppearance(choice.type); if (choice.type === "RADIO" || choice.type === "SLIDER") { setGroupSelectionType("SINGLE"); setGroupMax("1"); setGroupAllowDuplicates(false); } else { setGroupSelectionType("MULTIPLE"); setGroupAllowDuplicates(false); } }} className={`h-10 rounded-xl border px-3 text-sm font-semibold ${groupAppearance === choice.type ? "border-[#ed168c] bg-[#fff4f9] text-[#d90c7d]" : "border-[#f3d5e4] text-[#2a2430]"}`}>{choice.label}</button>)}</div><p className="mt-1.5 text-xs text-[#b0a3ab]">{groupAppearance === "RADIO" ? "Waiters pick one choice." : groupAppearance === "SLIDER" ? "Waiters choose a level from the choices." : "Waiters can pick several choices."}</p></div>
             <div className="mt-4 flex items-center gap-3">
               <button type="button" role="switch" aria-checked={groupRequired} onClick={() => { const next = !groupRequired; setGroupRequired(next); if (next && Number(groupMin) < 1) setGroupMin("1"); if (!next && groupMin === "1") setGroupMin("0"); }} className={`relative h-7 w-12 shrink-0 rounded-full transition ${groupRequired ? "bg-[#ed168c]" : "bg-[#efe4ea]"}`}><span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition ${groupRequired ? "left-[22px]" : "left-0.5"}`} /></button>
               <span><span className="block text-sm font-semibold text-[#2a2430]">Required</span><span className="block text-[13px] text-[#b0a3ab]">{groupRequired ? "On, so guests must choose" : "Off, so guests can skip it"}</span></span>
             </div>
             <div className="mt-5 min-h-0 flex-1 overflow-y-auto">
-              <p className="text-sm font-semibold text-[#2a2430]">Options</p>
-              <div className="mt-1 divide-y divide-[#f6e8ef]">{groupOptions.map((option, index) => <div key={option.id ?? `new-${index}`} className="grid grid-cols-[16px_minmax(0,1fr)_auto_auto_16px_auto] items-center gap-3 py-3">
+              <p className="text-sm font-semibold text-[#2a2430]">Choices</p>
+              <div className="mt-1 divide-y divide-[#f6e8ef]">{groupOptions.map((option, index) => <div key={option.id ?? `new-${index}`} className="grid grid-cols-[16px_minmax(0,1fr)_88px_auto_auto] items-center gap-3 py-3">
                 <GripHorizontal size={14} className="text-[#c9b7c0]" />
-                <input value={option.name} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, name: event.target.value } : row))} placeholder="Option name" aria-label={`Option ${index + 1} name`} className="h-9 min-w-0 bg-transparent text-sm font-medium text-[#2a2430] outline-none placeholder:font-normal placeholder:text-[#c9b7c0]" />
-                <div className="flex h-9 items-center rounded-full bg-[#fff1f7] pl-3 pr-1">
-                  <button type="button" onClick={() => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: "0" } : row))} className="pr-2 text-xs font-semibold text-[#c9a3b4]">Free</button>
-                  <span className="flex h-7 items-center rounded-full bg-white px-1 text-[#d9c3cf]"><button type="button" aria-label={`Increase option ${index + 1} price`} onClick={() => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: String(Number(row.priceAdjustment || 0) + 10) } : row))} className="grid h-6 w-6 place-items-center text-sm">+</button><button type="button" aria-label={`Decrease option ${index + 1} price`} onClick={() => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: String(Math.max(0, Number(row.priceAdjustment || 0) - 10)) } : row))} className="grid h-6 w-6 place-items-center text-sm">−</button></span>
-                </div>
-                <span className="flex h-9 min-w-[84px] items-center justify-center rounded-xl border border-[#f3d5e4] px-3 text-sm text-[#6d6168]">{Number(option.priceAdjustment || 0) === 0 ? "0 THB" : `${Number(option.priceAdjustment)} THB`}</span>
-                <input type="checkbox" checked={option.defaultSelected} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, defaultSelected: event.target.checked } : row))} aria-label={`Option ${index + 1} default`} className="h-4 w-4 rounded border-[#e7d5de] accent-[#ed168c]" />
-                <select value={option.opensGroupId} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, opensGroupId: event.target.value } : row))} aria-label={`Option ${index + 1} follow-up group`} className="h-9 rounded-xl border border-[#f3d5e4] bg-white px-2 text-sm text-[#6d6168]"><option value="">None</option>{modifierGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>
+                {editingOptionIndex === index ? <input autoFocus value={option.name} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, name: event.target.value } : row))} placeholder="Choice name" aria-label={`Choice ${index + 1} name`} className="h-9 min-w-0 rounded-lg border border-[#f3d5e4] bg-white px-2 text-sm font-medium text-[#2a2430] outline-none focus:border-[#ed168c]" /> : <p className="truncate text-sm font-medium text-[#2a2430]">{option.name || "Untitled"}</p>}
+                <span className="flex h-9 items-center justify-center gap-1 rounded-xl border border-[#f3d5e4] px-2"><input type="number" min="0" step="0.01" value={option.priceAdjustment} onChange={(event) => setGroupOptions((current) => current.map((row, i) => i === index ? { ...row, priceAdjustment: event.target.value } : row))} aria-label={`Choice ${index + 1} price`} className="w-10 bg-transparent text-right text-sm text-[#6d6168] outline-none" /><span className="text-xs text-[#9a8d96]">THB</span></span>
+                <button type="button" onClick={() => setEditingOptionIndex(editingOptionIndex === index ? null : index)} aria-label={`Edit choice ${index + 1}`} className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-[#fff0f7] hover:text-[#d90c7d]"><Pencil size={15} /></button>
+                <button type="button" onClick={() => { setGroupOptions((current) => current.filter((_, i) => i !== index)); setEditingOptionIndex(null); }} aria-label={`Delete choice ${index + 1}`} className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
               </div>)}</div>
-              <button type="button" onClick={() => setGroupOptions((current) => [...current, { name: "", nameMy: "", nameTh: "", priceAdjustment: "0", defaultSelected: false, active: true, opensGroupId: "" }])} className="mt-3 inline-flex h-10 items-center gap-1.5 rounded-xl border border-[#f3d5e4] px-3 text-sm font-medium text-[#2a2430]"><Plus size={14} /> Add option</button>
+              <button type="button" onClick={() => { setGroupOptions((current) => [...current, { name: "", nameMy: "", nameTh: "", priceAdjustment: "0", defaultSelected: false, active: true, opensGroupId: "" }]); setEditingOptionIndex(groupOptions.length); }} className="mt-3 inline-flex h-10 items-center gap-1.5 rounded-xl border border-[#f3d5e4] px-3 text-sm font-medium text-[#2a2430]"><Plus size={14} /> Add choice</button>
+              <div className="mt-6">
+                <p className="text-sm font-semibold text-[#2a2430]">What the waiter sees</p>
+                <p className="mt-0.5 text-xs text-[#b0a3ab]">A live preview of the selected type.</p>
+                <div className="mt-3"><ModifierGroupLivePreview key={groupAppearance} name={groupName} nameMy={groupNameMy} required={groupRequired} appearance={groupAppearance} selectionType={groupSelectionType} minPicks={Number(groupMin)} includedPicks={Number(groupIncluded)} extraPickPrice={Number(groupExtraPickPrice)} maxPicks={Math.max(1, Number(groupMax))} options={groupOptions} /></div>
+              </div>
             </div>
             <div className="mt-4 flex items-center justify-between">
               <button type="button" onClick={closeGroupEditor} className="h-11 rounded-2xl border border-[#f3d5e4] bg-white px-5 text-sm font-semibold text-[#2a2430]">Cancel</button>
-              <button className="h-11 rounded-2xl bg-[#ed168c] px-6 text-sm font-bold text-white hover:bg-[#d80d7c]">Save group</button>
+              <button className="h-11 rounded-2xl bg-[#ed168c] px-6 text-sm font-bold text-white hover:bg-[#d80d7c]">Save</button>
             </div>
           </form>
         </div>,
@@ -598,7 +564,7 @@ export function MenuPage() {
             <div className="grid gap-3 sm:grid-cols-2"><Field label="Name in Burmese" value={groupNameMy} onChange={(event) => setGroupNameMy(event.target.value)} placeholder="မြန်မာအမည်" /><Field label="Name in Thai" value={groupNameTh} onChange={(event) => setGroupNameTh(event.target.value)} placeholder="ชื่อภาษาไทย" /></div>
             <div><p className="mb-2 text-[13px] font-bold">Modifier group icon</p><div className="grid grid-cols-4 gap-2">{modifierGroupIcons.map(({ name: iconName, label }) => <button key={iconName} type="button" onClick={() => setGroupIcon(iconName)} aria-label={`${label} icon`} aria-pressed={groupIcon === iconName} className={`flex h-12 items-center justify-center gap-2 rounded-xl border text-[11px] font-semibold transition ${groupIcon === iconName ? "border-[#ed168c] bg-[#fff4f9] text-[#d90c7d]" : "border-[#f1dfe9] bg-white text-muted hover:border-[#ed168c]/50"}`}><ModifierGroupIcon name={iconName} size={17} /><span className="hidden sm:inline">{label}</span></button>)}</div></div>
             <div><p className="mb-2 text-[13px] font-bold">Required or optional</p><div className="inline-flex rounded-lg bg-[#fff4f9] p-1"><button type="button" onClick={() => { setGroupRequired(true); if (Number(groupMin) < 1) setGroupMin("1"); }} className={`rounded-md px-3 py-1.5 text-[13px] font-semibold ${groupRequired ? "bg-white text-[#d90c7d] shadow-sm" : "text-muted"}`}>Required</button><button type="button" onClick={() => { setGroupRequired(false); if (groupMin === "1") setGroupMin("0"); }} className={`rounded-md px-3 py-1.5 text-[13px] font-semibold ${!groupRequired ? "bg-white text-[#d90c7d] shadow-sm" : "text-muted"}`}>Optional</button></div></div>
-            <div><p className="mb-1 text-[13px] font-bold">How it appears</p><p className="mb-2 text-[13px] text-muted">What the waiter sees on the order screen</p><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{([{ type: "RADIO", title: "Radio buttons" }, { type: "CHECKBOX", title: "Checkboxes" }, { type: "SLIDER", title: "Slider" }, { type: "QUANTITY", title: "Quantity stepper" }, { type: "TEXT", title: "Text field" }] as const).map((choice) => <button key={choice.type} type="button" aria-pressed={groupAppearance === choice.type} onClick={() => { setGroupAppearance(choice.type); if (choice.type === "RADIO" || choice.type === "SLIDER") { setGroupSelectionType("SINGLE"); setGroupMax("1"); setGroupAllowDuplicates(false); } else { setGroupSelectionType("MULTIPLE"); setGroupAllowDuplicates(choice.type === "QUANTITY"); if (choice.type === "QUANTITY" && Number(groupMax) <= 1) setGroupMax("10"); } }} className={`rounded-xl border p-2 text-center transition ${groupAppearance === choice.type ? "border-[#ed168c] bg-[#fff7fb] text-[#d90c7d]" : "border-[#f1dfe9] text-muted hover:border-[#ed168c]/60"}`}><span className="mb-1.5 flex h-8 items-center justify-center rounded-lg bg-[#fff8fb]">{choice.type === "RADIO" && <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full border-[3px] border-[#ed168c]" /><i className="h-3 w-3 rounded-full border border-[#ad97a1]" /><i className="h-3 w-3 rounded-full border border-[#ad97a1]" /></span>}{choice.type === "CHECKBOX" && <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-[3px] bg-[#ed168c]" /><i className="h-3 w-3 rounded-[3px] border border-[#ad97a1]" /><i className="h-3 w-3 rounded-[3px] border border-[#ad97a1]" /></span>}{choice.type === "SLIDER" && <span className="relative h-1 w-14 rounded-full bg-[#f4cfe1]"><i className="absolute left-8 -top-1.5 h-4 w-4 rounded-full border border-[#ed168c] bg-white" /></span>}{choice.type === "QUANTITY" && <span className="flex items-center gap-2 rounded-md bg-white px-2 py-1 text-[10px] text-ink"><b>−</b> 1 <b>＋</b></span>}{choice.type === "TEXT" && <span className="w-14 rounded-md border border-[#f1dfe9] bg-white px-2 py-1 text-left text-[10px] text-muted">Aa</span>}</span><span className="block text-[13px] font-semibold">{choice.title}</span></button>)}</div></div>
+            <div><p className="mb-1 text-[13px] font-bold">How it appears</p><p className="mb-2 text-[13px] text-muted">What the waiter sees on the order screen</p><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{([{ type: "RADIO", title: "Pick one" }, { type: "CHECKBOX", title: "Pick several" }, { type: "SLIDER", title: "Level" }, { type: "TEXT", title: "Text field" }] as const).map((choice) => <button key={choice.type} type="button" aria-pressed={groupAppearance === choice.type} onClick={() => { setGroupAppearance(choice.type); if (choice.type === "RADIO" || choice.type === "SLIDER") { setGroupSelectionType("SINGLE"); setGroupMax("1"); setGroupAllowDuplicates(false); } else { setGroupSelectionType("MULTIPLE"); setGroupAllowDuplicates(choice.type === "QUANTITY"); if (choice.type === "QUANTITY" && Number(groupMax) <= 1) setGroupMax("10"); } }} className={`rounded-xl border p-2 text-center transition ${groupAppearance === choice.type ? "border-[#ed168c] bg-[#fff7fb] text-[#d90c7d]" : "border-[#f1dfe9] text-muted hover:border-[#ed168c]/60"}`}><span className="mb-1.5 flex h-8 items-center justify-center rounded-lg bg-[#fff8fb]">{choice.type === "RADIO" && <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-full border-[3px] border-[#ed168c]" /><i className="h-3 w-3 rounded-full border border-[#ad97a1]" /><i className="h-3 w-3 rounded-full border border-[#ad97a1]" /></span>}{choice.type === "CHECKBOX" && <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-[3px] bg-[#ed168c]" /><i className="h-3 w-3 rounded-[3px] border border-[#ad97a1]" /><i className="h-3 w-3 rounded-[3px] border border-[#ad97a1]" /></span>}{choice.type === "SLIDER" && <span className="relative h-1 w-14 rounded-full bg-[#f4cfe1]"><i className="absolute left-8 -top-1.5 h-4 w-4 rounded-full border border-[#ed168c] bg-white" /></span>}{choice.type === "QUANTITY" && <span className="flex items-center gap-2 rounded-md bg-white px-2 py-1 text-[10px] text-ink"><b>−</b> 1 <b>＋</b></span>}{choice.type === "TEXT" && <span className="w-14 rounded-md border border-[#f1dfe9] bg-white px-2 py-1 text-left text-[10px] text-muted">Aa</span>}</span><span className="block text-[13px] font-semibold">{choice.title}</span></button>)}</div></div>
             <div><p className="mb-2 text-[13px] font-bold">Picks</p><div className="grid grid-cols-2 gap-3"><Field label="Minimum" type="number" min="0" value={groupMin} onChange={(event) => setGroupMin(event.target.value)} /><Field label="Maximum" type="number" min="1" value={groupMax} onChange={(event) => setGroupMax(event.target.value)} /><Field label="Included in the price" type="number" min="0" value={groupIncluded} onChange={(event) => setGroupIncluded(event.target.value)} /><div><span className="mb-1.5 block text-[13px] font-semibold">Each extra pick</span><div className="flex h-10 items-center gap-1 rounded-xl border border-[#f1dfe9] bg-[#fff9fc] p-1"><button type="button" onClick={() => setGroupExtraPickPrice("0")} className="h-full rounded-lg bg-white px-2 text-[10px] font-semibold text-muted">Free</button><button type="button" aria-label="Increase extra pick price" onClick={() => setGroupExtraPickPrice((value) => String(Number(value || 0) + 10))} className="h-full rounded-lg px-2 text-[13px] text-muted hover:bg-white">＋</button><button type="button" aria-label="Decrease extra pick price" onClick={() => setGroupExtraPickPrice((value) => String(Math.max(0, Number(value || 0) - 10)))} className="h-full rounded-lg px-2 text-[13px] text-muted hover:bg-white">−</button><input type="number" min="0" step="0.01" value={groupExtraPickPrice} onChange={(event) => setGroupExtraPickPrice(event.target.value)} aria-label="Each extra pick price" className="h-full min-w-0 flex-1 rounded-lg border border-[#f1dfe9] bg-white px-2 text-center text-[10px] font-semibold text-ink" />{money(0).replace(/[\d.,]/g, "").trim()}</div></div></div></div>
             <label className="flex items-center gap-2 text-[13px] font-semibold"><input type="checkbox" checked={groupAllowDuplicates} onChange={(event) => setGroupAllowDuplicates(event.target.checked)} className="accent-[#ed168c]" />Same option more than once</label>
             <div><p className="mb-1 text-[13px] font-bold">Made at</p><p className="mb-2 text-[13px] text-muted">Which station receives these choices</p><div className="inline-flex flex-wrap gap-1 rounded-xl bg-[#fff4f9] p-1">{([{ value: "SAME_AS_DISH", label: "Same as dish" }, { value: "KITCHEN", label: "Kitchen" }, { value: "BAR", label: "Bar" }] as const).map((choice) => <button key={choice.value} type="button" aria-pressed={groupMadeAt === choice.value} onClick={() => setGroupMadeAt(choice.value)} className={`rounded-lg px-3 py-2 text-[11px] font-semibold transition ${groupMadeAt === choice.value ? "bg-white text-[#d90c7d] shadow-sm" : "text-muted hover:text-ink"}`}>{choice.label}</button>)}</div></div>

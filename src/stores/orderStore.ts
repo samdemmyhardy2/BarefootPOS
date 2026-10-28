@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api } from "../lib/api";
 import type { Order, OrderPaymentMethod, OrderStatus } from "../lib/types";
 import { useAuthStore } from "./authStore";
+import { useUiStore } from "./uiStore";
 
 type LiveState = "connecting" | "live" | "offline";
 interface OrderState {
@@ -29,7 +30,7 @@ interface OrderState {
   changeStatus: (id: string, status: OrderStatus) => Promise<void>;
   cookAction: (
     id: string,
-    action: "prepare" | "ready" | "served",
+    action: "prepare" | "ready" | "served" | "revert",
   ) => Promise<void>;
   deleteOrder: (id: string) => Promise<void>;
   upsertOrder: (order: Order) => void;
@@ -123,7 +124,16 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         source.addEventListener(type, (raw) => {
           const order = JSON.parse((raw as MessageEvent<string>).data) as Order;
           if (type === "created") playRoleNotification("new");
-          if (type === "updated" && order.status === "READY" && get().orders.find((current) => current.id === order.id)?.status !== "READY") playRoleNotification("ready");
+          if (type === "updated" && order.status === "READY" && get().orders.find((current) => current.id === order.id)?.status !== "READY") {
+            playRoleNotification("ready");
+            const user = useAuthStore.getState().user;
+            const title = (user?.jobTitle || "").toLowerCase();
+            const isCook = /chef|cook|kitchen/.test(title);
+            if (user && (user.role === "ADMIN" || !isCook)) {
+              const where = order.table?.tableNumber ? `Table ${order.table.tableNumber}` : "A ticket";
+              useUiStore.getState().notify(`${where} is ready for pickup.`);
+            }
+          }
           get().upsertOrder(order);
         });
       }

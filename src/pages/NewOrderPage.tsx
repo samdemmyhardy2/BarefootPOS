@@ -117,9 +117,12 @@ export function NewOrderPage() {
   const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
   const [settledPayers, setSettledPayers] = useState<{ id: string; label: string; total: number; note: string }[]>([]);
   const createOrder = useOrderStore((state) => state.createOrder);
+  const cookAction = useOrderStore((state) => state.cookAction);
+  const [ticketActionId, setTicketActionId] = useState<string | null>(null);
   const orders = useOrderStore((state) => state.orders);
   const fetchOrders = useOrderStore((state) => state.fetchOrders);
   const notify = useUiStore((state) => state.notify);
+  const reportError = (message: string) => { setError(message); notify(message, "error"); };
   const language = useUiStore((state) => state.language);
   const modifierPickerMode = useUiStore((state) => state.modifierPickerMode);
   const t = (text: string) => translateUiText(language, text);
@@ -146,7 +149,7 @@ export function NewOrderPage() {
       api.get<ActiveRoomStay[]>("/orders/active-room-stays"),
     ])
       .then(([cat, tbl, stays]) => { setCategories(cat.data); setTables(tbl.data); setActiveStays(stays.data); })
-      .catch((e) => setError(errorMessage(e)));
+      .catch((e) => reportError(errorMessage(e)));
   }, []);
   useEffect(() => {
     void fetchOrders().catch(() => undefined);
@@ -307,11 +310,11 @@ export function NewOrderPage() {
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
   const placeOrder = async () => {
     if (!tableId || !selectedTable) {
-      setError("Return to the floor and open a table before sending an order.");
+      reportError("Return to the floor and open a table before sending an order.");
       return;
     }
     if (!cartLines.length) {
-      setError("Add at least one item to this order.");
+      reportError("Add at least one item to this order.");
       return;
     }
     setPlacing(true);
@@ -341,13 +344,13 @@ export function NewOrderPage() {
       await fetchOrders();
     } catch (e) {
       if (submittedLineIds.size) setCart((current) => current.filter((line) => !submittedLineIds.has(line.id)));
-      setError(errorMessage(e));
+      reportError(errorMessage(e));
     } finally {
       setPlacing(false);
     }
   };
   const settlePayer = async (group: typeof orderPayerGroups[number], method: "ROOM_CHECKOUT" | "CASH" | "CARD" | "PROMPTPAY", signedName?: string, signature?: string) => {
-    if (!allOrdersServed) { setError("All table orders must be served before settlement."); return; }
+    if (!allOrdersServed) { reportError("All table orders must be served before settlement."); return; }
     if (method === "ROOM_CHECKOUT" && (!signedName?.trim() || !signature)) { setSignaturePayerId(group.id); setSignatureName(group.name); setSignatureData(""); return; }
     setPlacing(true); setError("");
     try {
@@ -364,11 +367,11 @@ export function NewOrderPage() {
       const updated = await api.get<DiningTable[]>("/tables"); setTables(updated.data);
       await fetchOrders();
       if (data.tableCleared) { setSettleOpen(false); notify(`${data.tableNumber} is settled and cleared.`); }
-    } catch (cause) { setError(errorMessage(cause)); }
+    } catch (cause) { reportError(errorMessage(cause)); }
     finally { setPlacing(false); }
   };
   const saveSignature = async () => {
-    if (!signatureGroup || !signatureData) { setError("Please sign before adding the bill to the room tab."); return; }
+    if (!signatureGroup || !signatureData) { reportError("Please sign before adding the bill to the room tab."); return; }
     await settlePayer(signatureGroup, "ROOM_CHECKOUT", signatureName, signatureData);
   };
   const signaturePoint = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -397,7 +400,7 @@ export function NewOrderPage() {
       setTables((current) => current.map((table) => table.id === data.id ? data : table));
       notify(t(nextRoomStayIds.length ? "Guest rooms assigned to this table." : "Guest room assignments cleared."));
     } catch (cause) {
-      setError(errorMessage(cause));
+      reportError(errorMessage(cause));
     } finally {
       setSavingRoomAssignments(false);
     }
@@ -656,13 +659,27 @@ export function NewOrderPage() {
                 </div> : <p className="rounded-xl border border-line bg-white px-3 py-2.5 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
                 {assignedRoomStayIds.length > 0 && <p className="mt-2 text-[10px] text-muted">{t("Choose the guest room to receive the table bill at folio checkout.")}</p>}
               </div>
-              {activeTableOrders.length ? <div className="mt-3 space-y-3">
+              {activeTableOrders.length ? <div className="mt-3">
+                <div className={`space-y-3 ${activeTableOrders.length > 2 ? "max-h-[26rem] overflow-y-auto pr-1" : ""}`}>
                 {activeTableOrders.map((order) => <article key={order.id} className="rounded-xl border border-line bg-white p-3">
                   <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="font-mono text-[10px] font-bold">#{order.id.slice(-6).toUpperCase()}</span><OrderBadge status={order.status} /></div><span className="text-[10px] text-muted">Ordered by {order.waiter?.name}</span></div>
                   <ul className="mt-2 space-y-1 text-xs">{order.items.map((line, index) => <li key={line.id ?? `${order.id}-${index}`}><span className="font-bold">{line.quantity}×</span> {line.menuItem.name}{line.addExtras ? <span className="text-muted"> · {line.addExtras}</span> : null}</li>)}</ul>
                   {order.servedBy && <p className="mt-2 text-[10px] font-semibold text-emerald-700">Collected / served by {order.servedBy.name}</p>}
+                  {order.status === "READY" && <button type="button" disabled={ticketActionId === order.id} onClick={() => void (async () => {
+                    setTicketActionId(order.id); setError("");
+                    try { await cookAction(order.id, "served"); notify("Picked up. Ticket marked served."); }
+                    catch (cause) { reportError(errorMessage(cause)); }
+                    finally { setTicketActionId(null); }
+                  })()} className="mt-3 h-9 w-full rounded-lg bg-[#ed168c] text-[11px] font-bold text-white hover:bg-[#d80d7c] disabled:opacity-50">Pickup</button>}
+                  {order.status === "SERVED" && <button type="button" disabled={ticketActionId === order.id} onClick={() => void (async () => {
+                    setTicketActionId(order.id); setError("");
+                    try { await cookAction(order.id, "revert"); notify("Pickup undone. Ticket is ready again."); }
+                    catch (cause) { reportError(errorMessage(cause)); }
+                    finally { setTicketActionId(null); }
+                  })()} className="mt-3 h-9 w-full rounded-lg border border-line bg-white text-[11px] font-bold text-ink hover:bg-canvas disabled:opacity-50">Revert</button>}
                 </article>)}
-                <p className="text-[10px] text-muted">Add another ticket below to continue this table’s order.</p>
+                </div>
+                <p className="mt-3 text-[10px] text-muted">Add another ticket below to continue this table’s order.</p>
               </div> : <p className="mt-3 text-xs text-muted">No items have been ordered at this table yet. Start with the menu below.</p>}
               {activeTableOrders.length > 0 && <div className="mt-4 border-t border-line pt-4">
                 <div className="flex items-center justify-between"><span className="text-xs font-semibold">Open table total</span><span className="font-display text-lg font-extrabold">{money(tableTotal)}</span></div>

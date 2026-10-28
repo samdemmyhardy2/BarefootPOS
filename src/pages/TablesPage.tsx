@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertCircle, Armchair, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Clock3, Minus, Move, Pencil, Plus, RefreshCw, Search, Trash2, Users, Utensils, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Armchair, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Move, Pencil, Plus, RefreshCw, Trash2, Users, Utensils, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Field, Modal, PageHeader } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import type { DiningTable, TableShape, TableStatus } from "../lib/types";
@@ -20,8 +20,6 @@ const moveActions = [
   { name: "up", Icon: ArrowUp, dx: 0, dy: -2 },
   { name: "down", Icon: ArrowDown, dx: 0, dy: 2 },
 ];
-type ActiveRoomStay = { id: string; primaryGuestName: string; occupants: { id: string; name: string }[]; room: { roomNumber: number }; expectedCheckoutAt?: string | null; guestNotes?: string | null };
-
 function TableShapeSurface({ shape }: { shape: TableShape }) {
   if (shape === "BOOTH") return <div className="pointer-events-none absolute inset-x-[18%] bottom-1 h-2 rounded-full bg-[#f3d8e6]" />;
   if (shape === "BAR") return <div className="pointer-events-none absolute inset-x-3 top-0 h-2 rounded-t-full bg-[#edc6da]" />;
@@ -55,13 +53,6 @@ export function TablesPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [modal, setModal] = useState(false);
-  const [partyTable, setPartyTable] = useState<DiningTable | null>(null);
-  const [partyStays, setPartyStays] = useState<ActiveRoomStay[]>([]);
-  const [partyStaysLoading, setPartyStaysLoading] = useState(false);
-  const [partyRoomIds, setPartyRoomIds] = useState<string[]>([]);
-  const [roomSearch, setRoomSearch] = useState("");
-  const [walkInCount, setWalkInCount] = useState(1);
-  const [savingParty, setSavingParty] = useState(false);
   const [editingTable, setEditingTable] = useState<DiningTable | null>(null);
   const [number, setNumber] = useState("");
   const [capacity, setCapacity] = useState("2");
@@ -154,8 +145,6 @@ export function TablesPage() {
     RESERVED: tables.filter((table) => tableStatus(table) === "RESERVED").length,
   };
   const rowCount = Math.max(8, ...displayTables.map((table) => table.positionY + table.height + 2));
-  const matchingPartyStays = partyStays.filter((stay) => !partyRoomIds.includes(stay.id) && (!roomSearch.trim() || `${stay.primaryGuestName} ${stay.room.roomNumber} ${stay.occupants.map((person) => person.name).join(" ")}`.toLowerCase().includes(roomSearch.trim().toLowerCase())));
-
   const startEditing = () => { setDraft(tables.map((table) => ({ ...table }))); setEditing(true); setError(""); };
   const cancelEditing = () => { setDraft([]); setEditing(false); setDraggedId(""); setError(""); };
   const saveLayout = async () => {
@@ -235,38 +224,9 @@ export function TablesPage() {
     setMobileZoom((zoom) => Math.max(0.35, Math.min(1.5, Math.round(zoom * factor * 100) / 100)));
   };
 
-  const openPartySetup = async (tableId: string) => {
-    if (editing) return;
-    const table = tables.find((entry) => entry.id === tableId);
-    if (!table) return;
-    setPartyTable(table);
-    setPartyRoomIds(table.assignedRoomStays?.map((stay) => stay.id) ?? []);
-    setRoomSearch("");
-    setWalkInCount(1);
-    setError("");
-    setPartyStaysLoading(true);
-    try {
-      const { data } = await api.get<ActiveRoomStay[]>("/orders/active-room-stays");
-      setPartyStays(data);
-    } catch (cause) { setPartyStays([]); setError(errorMessage(cause)); }
-    finally { setPartyStaysLoading(false); }
-  };
-  const updatePartyRoom = async (roomStayId: string, add: boolean) => {
-    if (!partyTable || savingParty) return;
-    const next = add ? [...partyRoomIds, roomStayId] : partyRoomIds.filter((id) => id !== roomStayId);
-    setSavingParty(true);
-    setError("");
-    try {
-      const { data } = await api.patch<DiningTable>(`/tables/${partyTable.id}/room-assignment`, { roomStayIds: next });
-      setPartyRoomIds(next);
-      setPartyTable((current) => current ? { ...current, ...data, assignedRoomStays: data.assignedRoomStays ?? current.assignedRoomStays } : current);
-      setTables((current) => current.map((table) => table.id === data.id ? { ...table, ...data } : table));
-      notify(next.length ? "Guest rooms assigned to this table." : "Guest room assignments cleared.");
-    } catch (cause) { setError(errorMessage(cause)); }
-    finally { setSavingParty(false); }
-  };
+  const openTable = (tableId: string) => { if (!editing) navigate(`/tables/${tableId}`); };
   const openTableKey = (event: KeyboardEvent<HTMLElement>, tableId: string) => {
-    if (!editing && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); void openPartySetup(tableId); }
+    if (!editing && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openTable(tableId); }
   };
 
   const create = async (event: FormEvent) => {
@@ -389,7 +349,7 @@ export function TablesPage() {
           const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
           const statusSurface = tableSurface(status);
           const orderSummary = tableOrderSummary(table.id);
-          return <article key={table.id} onPointerMove={movePointerEdit} onPointerUp={endPointerEdit} onPointerCancel={endPointerEdit} onClick={(event) => { if ((event.target as HTMLElement).closest("select,button")) return; void openPartySetup(table.id); }} aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`} className={`relative flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border p-5 shadow-[0_5px_16px_rgba(74,35,56,.06)] ${statusSurface} ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91]" : "cursor-pointer"} ${draggedId === table.id ? "opacity-70" : ""}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
+          return <article key={table.id} onPointerMove={movePointerEdit} onPointerUp={endPointerEdit} onPointerCancel={endPointerEdit} onClick={(event) => { if ((event.target as HTMLElement).closest("select,button")) return; openTable(table.id); }} aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`} className={`relative flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border p-5 shadow-[0_5px_16px_rgba(74,35,56,.06)] ${statusSurface} ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91]" : "cursor-pointer"} ${draggedId === table.id ? "opacity-70" : ""}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
             {editing && <button type="button" aria-label={`Move table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "move")} className="absolute inset-0 z-10 cursor-move touch-none" />}
             <div className={`relative z-20 flex min-w-0 items-center gap-1 ${table.shape === "ROUND" || table.shape === "OVAL" ? "flex-col justify-center" : "justify-between"}`}>
               <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/90 text-[#e41483] shadow-sm dark:border-slate-600"><Utensils size={15} /></span>
@@ -423,7 +383,7 @@ export function TablesPage() {
               onPointerMove={movePointerEdit}
               onPointerUp={endPointerEdit}
               onPointerCancel={endPointerEdit}
-              onClick={() => void openPartySetup(table.id)}
+              onClick={() => openTable(table.id)}
               onKeyDown={(event) => openTableKey(event, table.id)}
               role={editing ? undefined : "button"}
               tabIndex={editing ? undefined : 0}
@@ -464,27 +424,5 @@ export function TablesPage() {
       <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">{t("Table shape")}</span><select value={newShape} onChange={(event) => setNewShape(event.target.value as TableShape)} className="focus-ring w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm text-ink outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar counter")}</option></select></label>
       <button className="mt-2 h-11 w-full rounded-xl bg-[#f71591] text-sm font-bold text-white hover:bg-[#dc0d7e]">{t(editingTable ? "Save changes" : "Add to floor")}</button>
     </form></Modal>}
-    {partyTable && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#241820]/35 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setPartyTable(null); }}>
-      <section role="dialog" aria-modal="true" aria-labelledby="party-setup-title" className="flex max-h-[min(92vh,720px)] w-full max-w-[510px] flex-col overflow-hidden rounded-2xl border border-[#e9d9e1] bg-white shadow-2xl">
-        <header className="flex shrink-0 items-start gap-3 px-5 pb-3 pt-5"><div className="min-w-0 flex-1"><h2 id="party-setup-title" className="text-lg font-bold">Who’s at {t("Table")} {partyTable.tableNumber}?</h2><p className="mt-2 text-[11px] leading-4 text-muted">Add each room at the table and any walk-ins. Each party pays for its own items.</p></div><button type="button" onClick={() => setPartyTable(null)} aria-label="Close party setup" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-3">
-          <div className="relative mb-3"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" /><input value={roomSearch} onChange={(event) => setRoomSearch(event.target.value)} placeholder="Add a room by number or surname" className="h-10 w-full rounded-xl border border-[#eadce3] pl-9 pr-3 text-xs outline-none focus:border-[#ed168c]" /></div>
-          <section className="mb-3 overflow-hidden rounded-xl border border-[#eadce3] bg-white"><header className="flex items-center justify-between border-b border-[#f2e7ed] px-3 py-2"><p className="text-[10px] font-bold uppercase tracking-wide text-muted">Current occupied rooms</p><span className="text-[10px] text-muted">{partyStays.length}</span></header><div className="max-h-36 overflow-y-auto overscroll-contain">{partyStaysLoading ? <p className="px-3 py-4 text-xs text-muted">Loading occupied rooms…</p> : matchingPartyStays.length ? matchingPartyStays.map((stay) => <button key={stay.id} type="button" disabled={savingParty} onClick={() => { void updatePartyRoom(stay.id, true); setRoomSearch(""); }} className="flex w-full items-center justify-between border-b border-[#f2e7ed] px-3 py-2.5 text-left last:border-0 hover:bg-[#fff8fb] disabled:opacity-50"><span className="min-w-0"><span className="block truncate text-xs font-semibold">{stay.primaryGuestName}</span><span className="text-[10px] text-muted">Room {stay.room.roomNumber} · {stay.occupants.length + 1} {stay.occupants.length + 1 === 1 ? "guest" : "guests"}</span></span><Plus size={15} className="ml-3 shrink-0 text-[#ed168c]" /></button>) : <p className="px-3 py-4 text-xs text-muted">{partyStays.length ? "No current rooms match that search." : "There are no occupied rooms right now."}</p>}</div></section>
-          {error && <p role="alert" className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
-          <div className="divide-y divide-[#f0e4ea]">
-            {partyRoomIds.map((id) => {
-              const stay = partyStays.find((entry) => entry.id === id);
-              if (!stay) return null;
-              const checkout = stay.expectedCheckoutAt ? new Date(stay.expectedCheckoutAt) : null;
-              const departingToday = checkout ? checkout.toDateString() === new Date().toDateString() : false;
-              return <div key={stay.id} className="py-3"><div className="flex items-center gap-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#f0f2ff] text-[9px] font-bold text-[#6870a8]">R{stay.room.roomNumber}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold">{[stay.primaryGuestName, ...stay.occupants.map((person) => person.name)].join(" and ")}</p><p className="mt-0.5 text-[10px] text-muted">Room {stay.room.roomNumber} · {stay.occupants.length + 1} {stay.occupants.length + 1 === 1 ? "guest" : "guests"}{checkout ? ` · until ${departingToday ? "today" : new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(checkout)}` : ""}</p></div><button type="button" disabled={savingParty} onClick={() => void updatePartyRoom(stay.id, false)} aria-label={`Remove room ${stay.room.roomNumber}`} className="grid h-7 w-7 place-items-center text-muted hover:text-rose-600 disabled:opacity-50"><X size={14} /></button></div>{stay.guestNotes && <div className={`mt-2 flex items-center gap-2 rounded-lg px-2.5 py-2 text-[10px] font-semibold ${/allerg|peanut|nut|gluten|lactose/i.test(stay.guestNotes) ? "bg-amber-50 text-amber-800" : "bg-sky-50 text-sky-800"}`}><AlertCircle size={13} className="shrink-0" /><span>{stay.guestNotes}</span></div>}{departingToday && <div className="mt-2 flex items-center gap-2 rounded-lg bg-sky-50 px-2.5 py-2 text-[10px] font-semibold text-sky-800"><Clock3 size={13} />Departing today. Ask the guest to pay now rather than add to the tab.</div>}</div>;
-            })}
-            {walkInCount > 0 && <div className="flex items-center gap-3 py-3"><span className="rounded-full bg-[#f4f3f1] px-2.5 py-1 text-[9px] font-bold text-[#726b67]">Walk-ins</span><div className="min-w-0 flex-1"><p className="text-xs font-bold">Walk-ins</p><p className="mt-0.5 text-[10px] text-muted">Pay at the table: cash, card, or PromptPay</p></div><div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" onClick={() => setWalkInCount((count) => Math.max(0, count - 1))} aria-label="Remove a walk-in party" className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{walkInCount}</span><button type="button" onClick={() => setWalkInCount((count) => Math.min(20, count + 1))} aria-label="Add a walk-in party" className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button></div><button type="button" onClick={() => setWalkInCount(0)} aria-label="Remove walk-in parties" className="grid h-7 w-7 place-items-center text-muted hover:text-rose-600"><X size={14} /></button></div>}
-            {walkInCount === 0 && <button type="button" onClick={() => setWalkInCount(1)} className="my-2 rounded-lg border border-dashed border-[#e7cbd9] px-3 py-2 text-xs font-semibold text-[#d80c7c]">＋ Add walk-ins</button>}
-          </div>
-        </div>
-        <footer className="grid shrink-0 grid-cols-2 gap-2 border-t border-[#f0e4ea] px-5 py-4"><button type="button" onClick={() => setPartyTable(null)} className="h-10 rounded-xl border border-[#eadce3] text-xs font-bold">Cancel</button><button type="button" disabled={savingParty} onClick={() => navigate(`/tables/${partyTable.id}`, { state: { walkInCount, roomStayIds: partyRoomIds } })} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#ed168c] text-xs font-bold text-white hover:bg-[#d80d7c] disabled:opacity-50">Start order for {t("Table")} {partyTable.tableNumber}<ArrowRight size={14} /></button></footer>
-      </section>
-    </div>}
   </div>;
 }
