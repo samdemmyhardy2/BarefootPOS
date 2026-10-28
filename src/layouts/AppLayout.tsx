@@ -29,7 +29,7 @@ const baseNav = [
   { label: "Overview", to: "/overview", icon: LayoutDashboard, permission: "ORDER_VIEW" },
   { label: "Order history", to: "/orders", icon: ClipboardList, permission: "ORDER_VIEW" },
   { label: "Tables", to: "/tables", icon: Utensils, permission: "TABLES" },
-  { label: "Rooms & folios", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
+  { label: "Rooms and folios", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
   { label: "Menu", to: "/menu", icon: BookOpen, adminOnly: true },
   { label: "Kitchen display", to: "/kitchen", icon: ChefHat, permission: "KITCHEN" },
 ];
