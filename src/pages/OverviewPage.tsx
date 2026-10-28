@@ -120,7 +120,6 @@ export function OverviewPage() {
   return (
     <div className="page-enter">
       <PageHeader
-        eyebrow={`${new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date())} service · live operations`}
         title={`Good afternoon, ${user.name.split(" ")[0]}.`}
         description="Here’s the pulse of your restaurant right now."
       />
