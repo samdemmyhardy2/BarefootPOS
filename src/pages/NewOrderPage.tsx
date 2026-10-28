@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowRight,
@@ -35,6 +35,16 @@ type CartLine = {
   prepStation: PrepStation;
   payerId: string;
 };
+type PlusJump = { id: string; fromX: number; fromY: number; toX: number; toY: number; label: string };
+function PlusJumpBadge({ jump, onDone }: { jump: PlusJump; onDone: (id: string) => void }) {
+  const [moved, setMoved] = useState(false);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setMoved(true));
+    const timer = window.setTimeout(() => onDone(jump.id), 980);
+    return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
+  }, [jump.id, onDone]);
+  return <span className="pointer-events-none fixed z-[90] rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700 transition-all duration-700 ease-out" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, opacity: moved ? 0 : 1, transform: "translate(-50%, -50%)" }}>{jump.label}</span>;
+}
 const categoryColors = [
   "from-[#e1edcf] to-[#f2f6e9]",
   "from-[#f4e6d9] to-[#fbf2e9]",
@@ -42,7 +52,7 @@ const categoryColors = [
   "from-[#e0edf0] to-[#f1f7f7]",
   "from-[#ece7d8] to-[#f6f3e9]",
 ];
-type ActiveRoomStay = { id: string; primaryGuestName: string; occupants: { id: string; name: string }[]; room: { roomNumber: number } };
+type ActiveRoomStay = { id: string; primaryGuestName: string; occupants: { id: string; name: string }[]; room: { roomNumber: string | number } };
 
 function itemModifierGroups(item: MenuItem): ModifierGroup[] {
   const groups = new Map<string, ModifierGroup>();
@@ -94,6 +104,9 @@ export function NewOrderPage() {
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [plusJumps, setPlusJumps] = useState<PlusJump[]>([]);
+  const ticketMarkRef = useRef<HTMLSpanElement>(null);
+  const pendingAddOrigin = useRef<DOMRect | null>(null);
   const [partySetupOpen, setPartySetupOpen] = useState(false);
   const [partyRoomSearch, setPartyRoomSearch] = useState("");
   const [walkInPartyCount, setWalkInPartyCount] = useState(partySetup?.walkInCount ?? 1);
@@ -217,6 +230,12 @@ export function NewOrderPage() {
     return groups;
   }, []);
   const signatureGroup = orderPayerGroups.find((group) => group.id === signaturePayerId);
+  const clearPlusJump = useCallback((id: string) => setPlusJumps((current) => current.filter((jump) => jump.id !== id)), []);
+  const launchPlus = (origin: DOMRect | null, amount = 1) => {
+    const ticket = ticketMarkRef.current?.getBoundingClientRect();
+    if (!origin || !ticket) return;
+    setPlusJumps((current) => [...current, { id: crypto.randomUUID(), fromX: origin.left + origin.width / 2, fromY: origin.top + origin.height / 2, toX: ticket.left + ticket.width / 2, toY: ticket.top + ticket.height / 2, label: `+${amount}` }]);
+  };
   const addToCart = (item: MenuItem, modifierSelections: Record<string, string[]> = {}, quantity = 1, specialNotes = "") => setCart((current) => [...current, {
       id: crypto.randomUUID(),
       item,
@@ -226,10 +245,11 @@ export function NewOrderPage() {
       prepStation: item.prepStation ?? "KITCHEN",
       payerId: payers[0]?.id ?? "walk-ins",
     }]);
-  const add = (item: MenuItem) => {
+  const add = (item: MenuItem, origin?: DOMRect | null) => {
     setEditingCartLineId(null);
     const groups = itemModifierGroups(item);
-    if (!groups.length) { addToCart(item); return; }
+    if (!groups.length) { addToCart(item); launchPlus(origin ?? null); return; }
+    pendingAddOrigin.current = origin ?? null;
     const defaults = Object.fromEntries(groups.map((group) => {
       const chosen = group.options.filter((option) => option.defaultSelected).map((option) => option.id);
       const sliderDefault = group.appearance === "SLIDER" && !chosen.length ? group.options.find((option) => option.active)?.id : undefined;
@@ -302,10 +322,12 @@ export function NewOrderPage() {
       setEditingCartLineId(null);
     } else {
       addToCart(configuringItem, draftSelections, draftQuantity, draftKitchenNote.trim());
+      launchPlus(pendingAddOrigin.current, draftQuantity);
+      pendingAddOrigin.current = null;
     }
     setConfiguringItem(null);
   };
-  const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); };
+  const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); pendingAddOrigin.current = null; };
   const removeCartLine = (lineId: string) => setCart((current) => current.filter((line) => line.id !== lineId));
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
   const placeOrder = async () => {
@@ -532,7 +554,7 @@ export function NewOrderPage() {
               {menuItems.map((item, index) => (
                 <button
                   key={item.id}
-                  onClick={() => add(item)}
+                  onClick={(event) => add(item, event.currentTarget.querySelector("[data-add-mark]")?.getBoundingClientRect() ?? null)}
                   className="group overflow-hidden rounded-[18px] border border-[#f0e1e9] bg-white text-left shadow-card transition hover:-translate-y-0.5 hover:border-[#ed168c]/40 hover:shadow-float"
                 >
                   <div
@@ -585,8 +607,8 @@ export function NewOrderPage() {
                     {item.availableExtras?.length ? <p className="mt-1 truncate text-[10px] text-sky-800">{language === "my" ? "အပိုထည့်စရာ:" : language === "th" ? "รายการเพิ่มเติม:" : "Extras:"} {localizedFoodLabels(item.availableExtras, item.availableExtrasMy, item.availableExtrasTh, language).join(", ")}</p> : null}
                     <div className="mt-4 flex items-center justify-between border-t border-line pt-3">
                       <span className="text-[10px] text-muted">Tap to add</span>
-                      <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d] transition group-hover:bg-[#ed168c] group-hover:text-white">
-                        <Plus size={16} />
+                      <span data-add-mark className={`grid h-8 w-8 place-items-center rounded-lg transition ${cart.some((line) => line.item.id === item.id) ? "bg-emerald-500 text-white" : "bg-[#fff0f7] text-[#d90c7d] group-hover:bg-[#ed168c] group-hover:text-white"}`}>
+                        {cart.some((line) => line.item.id === item.id) ? <Check size={16} /> : <Plus size={16} />}
                       </span>
                     </div>
                   </div>
@@ -613,7 +635,7 @@ export function NewOrderPage() {
                 {cartLines.reduce((count, line) => count + line.quantity, 0)} {cartLines.reduce((count, line) => count + line.quantity, 0) === 1 ? "item" : "items"} · {payers.length} {payers.length === 1 ? "payer" : "payers"}
               </p>
             </div>
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff0f7] text-[#d90c7d]">
+            <span ref={ticketMarkRef} className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff0f7] text-[#d90c7d]">
               <ShoppingBag size={17} />
             </span>
           </div>
@@ -783,6 +805,7 @@ export function NewOrderPage() {
     {settleOpen && selectedTable && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-ink/40 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettleOpen(false); }}><section role="dialog" aria-modal="true" aria-label={`Settle ${selectedTable.tableNumber}`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-float"><header className="flex items-start gap-4 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="font-display text-lg font-bold">Settle {selectedTable.tableNumber}</h2><p className="mt-1 text-[11px] text-muted">Each payer settles separately. Room guests can add their bill to the room tab or pay now; walk-ins pay now.</p></div><button type="button" onClick={() => setSettleOpen(false)} aria-label="Close settlement" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{orderPayerGroups.map((group, index) => { const method = settlementMethods[group.id] ?? (group.roomStayId ? "ROOM_CHECKOUT" : "CASH"); const paid = settledPayers.find((entry) => entry.id === group.id); const stay = activeStays.find((entry) => entry.id === group.roomStayId); return <article key={group.id} className="self-start rounded-xl border border-line bg-white p-3.5"><header className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${group.roomStayId ? index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]" : "bg-[#f4f3f1] text-[#726b67]"}`}>{group.label}</span><div className="min-w-0"><h3 className="truncate text-xs font-bold">{group.name}</h3><p className="text-[9px] text-muted">{group.orders.length} {group.orders.length === 1 ? "item" : "items"}{stay ? ` · Room ${stay.room.roomNumber}` : group.id === "walk-ins" ? ` · ${walkInPartyCount} people · pay now` : ""}</p></div></div><span className="shrink-0 text-xs font-bold">{money(group.total)}</span></header><div className="mt-3 space-y-1.5 border-b border-line pb-3">{group.orders.flatMap((order) => order.items.map((line) => <div key={`${order.id}-${line.id}`} className="flex justify-between gap-2 text-[9px] text-muted"><span>{line.quantity} × {line.menuItem.name}</span><span>{money(Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity))}</span></div>))}</div>{paid ? <div className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{paid.note}</div> : <><p className="mt-3 text-[9px] text-muted">{group.roomStayId ? "How are they paying?" : "Payment method"}</p>{group.roomStayId && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["ROOM_CHECKOUT", "Add to room tab"], ["CASH", "Pay now"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT")} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2.5 py-1.5 text-[9px] font-semibold ${(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT") ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}{(method !== "ROOM_CHECKOUT" || !group.roomStayId) && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["CASH", "Cash"], ["CARD", "Card"], ["PROMPTPAY", "PromptPay QR"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={method === value} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2 py-1.5 text-[9px] font-semibold ${method === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}<button type="button" disabled={placing} onClick={() => void settlePayer(group, method)} className="mt-2.5 h-9 w-full rounded-lg bg-[#ed168c] px-2 text-[10px] font-bold text-white disabled:opacity-50">{method === "ROOM_CHECKOUT" ? `Add ${money(group.total)} to room tab` : `Take ${money(group.total)} ${method === "PROMPTPAY" ? "PromptPay" : method.toLowerCase()}`}</button></>}</article>; })}{settledPayers.filter((entry) => !orderPayerGroups.some((group) => group.id === entry.id)).map((entry) => <article key={entry.id} className="self-start rounded-xl border border-emerald-200 bg-white p-3.5"><div className="flex justify-between text-xs font-bold"><span>{entry.label}</span><span>{money(entry.total)}</span></div><p className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{entry.note}</p></article>)}</div>{error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}</div><footer className="flex items-end justify-between gap-4 border-t border-line px-5 py-3"><div><p className="text-[10px] text-muted">Table total</p><p className="font-display text-base font-extrabold">{money(orderPayerGroups.reduce((sum, group) => sum + group.total, 0) + settledPayers.reduce((sum, payer) => sum + payer.total, 0))}</p></div><p className="text-right text-[9px] text-muted">The table clears once everyone has settled.</p></footer></section></div>}
     {signaturePayerId && signatureGroup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink/45 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setSignaturePayerId(null); }}><section role="dialog" aria-modal="true" aria-label={`Sign for ${signatureGroup.name}`} className="w-full max-w-lg rounded-2xl border border-line bg-white p-5 shadow-float"><header className="flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-bold">Sign for Room {activeStays.find((stay) => stay.id === signatureGroup.roomStayId)?.room.roomNumber}</h2><p className="mt-1 text-[11px] text-muted">{signatureName}, please sign to add {money(signatureGroup.total)} to the room’s tab. You’ll pay at checkout.</p></div><button type="button" onClick={() => setSignaturePayerId(null)} aria-label="Close signature" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="mt-4 flex justify-between rounded-lg border border-line px-3 py-2 text-[10px] text-muted"><span>{signatureGroup.orders.map((order) => `${order.items.reduce((sum, line) => sum + line.quantity, 0)} × ${order.items.map((line) => line.menuItem.name).join(", ")}`).join(" · ")} · {selectedTable?.tableNumber}</span><span className="font-semibold">{money(signatureGroup.total)}</span></div><label className="mt-4 block text-[10px] font-semibold text-muted">Guest signing<input value={signatureName} onChange={(event) => setSignatureName(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-line px-3 text-xs text-ink outline-none focus:border-[#ed168c]" /></label><canvas ref={signatureCanvasRef} width={900} height={220} onPointerDown={startSignature} onPointerMove={drawSignature} onPointerUp={() => setSignatureDrawing(false)} onPointerCancel={() => setSignatureDrawing(false)} className="mt-3 h-40 w-full touch-none rounded-lg border border-line bg-[#fffafb]" aria-label="Sign here" /><p className="mt-1 text-[9px] text-muted">Sign above</p><div className="mt-4 flex gap-2"><button type="button" onClick={() => { const canvas = signatureCanvasRef.current; canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height); setSignatureData(""); }} className="h-10 flex-1 rounded-lg border border-line text-xs font-bold">Clear</button><button type="button" disabled={placing || !signatureName.trim() || !signatureData} onClick={() => void saveSignature()} className="h-10 flex-1 rounded-lg bg-[#ed168c] text-xs font-bold text-white disabled:opacity-40">{placing ? "Saving…" : "Confirm and add to tab"}</button></div></section></div>}
     {receipt && <ReceiptPreview receipt={receipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setReceipt(null)} />}
+    {plusJumps.map((jump) => <PlusJumpBadge key={jump.id} jump={jump} onDone={clearPlusJump} />)}
     </>
   );
 }

@@ -9,8 +9,8 @@ export type CheckoutReceipt = {
   folioCharges?: RoomCharge[];
   paymentMethod: OrderPaymentMethod;
   receiptKind?: "DINING" | "STAY_CHECKOUT";
-  room: { roomNumber: number; guestName: string; guestNames?: string[] } | null;
-  rooms?: { roomNumber: number; guestName: string; guestNames?: string[] }[];
+  room: { roomNumber: string | number; guestName: string; guestNames?: string[] } | null;
+  rooms?: { roomNumber: string | number; guestName: string; guestNames?: string[] }[];
   totalAmount: number;
   checkedOutAt: string;
   cashierName: string;

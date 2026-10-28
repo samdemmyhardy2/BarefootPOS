@@ -4,7 +4,6 @@ export type OrderStatus =
 export type TableStatus = "AVAILABLE" | "OCCUPIED" | "RESERVED";
 export type TableShape = "ROUND" | "SQUARE" | "RECTANGLE" | "OVAL" | "BOOTH" | "BAR";
 export type PrepStation = "KITCHEN" | "BAR";
-export type RoomSize = "NORMAL" | "FAMILY";
 export type RoomStatus = "AVAILABLE" | "OCCUPIED" | "MAINTENANCE" | "ARCHIVED";
 export type OrderPaymentMethod = "CASH" | "CARD" | "PROMPTPAY" | "ROOM_CHECKOUT";
 export type OrderPaymentStatus = "UNPAID" | "PAID" | "ROOM_FOLIO";
@@ -205,10 +204,7 @@ export interface RoomStay {
 
 export interface Room {
   id: string;
-  roomNumber: number;
-  size: RoomSize;
-  usageFee: number | string;
-  facilities: string[];
+  roomNumber: string;
   status: RoomStatus;
   stays: RoomStay[];
   _count?: { stays: number };
@@ -234,7 +230,7 @@ export interface Order {
   table?: DiningTable | null;
   roomStayId?: string | null;
   roomStay?: RoomStay | null;
-  roomGuestsSnapshot?: { roomNumber: number; guestName: string; guestNames: string[] }[] | null;
+  roomGuestsSnapshot?: { roomNumber: string | number; guestName: string; guestNames: string[] }[] | null;
   paymentMethod: OrderPaymentMethod;
   paymentStatus: OrderPaymentStatus;
   paidAt?: string | null;
