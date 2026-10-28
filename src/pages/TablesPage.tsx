@@ -26,6 +26,16 @@ function TableShapeSurface({ shape }: { shape: TableShape }) {
   return null;
 }
 
+function SectionCreatePeek({ pull }: { pull: number }) {
+  const progress = Math.min(1, Math.max(0, -pull / 120));
+  return <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 z-0 flex w-40 items-center justify-center bg-[#ffe4f2] sm:w-52">
+    <div className="flex flex-col items-center gap-2 text-[#d80c7c]" style={{ opacity: 0.4 + progress * 0.6, transform: `scale(${0.88 + progress * 0.12})` }}>
+      <span className="grid h-11 w-11 place-items-center rounded-full bg-white shadow-sm"><Plus size={18} /></span>
+      <span className="text-[11px] font-bold">{progress > 0.72 ? "Release to add" : "New section"}</span>
+    </div>
+  </div>;
+}
+
 function TableStatusButton({ status, label, onClick, disabled = false }: { status: TableStatus; label: string; onClick: () => void; disabled?: boolean }) {
   const tone = status === "AVAILABLE"
     ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
@@ -69,7 +79,9 @@ export function TablesPage() {
   const pinchRef = useRef<{ distance: number; zoom: number } | null>(null);
   const panRef = useRef<{ pointerId: number; x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
   const interactionRef = useRef<{ id: string; mode: "move" | "resize"; x: number; y: number; positionX: number; positionY: number; width: number; height: number; cellWidth: number; cellHeight: number; scale: number } | null>(null);
-  const sectionSwipeRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const sectionSwipeRef = useRef<{ pointerId: number; x: number; y: number; locked: boolean } | null>(null);
+  const [sectionPull, setSectionPull] = useState(0);
+  const [sectionGrabbing, setSectionGrabbing] = useState(false);
   const [error, setError] = useState("");
   const admin = useAuthStore((state) => state.user?.role === "ADMIN");
   const orders = useOrderStore((state) => state.orders);
@@ -163,19 +175,44 @@ export function TablesPage() {
     if (next) setActiveSectionId(next.id);
     else if (direction > 0 && editing) openSectionModal();
   };
+  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0) scale(${sectionGrabbing ? 0.985 : 1})`, transition: sectionGrabbing ? "none" : "transform 460ms cubic-bezier(.22, 1.2, .36, 1)", transformOrigin: "center center" };
   const beginSectionSwipe = (event: PointerEvent<HTMLElement>) => {
-    if (!editing || (event.target as HTMLElement).closest("article,button,select,input")) return;
-    sectionSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    if (!editing || (event.target as HTMLElement).closest("article,button,select,input,textarea")) return;
+    sectionSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, locked: false };
+  };
+  const moveSectionSwipe = (event: PointerEvent<HTMLElement>) => {
+    const start = sectionSwipeRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (!start.locked) {
+      if (Math.hypot(dx, dy) < 8) return;
+      if (Math.abs(dy) > Math.abs(dx)) { sectionSwipeRef.current = null; return; }
+      start.locked = true;
+      setSectionGrabbing(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    const index = sections.findIndex((section) => section.id === activeSectionId);
+    const atStart = index <= 0;
+    const atEnd = index < 0 || index >= sections.length - 1;
+    let pull = dx;
+    if (pull > 0 && atStart) pull *= 0.28;
+    else if (pull < 0 && atEnd) pull = Math.max(pull * 0.72, -168);
+    else pull = Math.max(-210, Math.min(210, pull));
+    setSectionPull(pull);
   };
   const endSectionSwipe = (event: PointerEvent<HTMLElement>) => {
     const start = sectionSwipeRef.current;
     sectionSwipeRef.current = null;
-    if (!start || start.pointerId !== event.pointerId) return;
+    setSectionGrabbing(false);
+    setSectionPull(0);
+    if (!start || start.pointerId !== event.pointerId || !start.locked) return;
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
-    if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy)) return;
+    if (Math.abs(dx) < 72 || Math.abs(dx) < Math.abs(dy)) return;
     showSection(dx < 0 ? 1 : -1);
   };
+  const cancelSectionSwipe = () => { sectionSwipeRef.current = null; setSectionGrabbing(false); setSectionPull(0); };
   const createSection = async (event: FormEvent) => {
     event.preventDefault();
     const name = sectionName.trim();
@@ -251,7 +288,7 @@ export function TablesPage() {
   const endPointerEdit = () => { interactionRef.current = null; setDraggedId(""); };
 
   const startMapPan = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== "mouse" || (event.target as HTMLElement).closest("article,button,select")) return;
+    if (editing || event.pointerType !== "mouse" || (event.target as HTMLElement).closest("article,button,select")) return;
     panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, scrollLeft: event.currentTarget.scrollLeft, scrollTop: event.currentTarget.scrollTop };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -379,7 +416,9 @@ export function TablesPage() {
       {editing && <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold text-[#d80c7c]"><Move size={13} /> {t("Drag tables or use the arrow controls. Choose a shape, then save.")}</span>}
     </div>
 
-    <div ref={mobileViewportRef} onPointerDown={beginSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={() => { sectionSwipeRef.current = null; }} className="mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden">
+    <div ref={mobileViewportRef} onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden ${editing ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}>
+      {editing && <SectionCreatePeek pull={sectionPull} />}
+      <div className="relative z-10 bg-[#fff8fc]" style={sectionPullStyle}>
       {!loading && visibleTables.length > 0 && <div className="flex items-center justify-end gap-1.5 border-b border-[#f1dce7] bg-white/90 px-3 py-2">
         <span className="mr-auto text-[10px] font-semibold text-[#8c7c85]">{t("Floor plan")}</span>
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.max(0.35, Math.round((zoom - 0.1) * 10) / 10))} aria-label={t("Zoom out floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomOut size={15} /></button>
@@ -387,7 +426,7 @@ export function TablesPage() {
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.min(1.5, Math.round((zoom + 0.1) * 10) / 10))} aria-label={t("Zoom in floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomIn size={15} /></button>
         <button type="button" onClick={() => { setMobileZoom(0.55); if (mapScrollRef.current) { mapScrollRef.current.scrollLeft = 0; mapScrollRef.current.scrollTop = 0; } }} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-[#d80c7c]">{t("Reset")}</button>
       </div>}
-      {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
+      {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: editing ? "pan-y" : "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
         {visibleTables.map((table) => {
           const bills = tableBills(table.id);
           const status = tableStatus(table);
@@ -412,10 +451,12 @@ export function TablesPage() {
       </div></div></div> : <div className="relative flex min-h-[calc(100vh-260px)] flex-col items-center justify-center p-6 text-center" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "26px 26px" }}><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#ffedf6] text-[#e91488]"><Armchair size={24} /></span><h2 className="mt-4 font-display text-lg font-extrabold text-[#30242c]">Your floor is ready for a layout</h2><p className="mt-1 max-w-sm text-sm text-[#8c7c85]">Add your first table to start arranging your restaurant floor.</p></div>}
       {admin && editing && <button onClick={openCreate} className="flex min-h-12 w-full items-center justify-center gap-2 border-t border-[#f1dce7] bg-white text-sm font-bold text-[#d80c7c]"><Plus size={18} /> {t("Add table")}</button>}
       {(editing || sections.length > 1) && <div className="flex flex-col items-center gap-2 bg-white py-3"><p className="text-[10px] font-bold text-[#8c7c85]">{sections.find((section) => section.id === activeSectionId)?.name}</p><div className="flex items-center gap-2">{sections.map((section) => <button key={section.id} type="button" aria-label={section.name} aria-current={section.id === activeSectionId} onClick={() => setActiveSectionId(section.id)} className={`h-2 w-2 rounded-full ${section.id === activeSectionId ? "bg-[#f71591]" : "border border-[#f7b5d4] bg-white"}`} />)}{editing && <button type="button" aria-label="Add a floor section" onClick={openSectionModal} className="h-2 w-2 rounded-full border border-[#f7b5d4] bg-white" />}</div></div>}
+      </div>
     </div>
 
-    <div onPointerDown={beginSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={() => { sectionSwipeRef.current = null; }} className="hidden w-full overflow-x-auto overscroll-x-contain rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block">
-      <div className="relative min-h-[calc(100vh-190px)] w-full min-w-[860px] p-4 sm:p-5">
+    <div onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative hidden w-full rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block ${editing ? "overflow-hidden" : "overflow-x-auto overscroll-x-contain"} ${editing ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}>
+      {editing && <SectionCreatePeek pull={sectionPull} />}
+      <div className="relative z-10 min-h-[calc(100vh-190px)] w-full min-w-[860px] bg-[#fff8fc] p-4 sm:p-5" style={sectionPullStyle}>
         <div className="pointer-events-none absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px" }} />
         {loading ? <div className="relative grid grid-cols-4 gap-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={floorRef} data-floor-grid data-mobile-floor="false" className="relative grid min-h-[calc(100vh-245px)] w-full touch-pan-y grid-cols-12 auto-rows-[72px] gap-3" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)` }}>
           {visibleTables.map((table) => {

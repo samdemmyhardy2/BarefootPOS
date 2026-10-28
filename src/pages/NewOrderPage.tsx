@@ -40,10 +40,12 @@ function PlusJumpBadge({ jump, onDone }: { jump: PlusJump; onDone: (id: string) 
   const [moved, setMoved] = useState(false);
   useEffect(() => {
     const frame = requestAnimationFrame(() => setMoved(true));
-    const timer = window.setTimeout(() => onDone(jump.id), 980);
+    const timer = window.setTimeout(() => onDone(jump.id), 1100);
     return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [jump.id, onDone]);
-  return <span className="pointer-events-none fixed z-[90] rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700 transition-all duration-700 ease-out" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, opacity: moved ? 0 : 1, transform: "translate(-50%, -50%)" }}>{jump.label}</span>;
+  return <span className="pointer-events-none fixed z-[90] [perspective:600px]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 900ms ease-in-out, top 900ms ease-in-out" }}>
+    <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700 [transform-style:preserve-3d]" style={{ transform: moved ? "rotateX(720deg)" : "rotateX(0deg)", transition: "transform 900ms linear" }}>{jump.label}</span>
+  </span>;
 }
 const categoryColors = [
   "from-[#e1edcf] to-[#f2f6e9]",

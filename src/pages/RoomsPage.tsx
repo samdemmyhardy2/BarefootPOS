@@ -52,7 +52,6 @@ export function RoomsPage() {
   const historyRequestRef = useRef(0);
   const [checkoutReceipt, setCheckoutReceipt] = useState<CheckoutReceipt | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
-  const [guestNames, setGuestNames] = useState<string[]>([""]);
   const [guestName, setGuestName] = useState("");
   const [occupants, setOccupants] = useState("");
   const [expectedCheckoutAt, setExpectedCheckoutAt] = useState("");
@@ -106,14 +105,13 @@ export function RoomsPage() {
   const openRoom = (room?: Room) => {
     setEditingRoom(room ?? null);
     setRoomNumber(room ? String(room.roomNumber) : "");
-    setGuestNames([""]);
     setError("");
     setModal("room");
   };
   const saveRoom = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      const payload = editingRoom ? { roomNumber: roomNumber.trim() } : { roomNumber: roomNumber.trim(), guests: guestNames.map((name) => name.trim()).filter(Boolean) };
+      const payload = { roomNumber: roomNumber.trim() };
       if (editingRoom) await api.patch(`/rooms/${editingRoom.id}`, payload);
       else await api.post("/rooms", payload);
       setModal(null); notify(editingRoom ? "Room updated." : "Room added."); await load();
@@ -428,12 +426,6 @@ export function RoomsPage() {
           <p className="mt-1 text-[11px] text-muted">How staff will find it on the Rooms screen</p>
           <div className="mt-4"><Field label="Room name or number" type="text" required maxLength={80} value={roomNumber} onChange={(event) => setRoomNumber(event.target.value)} placeholder="e.g. 16 or Garden Bungalow 4" autoComplete="off" /></div>
         </section>
-        {!editingRoom && <section className="border-t border-line pt-5">
-          <h3 className="text-sm font-bold">Guests</h3>
-          <p className="mt-1 text-[11px] text-muted">Everyone staying in the room, so their orders go on the right tab.</p>
-          <div className="mt-4 space-y-3">{guestNames.map((name, index) => <Field key={index} label={index === 0 ? "Guest name" : `Guest ${index + 1}`} type="text" maxLength={120} value={name} onChange={(event) => setGuestNames((current) => current.map((entry, entryIndex) => entryIndex === index ? event.target.value : entry))} placeholder={index === 0 ? "e.g. Emma Clarke" : "Another guest"} autoComplete="off" />)}</div>
-          <button type="button" onClick={() => setGuestNames((current) => [...current, ""])} className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-xs font-semibold"><Plus size={13} /> Add another guest</button>
-        </section>}
         <div className="flex items-center justify-between gap-3 pt-1">
           <button type="button" onClick={() => setModal(null)} className="h-11 rounded-xl border border-line px-5 text-sm font-bold">Cancel</button>
           <button disabled={busy || !roomNumber.trim()} className="h-11 rounded-xl bg-[#ed168c] px-5 text-sm font-bold text-white disabled:opacity-50">{editingRoom ? "Save" : "Add room"}</button>
