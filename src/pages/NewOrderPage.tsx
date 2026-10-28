@@ -332,6 +332,19 @@ export function NewOrderPage() {
   const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); pendingAddOrigin.current = null; };
   const removeCartLine = (lineId: string) => setCart((current) => current.filter((line) => line.id !== lineId));
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
+  const bumpMenuItem = (item: MenuItem, delta: 1 | -1, origin?: DOMRect | null) => {
+    const lines = cart.filter((line) => line.item.id === item.id);
+    if (delta > 0 && !lines.length) { add(item, origin); return; }
+    const target = lines[lines.length - 1];
+    if (!target) return;
+    if (delta < 0) {
+      if (target.quantity <= 1) removeCartLine(target.id);
+      else updateCartQuantity(target.id, target.quantity - 1);
+      return;
+    }
+    updateCartQuantity(target.id, target.quantity + 1);
+    launchPlus(origin ?? null);
+  };
   const placeOrder = async () => {
     if (!tableId || !selectedTable) {
       reportError("Return to the floor and open a table before sending an order.");
@@ -553,11 +566,13 @@ export function NewOrderPage() {
           )}
           {menuItems.length ? (
             <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
-              {menuItems.map((item, index) => (
-                <button
+              {menuItems.map((item, index) => {
+                const quantity = cart.reduce((sum, line) => line.item.id === item.id ? sum + line.quantity : sum, 0);
+                return (
+                <article
                   key={item.id}
-                  onClick={(event) => add(item, event.currentTarget.querySelector("[data-add-mark]")?.getBoundingClientRect() ?? null)}
-                  className="group overflow-hidden rounded-[18px] border border-[#f0e1e9] bg-white text-left shadow-card transition hover:-translate-y-0.5 hover:border-[#ed168c]/40 hover:shadow-float"
+                  onClick={(event) => bumpMenuItem(item, 1, event.currentTarget.querySelector("[data-add-mark]")?.getBoundingClientRect() ?? null)}
+                  className="group cursor-pointer overflow-hidden rounded-[18px] border border-[#f0e1e9] bg-white text-left shadow-card transition hover:-translate-y-0.5 hover:border-[#ed168c]/40 hover:shadow-float"
                 >
                   <div
                     className={`relative flex h-32 items-end overflow-hidden bg-gradient-to-br ${categoryColors[index % categoryColors.length]} p-4`}
@@ -577,11 +592,6 @@ export function NewOrderPage() {
                           size={23}
                         />
                       </>
-                    )}
-                    {cart.some((line) => line.item.id === item.id) && (
-                      <span className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-full bg-olive text-white shadow-sm">
-                        <Check size={15} />
-                      </span>
                     )}
                     <span className="relative z-10 rounded-full bg-white/85 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[.08em] text-olive backdrop-blur">
                       {item.category?.name}
@@ -608,14 +618,20 @@ export function NewOrderPage() {
                     ) : null}
                     {item.availableExtras?.length ? <p className="mt-1 truncate text-[10px] text-sky-800">{language === "my" ? "အပိုထည့်စရာ:" : language === "th" ? "รายการเพิ่มเติม:" : "Extras:"} {localizedFoodLabels(item.availableExtras, item.availableExtrasMy, item.availableExtrasTh, language).join(", ")}</p> : null}
                     <div className="mt-4 flex items-center justify-between border-t border-line pt-3">
-                      <span className="text-[10px] text-muted">Tap to add</span>
-                      <span data-add-mark className={`grid h-8 w-8 place-items-center rounded-lg transition ${cart.some((line) => line.item.id === item.id) ? "bg-emerald-500 text-white" : "bg-[#fff0f7] text-[#d90c7d] group-hover:bg-[#ed168c] group-hover:text-white"}`}>
-                        {cart.some((line) => line.item.id === item.id) ? <Check size={16} /> : <Plus size={16} />}
-                      </span>
+                      <span className="text-[10px] text-muted">{quantity ? "On the ticket" : "Tap to add"}</span>
+                      {quantity ? (
+                        <div data-add-mark className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5" onClick={(event) => event.stopPropagation()}>
+                          <button type="button" aria-label={`Remove one ${item.name}`} onClick={() => bumpMenuItem(item, -1)} className="grid h-7 w-7 place-items-center rounded-md text-[#d90c7d] hover:bg-white"><Minus size={12} /></button>
+                          <span className="w-6 text-center text-[11px] font-bold text-[#d90c7d]">{quantity}</span>
+                          <button type="button" aria-label={`Add one ${item.name}`} onClick={(event) => bumpMenuItem(item, 1, event.currentTarget.getBoundingClientRect())} className="grid h-7 w-7 place-items-center rounded-md text-[#d90c7d] hover:bg-white"><Plus size={12} /></button>
+                        </div>
+                      ) : (
+                        <span data-add-mark className="grid h-8 w-8 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d] transition group-hover:bg-[#ed168c] group-hover:text-white"><Plus size={16} /></span>
+                      )}
                     </div>
                   </div>
-                </button>
-              ))}
+                </article>
+              );})}
             </div>
           ) : (
             <Panel>

@@ -26,6 +26,23 @@ function TableShapeSurface({ shape }: { shape: TableShape }) {
   return null;
 }
 
+function SectionFloorPreview({ name, tables }: { name: string; tables: DiningTable[] }) {
+  const rows = Math.max(6, ...tables.map((table) => table.positionY + table.height + 1));
+  return <div className="pointer-events-none absolute inset-y-0 w-full overflow-hidden bg-[#fff8fc]">
+    <div className="pointer-events-none absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px" }} />
+    <p className="relative px-5 pt-4 text-xs font-bold text-[#8c7c85]">{name}</p>
+    {tables.length ? <div className="relative grid gap-3 p-5" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, ${ROW_HEIGHT}px)` }}>
+      {tables.map((table) => {
+        const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "SQUARE" ? "rounded-[27px]" : "rounded-2xl";
+        return <div key={table.id} className={`flex min-w-0 flex-col justify-between border border-[#f0d5e3] bg-white p-3 shadow-sm ${shapeClass}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
+          <span className="text-[10px] font-bold uppercase text-[#d80c7c]">{shapeLabels[table.shape]}</span>
+          <span className="truncate font-display text-sm font-extrabold text-ink">{table.tableNumber}</span>
+        </div>;
+      })}
+    </div> : <p className="relative px-5 pt-6 text-sm text-[#8c7c85]">No tables in this section yet.</p>}
+  </div>;
+}
+
 function SectionCreatePeek({ pull }: { pull: number }) {
   const progress = Math.min(1, Math.max(0, -pull / 120));
   return <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 z-0 flex w-40 items-center justify-center bg-[#ffe4f2] sm:w-52">
@@ -82,6 +99,8 @@ export function TablesPage() {
   const sectionSwipeRef = useRef<{ pointerId: number; x: number; y: number; locked: boolean } | null>(null);
   const [sectionPull, setSectionPull] = useState(0);
   const [sectionGrabbing, setSectionGrabbing] = useState(false);
+  const [sectionGlide, setSectionGlide] = useState(true);
+  const suppressTableClick = useRef(false);
   const [error, setError] = useState("");
   const admin = useAuthStore((state) => state.user?.role === "ADMIN");
   const orders = useOrderStore((state) => state.orders);
@@ -139,6 +158,9 @@ export function TablesPage() {
 
   const displayTables = useMemo(() => editing ? draft : tables, [editing, draft, tables]);
   const visibleTables = useMemo(() => displayTables.filter((table) => !activeSectionId || table.sectionId === activeSectionId), [displayTables, activeSectionId]);
+  const sectionIndex = sections.findIndex((section) => section.id === activeSectionId);
+  const previousSection = sectionIndex > 0 ? sections[sectionIndex - 1] : null;
+  const nextSection = sectionIndex >= 0 && sectionIndex < sections.length - 1 ? sections[sectionIndex + 1] : null;
   const activeOrdersForTable = (tableId: string) => orders.filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status));
   const tableBills = (tableId: string) => activeOrdersForTable(tableId).length;
   const tableOrderSummary = (tableId: string) => {
@@ -175,9 +197,11 @@ export function TablesPage() {
     if (next) setActiveSectionId(next.id);
     else if (direction > 0 && editing) openSectionModal();
   };
-  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0) scale(${sectionGrabbing ? 0.985 : 1})`, transition: sectionGrabbing ? "none" : "transform 460ms cubic-bezier(.22, 1.2, .36, 1)", transformOrigin: "center center" };
+  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0) scale(${sectionGrabbing ? 0.985 : 1})`, transition: sectionGrabbing || !sectionGlide ? "none" : "transform 460ms cubic-bezier(.22, 1.2, .36, 1)", transformOrigin: "center center" };
   const beginSectionSwipe = (event: PointerEvent<HTMLElement>) => {
-    if (!editing || (event.target as HTMLElement).closest("article,button,select,input,textarea")) return;
+    if ((event.target as HTMLElement).closest("button,select,input,textarea")) return;
+    if (editing && (event.target as HTMLElement).closest("article")) return;
+    if (!editing && sections.length < 2) return;
     sectionSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, locked: false };
   };
   const moveSectionSwipe = (event: PointerEvent<HTMLElement>) => {
@@ -195,22 +219,27 @@ export function TablesPage() {
     const index = sections.findIndex((section) => section.id === activeSectionId);
     const atStart = index <= 0;
     const atEnd = index < 0 || index >= sections.length - 1;
+    const width = event.currentTarget.clientWidth || 1;
     let pull = dx;
-    if (pull > 0 && atStart) pull *= 0.28;
-    else if (pull < 0 && atEnd) pull = Math.max(pull * 0.72, -168);
-    else pull = Math.max(-210, Math.min(210, pull));
+    if (pull > 0) pull = atStart ? pull * 0.28 : Math.min(pull, width);
+    else pull = atEnd ? (editing ? Math.max(pull * 0.72, -168) : pull * 0.28) : Math.max(pull, -width);
     setSectionPull(pull);
   };
   const endSectionSwipe = (event: PointerEvent<HTMLElement>) => {
     const start = sectionSwipeRef.current;
     sectionSwipeRef.current = null;
     setSectionGrabbing(false);
-    setSectionPull(0);
-    if (!start || start.pointerId !== event.pointerId || !start.locked) return;
+    if (!start || start.pointerId !== event.pointerId || !start.locked) { setSectionPull(0); return; }
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
-    if (Math.abs(dx) < 72 || Math.abs(dx) < Math.abs(dy)) return;
+    const width = event.currentTarget.clientWidth || 320;
+    if (Math.abs(dx) < Math.min(160, width * 0.18) || Math.abs(dx) < Math.abs(dy)) { setSectionPull(0); return; }
+    suppressTableClick.current = true;
+    window.setTimeout(() => { suppressTableClick.current = false; }, 0);
+    setSectionGlide(false);
+    setSectionPull(0);
     showSection(dx < 0 ? 1 : -1);
+    requestAnimationFrame(() => setSectionGlide(true));
   };
   const cancelSectionSwipe = () => { sectionSwipeRef.current = null; setSectionGrabbing(false); setSectionPull(0); };
   const createSection = async (event: FormEvent) => {
@@ -306,7 +335,7 @@ export function TablesPage() {
     setMobileZoom((zoom) => Math.max(0.35, Math.min(1.5, Math.round(zoom * factor * 100) / 100)));
   };
 
-  const openTable = (tableId: string) => { if (!editing) navigate(`/tables/${tableId}`); };
+  const openTable = (tableId: string) => { if (!editing && !suppressTableClick.current) navigate(`/tables/${tableId}`); };
   const openTableKey = (event: KeyboardEvent<HTMLElement>, tableId: string) => {
     if (!editing && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openTable(tableId); }
   };
@@ -416,9 +445,11 @@ export function TablesPage() {
       {editing && <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold text-[#d80c7c]"><Move size={13} /> {t("Drag tables or use the arrow controls. Choose a shape, then save.")}</span>}
     </div>
 
-    <div ref={mobileViewportRef} onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden ${editing ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}>
+    <div ref={mobileViewportRef} onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden ${(editing || sections.length > 1) ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}>
       {editing && <SectionCreatePeek pull={sectionPull} />}
       <div className="relative z-10 bg-[#fff8fc]" style={sectionPullStyle}>
+      {previousSection && <div className="absolute inset-y-0 w-full" style={{ left: "-100%" }}><SectionFloorPreview name={previousSection.name} tables={displayTables.filter((table) => table.sectionId === previousSection.id)} /></div>}
+      {nextSection && <div className="absolute inset-y-0 w-full" style={{ left: "100%" }}><SectionFloorPreview name={nextSection.name} tables={displayTables.filter((table) => table.sectionId === nextSection.id)} /></div>}
       {!loading && visibleTables.length > 0 && <div className="flex items-center justify-end gap-1.5 border-b border-[#f1dce7] bg-white/90 px-3 py-2">
         <span className="mr-auto text-[10px] font-semibold text-[#8c7c85]">{t("Floor plan")}</span>
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.max(0.35, Math.round((zoom - 0.1) * 10) / 10))} aria-label={t("Zoom out floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomOut size={15} /></button>
@@ -426,7 +457,7 @@ export function TablesPage() {
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.min(1.5, Math.round((zoom + 0.1) * 10) / 10))} aria-label={t("Zoom in floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomIn size={15} /></button>
         <button type="button" onClick={() => { setMobileZoom(0.55); if (mapScrollRef.current) { mapScrollRef.current.scrollLeft = 0; mapScrollRef.current.scrollTop = 0; } }} className="rounded-lg px-2 py-1.5 text-[10px] font-bold text-[#d80c7c]">{t("Reset")}</button>
       </div>}
-      {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: editing ? "pan-y" : "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
+      {loading ? <div className="grid grid-cols-2 gap-3 p-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={mapScrollRef} onPointerDown={startMapPan} onPointerMove={moveMapPan} onPointerUp={stopMapPan} onPointerCancel={stopMapPan} onWheel={zoomFromWheel} className="w-full overflow-auto" style={{ height: `${Math.max(300, (rowCount * 84 + 40) * mobileZoom)}px`, touchAction: editing || sections.length > 1 ? "pan-y" : "pan-x pan-y" }}><div className="relative" style={{ width: `${1100 * mobileZoom}px`, height: `${(rowCount * 84 + 40) * mobileZoom}px` }}><div data-floor-grid data-mobile-floor="true" className="absolute left-0 top-0 grid w-[1100px] gap-3 p-5" style={{ height: `${rowCount * 84 + 40}px`, gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)`, backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px", transform: `scale(${mobileZoom})`, transformOrigin: "top left", touchAction: "pan-x pan-y" }}>
         {visibleTables.map((table) => {
           const bills = tableBills(table.id);
           const status = tableStatus(table);
@@ -454,9 +485,11 @@ export function TablesPage() {
       </div>
     </div>
 
-    <div onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative hidden w-full rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block ${editing ? "overflow-hidden" : "overflow-x-auto overscroll-x-contain"} ${editing ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}>
+    <div onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative hidden w-full rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block ${editing || sections.length > 1 ? "overflow-hidden" : "overflow-x-auto overscroll-x-contain"} ${(editing || sections.length > 1) ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`}>
       {editing && <SectionCreatePeek pull={sectionPull} />}
       <div className="relative z-10 min-h-[calc(100vh-190px)] w-full min-w-[860px] bg-[#fff8fc] p-4 sm:p-5" style={sectionPullStyle}>
+        {previousSection && <div className="absolute inset-y-0 w-full" style={{ left: "-100%" }}><SectionFloorPreview name={previousSection.name} tables={displayTables.filter((table) => table.sectionId === previousSection.id)} /></div>}
+        {nextSection && <div className="absolute inset-y-0 w-full" style={{ left: "100%" }}><SectionFloorPreview name={nextSection.name} tables={displayTables.filter((table) => table.sectionId === nextSection.id)} /></div>}
         <div className="pointer-events-none absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px" }} />
         {loading ? <div className="relative grid grid-cols-4 gap-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={floorRef} data-floor-grid data-mobile-floor="false" className="relative grid min-h-[calc(100vh-245px)] w-full touch-pan-y grid-cols-12 auto-rows-[72px] gap-3" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)` }}>
           {visibleTables.map((table) => {
