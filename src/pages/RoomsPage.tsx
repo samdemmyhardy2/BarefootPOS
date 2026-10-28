@@ -246,14 +246,27 @@ export function RoomsPage() {
     return matchesFilter && (!query || String(room.roomNumber).toLowerCase().includes(query) || stay?.primaryGuestName.toLowerCase().includes(query) || stay?.occupants.some((guest) => guest.name.toLowerCase().includes(query)));
   });
   const focusedRoom = rooms.find((room) => room.id === focusedRoomId) ?? null;
-  const focusedStay = focusedRoom?.stays?.[0] ?? null;
+  const focusedStay = focusedRoom?.stays?.[0] ?? null; // Keep focusedStay for active stay logic
   useEffect(() => {
-    if (!focusedStay) {
+    if (!focusedRoom) {
       setTimeline(null);
       return;
     }
-    if (timeline?.id !== focusedStay.id) void openTimeline(focusedStay.id);
-  }, [focusedRoomId, rooms]);
+
+    // Find the most recent stay for the focused room (active or completed)
+    // Assuming focusedRoom.stays is sorted such that the most recent stay is at index 0
+    const mostRecentStay = focusedRoom.stays?.[0];
+
+    if (mostRecentStay) {
+      // Only load if the timeline is not already showing this stay
+      if (timeline?.id !== mostRecentStay.id) {
+        void openTimeline(mostRecentStay.id);
+      }
+    } else {
+      // If no stays at all for this room, clear the timeline
+      setTimeline(null);
+    }
+  }, [focusedRoom, timeline, openTimeline]); // Depend on focusedRoom, timeline, and openTimeline
   return <>
     <div className="page-enter min-h-full w-full">
       <div className="mb-5 flex items-center justify-between gap-4"><div><p className="mb-1 text-[9px] font-bold uppercase tracking-[.2em] text-[#ec1593]">Front desk · Guest stays</p><h1 className="font-display text-2xl font-extrabold tracking-tight text-ink">Rooms</h1><p className="mt-1 text-[11px] text-muted">Who’s staying, what’s on their tab, and who arrives or leaves today.</p></div><div className="flex shrink-0 items-center gap-2">{isAdmin && <button type="button" onClick={() => setEditMode((value) => !value)} title={editMode ? "Done editing rooms" : "Edit rooms"} className={`grid h-9 w-9 place-items-center rounded-xl border ${editMode ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-line bg-white text-muted hover:text-ink"}`}><Pencil size={14} /></button>}{canManageStays && <button type="button" disabled={!rooms.some((room) => room.status === "AVAILABLE")} onClick={() => { const available = rooms.find((room) => room.status === "AVAILABLE"); if (available) openCheckIn(available); }} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#f01898] px-3.5 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"><Plus size={13} /> Check in</button>}</div></div>
@@ -285,7 +298,7 @@ export function RoomsPage() {
       })}</div> : <Panel className="p-10 text-center"><p className="text-sm font-semibold">No rooms match this view.</p><p className="mt-1 text-xs text-muted">Change the filter or search term to see other rooms.</p></Panel> : <Panel className="p-12 text-center"><BedDouble className="mx-auto text-muted" /><p className="mt-3 font-semibold">No rooms configured</p><p className="mt-1 text-sm text-muted">Add a room to begin managing guest stays and folios.</p></Panel>}
 
       {focusedRoom && createPortal(<div className="fixed inset-0 z-40 flex h-[100dvh] w-screen justify-end bg-[#291923]/35 backdrop-blur-[1px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setFocusedRoomId(null); }}><aside className="flex h-full w-full flex-col overflow-hidden border-l border-line bg-white shadow-float md:w-[min(70vw,960px)] lg:w-[min(60vw,1040px)]"><div className="flex items-center justify-between border-b border-[#f4e6ed] px-6 py-4"><div><div className="flex items-center gap-2"><h2 className="font-display text-2xl font-extrabold">Room {focusedRoom.roomNumber}</h2><span className={`rounded-full px-2 py-1 text-xs font-bold ${focusedRoom.status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}>{focusedRoom.status === "OCCUPIED" ? "Occupied" : "Vacant"}</span></div><p className="mt-0.5 text-[13px] text-muted">{focusedRoom.facilities?.[0] ? translateFacility(language, focusedRoom.facilities[0]) : focusedRoom.size === "FAMILY" ? t("familyRoom") : t("normalRoom")}</p></div><button type="button" onClick={() => setFocusedRoomId(null)} aria-label="Close room details" className="grid h-10 w-10 place-items-center rounded-full text-muted hover:bg-canvas"><X size={20} /></button></div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{focusedStay && timeline ? <>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{timeline ? <>
           <section className="border-b border-[#f3e7ed] pb-3"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-full bg-pink-100 text-[13px] font-bold text-[#bd0d72]">{focusedStay.primaryGuestName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{[...new Set([focusedStay.primaryGuestName, ...focusedStay.occupants.map((person) => person.name)])].join(" and ")}</p><p className="mt-0.5 text-[13px] text-muted">{focusedStay.occupants.length} guests · {new Date(focusedStay.checkedInAt).toLocaleDateString()}{focusedStay.expectedCheckoutAt ? ` to ${new Date(focusedStay.expectedCheckoutAt).toLocaleDateString()}` : ""}{focusedStay.expectedCheckoutAt ? ` · ${Math.max(1, Math.ceil((new Date(focusedStay.expectedCheckoutAt).getTime() - new Date(focusedStay.checkedInAt).getTime()) / 86400000))} nights` : ""}</p></div><button onClick={() => openEditStay(focusedRoom)} className="shrink-0 text-[13px] font-bold text-[#d20b79]">Edit stay →</button></div>{focusedStay.guestNotes && <div className="mt-3 rounded-lg bg-amber-50 px-2.5 py-3 text-[13px] font-medium text-amber-900"><span className="font-bold">Guest note:</span> {focusedStay.guestNotes}</div>}
             <div className="mt-3 flex items-center gap-5"><button type="button" disabled={busy} onClick={() => void toggleCashOnly()} className="flex items-center gap-2 text-left"><span className={`relative h-6 w-11 rounded-full transition ${timeline.cashOnly ? "bg-[#f01898]" : "bg-[#e4d8df]"}`}><span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${timeline.cashOnly ? "left-6" : "left-1"}`} /></span><span><strong className="block text-[13px]">Cash only</strong><small className="block text-xs text-muted">{timeline.cashOnly ? "Can’t add to the tab" : "Room charges allowed"}</small></span></button><div><strong className="block text-[13px]">Charge limit</strong><small className="block text-xs text-muted">{timeline.chargeLimit == null ? "No limit" : money(timeline.chargeLimit)}</small></div></div></section>
           {(() => {
