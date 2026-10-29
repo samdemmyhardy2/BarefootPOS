@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { BedDouble, Plus, ReceiptText, Trash2, Users, X, Pencil, Search, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
+import { BedDouble, CalendarDays, Plus, ReceiptText, Trash2, Users, X, Pencil, Search, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { Field, Modal, Panel, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import { postOnce, SavedLocallyError } from "../lib/outbox";
@@ -12,7 +12,7 @@ import { hasJobPermission } from "../lib/access";
 import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
 import { RoomCalendar } from "../components/RoomCalendar";
 
-type ModalKind = "room" | "checkin" | "editStay" | "charge" | "settle" | null;
+type ModalKind = "room" | "checkin" | "arrival" | "editStay" | "charge" | "settle" | null;
 const dateTime = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 const stayDateRange = (from: string, to?: string | null) => {
   const start = new Date(from);
@@ -52,6 +52,7 @@ export function RoomsPage() {
   const [selectedStayId, setSelectedStayId] = useState<string | null>(null);
   const historyScrollRef = useRef<HTMLDivElement | null>(null);
   const historyRequestRef = useRef(0);
+  const preferredStayRef = useRef<string | null>(null);
   const [checkoutReceipt, setCheckoutReceipt] = useState<CheckoutReceipt | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
   const [guestName, setGuestName] = useState("");
@@ -69,6 +70,7 @@ export function RoomsPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [deskView, setDeskView] = useState<"calendar" | "folios">("calendar");
+  const [calendarToken, setCalendarToken] = useState(0);
   const [roomFilter, setRoomFilter] = useState<"ALL" | "OCCUPIED" | "ARRIVING" | "DEPARTING" | "VACANT">("ALL");
   const [roomSearch, setRoomSearch] = useState("");
   const [editMode, setEditMode] = useState(false);
@@ -99,6 +101,7 @@ export function RoomsPage() {
     try {
       const { data } = await api.get<Room[]>("/rooms");
       setRooms(data);
+      setCalendarToken((token) => token + 1);
       setFocusedRoomId((current) => current && data.some((room) => room.id === current) ? current : null);
     }
     catch (e) { setError(errorMessage(e)); }
@@ -174,6 +177,13 @@ export function RoomsPage() {
     setSelectedRoom(room); setGuestName(""); setOccupants(""); setGuestNotes(""); setCashOnly(false); setChargeLimit("");
     const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1); setExpectedCheckoutAt(tomorrow.toISOString().slice(0, 10));
     setError(""); setModal("checkin");
+  };
+  const openArrival = (room: Room) => {
+    setSelectedRoom(room); setGuestName(""); setOccupants(""); setGuestNotes(""); setCashOnly(false); setChargeLimit("");
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    setExpectedCheckoutAt(`${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}`);
+    setError(""); setModal("arrival");
   };
   const openEditStay = (room: Room) => {
     const stay = room.stays?.[0]; if (!stay) return;
@@ -357,8 +367,11 @@ export function RoomsPage() {
     void (async () => {
       const rows = await loadStayHistory(roomId, 1, false);
       if (cancelled || !rows) return;
-      const defaultStay = rows.find((stay) => !stay.checkedOutAt) ?? rows[0] ?? null;
-      if (defaultStay) void openTimeline(defaultStay.id);
+      const preferred = preferredStayRef.current;
+      preferredStayRef.current = null;
+      const defaultStay = (preferred && rows.find((stay) => stay.id === preferred)) ?? rows.find((stay) => !stay.checkedOutAt) ?? rows[0] ?? null;
+      if (preferred) void openTimeline(preferred);
+      else if (defaultStay) void openTimeline(defaultStay.id);
       else {
         setSelectedStayId(null);
         setTimeline(null);
@@ -371,7 +384,7 @@ export function RoomsPage() {
       <div className="mb-5 flex items-center justify-between gap-4"><div><p className="mb-1 text-[9px] font-bold uppercase tracking-[.2em] text-[#ec1593]">Front desk · Guest stays</p><h1 className="font-display text-2xl font-extrabold tracking-tight text-ink">Rooms</h1><p className="mt-1 text-[11px] text-muted">Who’s staying, what’s on their tab, and who arrives or leaves today.</p></div><div className="flex shrink-0 items-center gap-2">{isAdmin && <button type="button" onClick={() => setEditMode((value) => !value)} title={editMode ? "Done editing rooms" : "Edit rooms"} className={`grid h-9 w-9 place-items-center rounded-xl border ${editMode ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-line bg-white text-muted hover:text-ink"}`}><Pencil size={14} /></button>}{canManageStays && <button type="button" disabled={!rooms.some((room) => room.status === "AVAILABLE")} onClick={() => { const available = rooms.find((room) => room.status === "AVAILABLE"); if (available) openCheckIn(available); }} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#f01898] px-3.5 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"><Plus size={13} /> Check in</button>}</div></div>
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
       <div className="mb-4 inline-flex rounded-lg bg-[#fff4f9] p-0.5">{(["calendar", "folios"] as const).map((view) => <button key={view} type="button" onClick={() => setDeskView(view)} className={`h-8 rounded-md px-3 text-[11px] font-bold ${deskView === view ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{view === "calendar" ? "Calendar" : "Folios"}</button>)}</div>
-      {deskView === "calendar" && <RoomCalendar />}
+      {deskView === "calendar" && <RoomCalendar reloadToken={calendarToken} onVacant={(roomId) => { const room = rooms.find((item) => item.id === roomId); if (canManageStays && room?.status === "AVAILABLE") openArrival(room); }} onStay={(roomId, stayId) => { const room = rooms.find((item) => item.id === roomId); if (!room) return; preferredStayRef.current = stayId; if (focusedRoomId === roomId) void openTimeline(stayId); else focusRoom(room); }} />}
       {deskView === "folios" && <>
       <div className="mb-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
         <Panel className="flex items-center gap-2.5 rounded-2xl p-3"><BedDouble size={16} className="text-[#ec1593]" /><div><p className="text-sm font-extrabold leading-none">{rooms.length}</p><p className="mt-1 text-[9px] text-muted">Total rooms</p></div></Panel>
@@ -450,6 +463,7 @@ export function RoomsPage() {
         </div>
       </form></Modal>}
 
+      {modal === "arrival" && selectedRoom && <ArrivalCard room={selectedRoom} guestName={guestName} occupants={occupants} leaves={expectedCheckoutAt} notes={guestNotes} busy={busy} error={error} onGuestName={setGuestName} onOccupants={setOccupants} onLeaves={setExpectedCheckoutAt} onNotes={setGuestNotes} onClose={() => setModal(null)} onSubmit={(event) => void checkIn(event)} />}
       {(modal === "checkin" || modal === "editStay") && <Modal title={modal === "checkin" ? "Check in" : `Edit stay · Room ${selectedRoom?.roomNumber}`} onClose={() => setModal(null)}><form onSubmit={(event) => void (modal === "checkin" ? checkIn(event) : editStay(event))} className="space-y-3.5">
         {modal === "checkin" && <SelectField label="Room" value={selectedRoom?.id ?? ""} onChange={(event) => setSelectedRoom(rooms.find((room) => room.id === event.target.value) ?? null)}>{rooms.filter((room) => room.status === "AVAILABLE").map((room) => <option key={room.id} value={room.id}>{roomLabel(room.roomNumber)}</option>)}</SelectField>}
         <Field label="Guest name" required value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Primary guest" />
@@ -466,4 +480,59 @@ export function RoomsPage() {
     </div>
     {checkoutReceipt && <ReceiptPreview receipt={checkoutReceipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setCheckoutReceipt(null)} />}
   </>;
+}
+
+function localDay(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function prettyDay(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(year, month - 1, day));
+}
+function ArrivalCard({ room, guestName, occupants, leaves, notes, busy, error, onGuestName, onOccupants, onLeaves, onNotes, onClose, onSubmit }: {
+  room: Room;
+  guestName: string;
+  occupants: string;
+  leaves: string;
+  notes: string;
+  busy: boolean;
+  error: string;
+  onGuestName: (value: string) => void;
+  onOccupants: (value: string) => void;
+  onLeaves: (value: string) => void;
+  onNotes: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const today = localDay(new Date());
+  const now = new Date();
+  const clock = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const extra = occupants.split(/[\n,]/).map((value) => value.trim()).filter(Boolean).length;
+  const adults = 1 + extra;
+  const stayNights = (() => {
+    if (!leaves) return 0;
+    const [year, month, day] = leaves.split("-").map(Number);
+    const [startYear, startMonth, startDay] = today.split("-").map(Number);
+    return Math.max(0, Math.round((Date.UTC(year, month - 1, day) - Date.UTC(startYear, startMonth - 1, startDay)) / 86400000));
+  })();
+  return createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center bg-ink/25 p-4" onMouseDown={onClose}>
+    <form role="dialog" aria-modal="true" aria-label="Check in" onSubmit={onSubmit} onMouseDown={(event) => event.stopPropagation()} className="w-full max-w-[420px] rounded-2xl border border-[#f3d5e4] bg-white p-4 shadow-[0_16px_40px_rgba(80,30,55,.16)]">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-bold text-[#1d6794]">Arriving today · {clock}</p>
+        <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-[#fff4f9]"><X size={16} /></button>
+      </div>
+      <input required value={guestName} onChange={(event) => onGuestName(event.target.value)} placeholder="Guest name" className="mt-1 w-full bg-transparent font-display text-[28px] font-extrabold leading-8 tracking-tight text-ink outline-none placeholder:text-[#d7c9d0]" />
+      <div className="mt-3 space-y-2.5 rounded-xl border border-[#f3e4eb] px-3 py-3 text-sm">
+        <p className="flex items-center gap-2 font-semibold"><BedDouble size={16} className="text-[#8a8388]" /> {roomLabel(room.roomNumber)}</p>
+        <p className="flex items-center gap-2 text-[13px]"><CalendarDays size={16} className="shrink-0 text-[#8a8388]" /><span>{prettyDay(today)} to {leaves ? prettyDay(leaves) : "—"}{stayNights ? ` · ${stayNights} night${stayNights === 1 ? "" : "s"}` : ""}</span></p>
+        <label className="flex items-center gap-2 text-[13px]"><span className="text-muted">Leaves</span><input type="date" min={today} value={leaves} onChange={(event) => onLeaves(event.target.value)} className="bg-transparent text-sm font-semibold outline-none" /></label>
+        <p className="flex items-center gap-2"><Users size={16} className="text-[#8a8388]" /> {adults} adult{adults === 1 ? "" : "s"}</p>
+        <textarea value={occupants} onChange={(event) => onOccupants(event.target.value)} rows={2} placeholder="Additional guests, one name per line" className="w-full resize-none rounded-lg border border-[#f3e4eb] px-2.5 py-2 text-xs outline-none focus:border-[#f01898]" />
+      </div>
+      <textarea value={notes} onChange={(event) => onNotes(event.target.value)} rows={2} placeholder="Vegetarian. Coming on the 13:30 ferry." className="mt-3 w-full resize-none rounded-xl border border-[#f3e0c4] bg-[#fff8ee] px-3 py-2.5 text-sm font-semibold text-[#9a5b24] outline-none placeholder:font-medium placeholder:text-[#c4a27a]" />
+      {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
+      <button disabled={busy || !guestName.trim()} className="mt-3 h-12 w-full rounded-xl bg-[#ed168c] text-sm font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check in"}</button>
+      <p className="mt-3 text-center text-[11px] text-muted">Saved on this room. Cloudbeds can be connected later.</p>
+    </form>
+  </div>, document.body);
 }
