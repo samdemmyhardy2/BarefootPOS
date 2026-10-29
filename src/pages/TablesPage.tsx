@@ -257,7 +257,7 @@ export function TablesPage() {
     if (next) setActiveSectionId(next.id);
     else if (direction > 0 && editing) openSectionModal();
   };
-  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0) scale(${sectionGrabbing ? 0.985 : 1})`, transition: sectionGrabbing || !sectionGlide ? "none" : "transform 460ms cubic-bezier(.22, 1.2, .36, 1)", transformOrigin: "center center" };
+  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0)`, transition: sectionGrabbing || !sectionGlide ? "none" : "transform 320ms ease-out" };
   const claimSectionSwipe = (dx: number, dy: number) => {
     const start = sectionSwipeRef.current;
     if (!start || start.abandoned) return false;

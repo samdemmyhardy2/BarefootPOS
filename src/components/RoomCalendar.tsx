@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { BedDouble, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { useUiStore } from "../stores/uiStore";
 
-type CloudbedsRoom = { roomID: string; roomName: string; roomTypeName: string };
+type CloudbedsRoom = { roomID: string; roomName: string; roomTypeName: string; rate?: number; weekendRate?: number };
 type CloudbedsStay = {
   reservationID: string;
   subReservationID: string | null;
@@ -18,6 +18,9 @@ type CloudbedsStay = {
   children: string;
   balance: number;
   sourceName: string;
+  tone?: string;
+  arriveTime?: string;
+  leaveTime?: string;
 };
 type CalendarResponse = {
   configured: boolean;
@@ -28,7 +31,8 @@ type CalendarResponse = {
 };
 
 const DAY = 72;
-const LABEL = 148;
+const LABEL = 196;
+const SPANS = [[7, "Week"], [14, "2 weeks"], [31, "Month"], [62, "Year"]] as const;
 
 function parseDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
@@ -45,21 +49,55 @@ function addDays(date: Date, days: number) {
 function dayIndex(value: string, origin: string) {
   return Math.round((parseDate(value).getTime() - parseDate(origin).getTime()) / 86400000);
 }
+function formatDay(value: string, withYear = false) {
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}) }).format(parseDate(value));
+}
+function guestCount(stay: CloudbedsStay) {
+  return Number(stay.adults || 0) + Number(stay.children || 0);
+}
+function stayCaption(stay: CloudbedsStay, showArrive: boolean, showLeave: boolean) {
+  const parts = [
+    showArrive ? `Arrives ${stay.arriveTime || "14:00"}` : "",
+    showLeave ? `Leaves ${stay.leaveTime || "12:00"}` : "",
+    `${guestCount(stay)} guest${guestCount(stay) === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+function occupiedOn(stays: CloudbedsStay[], roomIDs: Set<string>, day: string) {
+  return stays.filter((stay) => stay.roomID && roomIDs.has(stay.roomID) && stay.startDate <= day && stay.endDate > day).length;
+}
+function dayRate(rooms: CloudbedsRoom[], day: Date) {
+  const weekend = day.getDay() === 5 || day.getDay() === 6;
+  const rates = rooms.map((room) => (weekend ? room.weekendRate : room.rate) || room.rate).filter((rate): rate is number => typeof rate === "number");
+  return rates.length ? Math.min(...rates) : null;
+}
+function baht(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
 
 const tone: Record<string, string> = {
-  not_checked_in: "border-[#f7c5df] bg-[#fff0f7] text-[#b30d6e]",
-  in_house: "border-[#b9ddf5] bg-[#eef7fd] text-[#1d6794]",
+  pink: "border-[#f6c4de] bg-[#ffe8f4] text-[#b30d6e]",
+  blue: "border-[#b9ddf5] bg-[#e7f4fc] text-[#1d6794]",
+  yellow: "border-[#f0e0a4] bg-[#fff6d6] text-[#8a6810]",
+  orange: "border-[#f6d2b4] bg-[#fff1e6] text-[#a85b1c]",
+  grey: "border-[#e6e1e4] bg-[#f6f4f5] text-[#8a8388]",
+  not_checked_in: "border-[#f6c4de] bg-[#ffe8f4] text-[#b30d6e]",
+  in_house: "border-[#b9ddf5] bg-[#e7f4fc] text-[#1d6794]",
   checked_out: "border-[#e6e1e4] bg-[#f6f4f5] text-[#8a8388]",
 };
 
 export function RoomCalendar() {
   const notify = useUiStore((state) => state.notify);
-  const [span, setSpan] = useState<7 | 14 | 31>(14);
-  const [anchor, setAnchor] = useState(() => isoDate(new Date()));
+  const [span, setSpan] = useState<(typeof SPANS)[number][0]>(14);
+  const [anchor, setAnchor] = useState(() => {
+    const today = isoDate(new Date());
+    return today >= "2026-10-22" && today <= "2026-11-04" ? "2026-10-22" : today;
+  });
   const [calendar, setCalendar] = useState<CalendarResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<CloudbedsStay | null>(null);
+  const [closedTypes, setClosedTypes] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<{ stay: CloudbedsStay; x: number; y: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const from = anchor;
   const to = isoDate(addDays(parseDate(anchor), span));
@@ -85,10 +123,10 @@ export function RoomCalendar() {
     const stays = calendar?.stays ?? [];
     const rooms = calendar?.rooms ?? [];
     const known = new Set(rooms.map((room) => room.roomID));
-    const groups = new Map<string, { roomID: string; roomName: string; stays: CloudbedsStay[] }[]>();
+    const groups = new Map<string, CloudbedsRoom[]>();
     for (const room of rooms) {
       const list = groups.get(room.roomTypeName) ?? [];
-      list.push({ roomID: room.roomID, roomName: room.roomName, stays: stays.filter((stay) => stay.roomID === room.roomID) });
+      list.push(room);
       groups.set(room.roomTypeName, list);
     }
     const unassigned = stays.filter((stay) => !stay.roomID || !known.has(stay.roomID));
@@ -97,17 +135,18 @@ export function RoomCalendar() {
 
   const act = async (action: "check-in" | "check-out") => {
     if (!selected) return;
+    const stay = selected.stay;
     setBusy(true);
     try {
       const { data } = await api.post<{ folio?: { warning?: string | null } }>(`/rooms/cloudbeds/${action}`, {
-        reservationID: selected.reservationID,
-        subReservationID: selected.subReservationID ?? undefined,
-        roomID: selected.roomID ?? undefined,
-        roomName: selected.roomName ?? undefined,
-        guestName: selected.guestName,
-        checkOut: selected.endDate,
+        reservationID: stay.reservationID,
+        subReservationID: stay.subReservationID ?? undefined,
+        roomID: stay.roomID ?? undefined,
+        roomName: stay.roomName ?? undefined,
+        guestName: stay.guestName,
+        checkOut: stay.endDate,
       });
-      notify(data.folio?.warning || (action === "check-in" ? `${selected.guestName} is checked in.` : `${selected.guestName} is checked out.`), data.folio?.warning ? "error" : "success");
+      notify(data.folio?.warning || (action === "check-in" ? `${stay.guestName} is checked in.` : `${stay.guestName} is checked out.`), data.folio?.warning ? "error" : "success");
       setSelected(null);
       await load();
     } catch (cause) {
@@ -117,69 +156,97 @@ export function RoomCalendar() {
     }
   };
 
+  const openStay = (stay: CloudbedsStay, event: MouseEvent<HTMLButtonElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    setSelected({ stay, x: Math.min(box.left, window.innerWidth - 280), y: Math.min(box.bottom + 8, window.innerHeight - 230) });
+  };
+
   return <section className="overflow-hidden rounded-[22px] border border-[#f1dfe7] bg-white shadow-card">
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f6e8ee] px-4 py-3">
-      <div>
-        <p className="text-[10px] font-bold uppercase tracking-[.14em] text-[#ec1593]">Cloudbeds</p>
-        <h2 className="mt-1 font-display text-base font-extrabold">{new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(parseDate(from))} to {new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(addDays(parseDate(to), -1))}</h2>
-      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex overflow-hidden rounded-lg border border-line">
-          <button type="button" aria-label="Previous dates" onClick={() => setAnchor(isoDate(addDays(parseDate(anchor), -span)))} className="grid h-8 w-8 place-items-center text-muted hover:bg-canvas"><ChevronLeft size={14} /></button>
-          <button type="button" onClick={() => setAnchor(today)} className="h-8 border-x border-line px-3 text-[11px] font-bold">Today</button>
-          <button type="button" aria-label="Next dates" onClick={() => setAnchor(isoDate(addDays(parseDate(anchor), span)))} className="grid h-8 w-8 place-items-center text-muted hover:bg-canvas"><ChevronRight size={14} /></button>
-        </div>
-        <div className="flex rounded-lg bg-[#fff4f9] p-0.5">{([[7, "Week"], [14, "2 weeks"], [31, "Month"]] as const).map(([value, label]) => <button key={value} type="button" onClick={() => setSpan(value)} className={`h-8 rounded-md px-2.5 text-[11px] font-bold ${span === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>
+        <button type="button" aria-label="Previous dates" onClick={() => setAnchor(isoDate(addDays(parseDate(anchor), -span)))} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-[#fff4f9]"><ChevronLeft size={16} /></button>
+        <h2 className="min-w-[11rem] text-center font-display text-[15px] font-extrabold tracking-tight">{formatDay(from)} to {formatDay(isoDate(addDays(parseDate(to), -1)), true)}</h2>
+        <button type="button" aria-label="Next dates" onClick={() => setAnchor(isoDate(addDays(parseDate(anchor), span)))} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-[#fff4f9]"><ChevronRight size={16} /></button>
+        <button type="button" onClick={() => setAnchor(today)} className="h-8 rounded-lg bg-[#ed168c] px-3.5 text-[12px] font-bold text-white">Today</button>
       </div>
+      <div className="flex items-center gap-1">{SPANS.map(([value, label]) => <button key={value} type="button" onClick={() => setSpan(value)} className={`h-8 rounded-lg px-2.5 text-[12px] font-bold ${span === value ? "text-[#ec1593]" : "text-muted hover:text-ink"}`}>{label}</button>)}</div>
     </header>
     {error && <p role="alert" className="m-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
-    {!error && calendar && !calendar.configured && <p className="m-4 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">Cloudbeds is not connected. Add <span className="font-semibold">CLOUDBEDS_API_KEY</span> on the server. The key needs read access to rooms and reservations, and write access to rooms.</p>}
-    {loading && !calendar ? <div className="h-64 animate-pulse bg-[#fffafc]" /> : calendar?.configured && <div className="overflow-x-auto">
+    {loading && !calendar ? <div className="h-64 animate-pulse bg-[#fffafc]" /> : calendar && <div className="overflow-x-auto">
       <div style={{ width: LABEL + span * DAY }}>
         <div className="sticky top-0 z-10 flex border-b border-[#f6e8ee] bg-white">
           <div className="sticky left-0 z-20 shrink-0 border-r border-[#f6e8ee] bg-white" style={{ width: LABEL }} />
           {days.map((day) => {
             const key = isoDate(day);
-            return <div key={key} className={`shrink-0 px-1 py-2 text-center ${key === today ? "bg-[#fff0f7]" : ""}`} style={{ width: DAY }}>
-              <p className={`text-[9px] font-bold uppercase ${key === today ? "text-[#ec1593]" : "text-muted"}`}>{new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(day)}</p>
-              <p className={`text-sm font-extrabold ${key === today ? "text-[#ec1593]" : "text-ink"}`}>{day.getDate()}</p>
+            const current = key === today;
+            return <div key={key} className={`shrink-0 px-1 py-2 text-center ${current ? "bg-[#fff0f7]" : ""}`} style={{ width: DAY }}>
+              <p className={`text-[9px] font-bold uppercase ${current ? "text-[#ec1593]" : "text-muted"}`}>{new Intl.DateTimeFormat("en-GB", { weekday: "short" }).format(day)}</p>
+              <p className={`text-sm font-extrabold ${current ? "text-[#ec1593]" : "text-ink"}`}>{day.getDate()}</p>
             </div>;
           })}
         </div>
-        {rows.unassigned.length > 0 && <RoomRow label="Unassigned" stays={rows.unassigned} from={from} span={span} today={today} onSelect={setSelected} />}
-        {rows.groups.map(([typeName, rooms]) => <div key={typeName}>
-          <div className="border-b border-[#f6e8ee] bg-[#fffafc] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-muted">{typeName}</div>
-          {rooms.map((room) => <RoomRow key={room.roomID} label={room.roomName} stays={room.stays} from={from} span={span} today={today} onSelect={setSelected} />)}
-        </div>)}
-        {!rows.groups.length && !rows.unassigned.length && <p className="px-4 py-10 text-center text-sm text-muted">No Cloudbeds rooms were returned for this property.</p>}
+        <AvailabilityRow label="All rooms" detail={`${calendar.rooms.length} rooms · free and booked %`} days={days} today={today} rooms={calendar.rooms} stays={calendar.stays} showPercent />
+        {rows.unassigned.length > 0 && <RoomRow label="Unassigned" stays={rows.unassigned} from={from} span={span} today={today} onSelect={openStay} />}
+        {rows.groups.map(([typeName, rooms]) => {
+          const name = typeName || "Rooms";
+          const fromRate = rooms.reduce<number | null>((lowest, room) => room.rate == null ? lowest : lowest == null ? room.rate : Math.min(lowest, room.rate), null);
+          const open = !closedTypes[name];
+          return <div key={name}>
+            <AvailabilityRow label={name} detail={`${rooms.length} room${rooms.length === 1 ? "" : "s"}${fromRate == null ? "" : ` · from ${baht(fromRate)} THB`}`} days={days} today={today} rooms={rooms} stays={calendar.stays} collapsible open={open} onToggle={() => setClosedTypes((current) => ({ ...current, [name]: open }))} />
+            {open && rooms.map((room) => <RoomRow key={room.roomID} label={room.roomName} stays={(calendar.stays ?? []).filter((stay) => stay.roomID === room.roomID)} from={from} span={span} today={today} onSelect={openStay} />)}
+          </div>;
+        })}
+        {!rows.groups.length && !rows.unassigned.length && <p className="px-4 py-10 text-center text-sm text-muted">No rooms in this range.</p>}
       </div>
     </div>}
-    <footer className="flex flex-wrap gap-3 border-t border-[#f6e8ee] px-4 py-2.5 text-[10px] font-semibold text-muted">
-      <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#fff0f7] ring-1 ring-[#f7c5df]" /> Arriving</span>
-      <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#eef7fd] ring-1 ring-[#b9ddf5]" /> In house</span>
+    <footer className="flex flex-wrap gap-4 border-t border-[#f6e8ee] px-4 py-2.5 text-[10px] font-semibold text-muted">
+      <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#ffe8f4] ring-1 ring-[#f6c4de]" /> Arriving</span>
+      <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#e7f4fc] ring-1 ring-[#b9ddf5]" /> In house</span>
+      <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#fff6d6] ring-1 ring-[#f0e0a4]" /> Upcoming</span>
       <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#f6f4f5] ring-1 ring-[#e6e1e4]" /> Checked out</span>
     </footer>
-    {selected && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-ink/30 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}>
-      <section role="dialog" aria-modal="true" aria-label={selected.guestName} className="w-full max-w-sm rounded-2xl border border-line bg-white p-4 shadow-float">
-        <p className="text-[10px] font-bold uppercase tracking-wide text-[#ec1593]">{selected.roomName || "Unassigned"} · {selected.roomStatus.split("_").join(" ")}</p>
-        <h3 className="mt-1 font-display text-lg font-extrabold">{selected.guestName}</h3>
-        <p className="mt-1 text-xs text-muted">{selected.startDate} to {selected.endDate} · {selected.adults} adult{selected.adults === "1" ? "" : "s"}{Number(selected.children) > 0 ? ` · ${selected.children} children` : ""}</p>
-        {selected.sourceName && <p className="mt-1 text-xs text-muted">{selected.sourceName}</p>}
-        <p className="mt-2 text-xs font-semibold">Balance {new Intl.NumberFormat(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(selected.balance)}</p>
-        <div className="mt-4 flex gap-2">
-          <button type="button" onClick={() => setSelected(null)} className="h-10 flex-1 rounded-xl border border-line text-xs font-bold">Close</button>
-          {selected.roomStatus === "not_checked_in" && selected.roomID && <button type="button" disabled={busy} onClick={() => void act("check-in")} className="h-10 flex-1 rounded-xl bg-[#ed168c] text-xs font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check in"}</button>}
-          {selected.roomStatus === "in_house" && <button type="button" disabled={busy} onClick={() => void act("check-out")} className="h-10 flex-1 rounded-xl bg-[#ed168c] text-xs font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check out"}</button>}
+    {selected && <div className="fixed inset-0 z-[80]" onMouseDown={() => setSelected(null)}>
+      <section role="dialog" aria-modal="true" aria-label={selected.stay.guestName} className="absolute w-[260px] rounded-xl border border-[#f3d5e4] bg-white p-3.5 shadow-[0_16px_40px_rgba(80,30,55,.16)]" style={{ left: selected.x, top: selected.y }} onMouseDown={(event) => event.stopPropagation()}>
+        <p className="text-[10px] font-bold uppercase tracking-wide text-[#ec1593]">{selected.stay.roomName || "Unassigned"}</p>
+        <h3 className="mt-0.5 font-display text-lg font-extrabold leading-6">{selected.stay.guestName}</h3>
+        <p className="mt-1 text-[11px] text-muted">Arrives {selected.stay.arriveTime || "14:00"} · Leaves {selected.stay.leaveTime || "12:00"}</p>
+        <p className="mt-0.5 text-[11px] text-muted">{formatDay(selected.stay.startDate, true)} – {formatDay(selected.stay.endDate, true)}</p>
+        <p className="mt-0.5 text-[11px] text-muted">{selected.stay.adults} adult{selected.stay.adults === "1" ? "" : "s"}{Number(selected.stay.children) > 0 ? ` · ${selected.stay.children} children` : ""}{selected.stay.sourceName ? ` · ${selected.stay.sourceName}` : ""}</p>
+        <div className="mt-3">
+          {selected.stay.roomStatus === "not_checked_in" && selected.stay.roomID && <button type="button" disabled={busy} onClick={() => void act("check-in")} className="h-9 w-full rounded-lg bg-[#ed168c] text-xs font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check in"}</button>}
+          {selected.stay.roomStatus === "in_house" && <button type="button" disabled={busy} onClick={() => void act("check-out")} className="h-9 w-full rounded-lg bg-[#ed168c] text-xs font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check out"}</button>}
+          {selected.stay.roomStatus === "not_checked_in" && !selected.stay.roomID && <p className="text-[11px] text-muted">Assign this stay to a room in Cloudbeds before checking in.</p>}
         </div>
-        {selected.roomStatus === "not_checked_in" && !selected.roomID && <p className="mt-2 text-[11px] text-muted">Assign this stay to a room in Cloudbeds before checking in.</p>}
       </section>
     </div>}
   </section>;
 }
 
-function RoomRow({ label, stays, from, span, today, onSelect }: { label: string; stays: CloudbedsStay[]; from: string; span: number; today: string; onSelect: (stay: CloudbedsStay) => void }) {
-  return <div className="relative flex border-b border-[#f6e8ee]" style={{ height: 46 }}>
-    <div className="sticky left-0 z-10 flex shrink-0 items-center border-r border-[#f6e8ee] bg-white px-3 text-xs font-bold" style={{ width: LABEL }}><span className="truncate">{label}</span></div>
+function AvailabilityRow({ label, detail, days, today, rooms, stays, showPercent = false, collapsible = false, open = true, onToggle }: { label: string; detail: string; days: Date[]; today: string; rooms: CloudbedsRoom[]; stays: CloudbedsStay[]; showPercent?: boolean; collapsible?: boolean; open?: boolean; onToggle?: () => void }) {
+  const roomIDs = new Set(rooms.map((room) => room.roomID));
+  return <div className="flex border-b border-[#f7eef2] bg-[#fffdfd]" style={{ height: 52 }}>
+    <button type="button" onClick={onToggle} className="sticky left-0 z-10 flex shrink-0 items-center gap-2 border-r border-[#f6e8ee] bg-white px-3 text-left" style={{ width: LABEL }}>
+      {collapsible ? <ChevronDown size={14} className={`shrink-0 text-muted transition ${open ? "" : "-rotate-90"}`} /> : <span className="w-3.5" />}
+      <BedDouble size={15} className="shrink-0 text-[#8a8388]" />
+      <span className="min-w-0"><span className="block truncate text-[12px] font-extrabold leading-4 text-ink">{label}</span><span className="block truncate text-[9px] leading-3 text-muted">{detail}</span></span>
+    </button>
+    {days.map((day) => {
+      const key = isoDate(day);
+      const taken = occupiedOn(stays, roomIDs, key);
+      const free = Math.max(0, rooms.length - taken);
+      const booked = rooms.length ? Math.round((taken / rooms.length) * 100) : 0;
+      const rate = dayRate(rooms, day);
+      return <div key={key} className={`flex shrink-0 flex-col items-center justify-center leading-none ${key === today ? "border-l-2 border-[#ed168c] bg-[#fff7fb]" : ""}`} style={{ width: DAY }}>
+        <p className="text-[11px] font-extrabold text-ink">{free} free</p>
+        <p className="mt-1 text-[9px] font-semibold text-muted">{showPercent ? `${booked}%` : rate == null ? "" : baht(rate)}</p>
+      </div>;
+    })}
+  </div>;
+}
+
+function RoomRow({ label, stays, from, span, today, onSelect }: { label: string; stays: CloudbedsStay[]; from: string; span: number; today: string; onSelect: (stay: CloudbedsStay, event: MouseEvent<HTMLButtonElement>) => void }) {
+  return <div className="relative flex border-b border-[#f7eef2]" style={{ height: 58 }}>
+    <div className="sticky left-0 z-10 flex shrink-0 items-center border-r border-[#f6e8ee] bg-white px-3 pl-9 text-[12px] font-bold" style={{ width: LABEL }}><span className="truncate">{label}</span></div>
     <div className="relative" style={{ width: span * DAY }}>
       {Array.from({ length: span }, (_, index) => {
         const key = isoDate(addDays(parseDate(from), index));
@@ -189,7 +256,11 @@ function RoomRow({ label, stays, from, span, today, onSelect }: { label: string;
         const start = Math.max(0, dayIndex(stay.startDate, from));
         const end = Math.min(span, dayIndex(stay.endDate, from));
         if (end <= start) return null;
-        return <button key={`${stay.reservationID}-${stay.subReservationID ?? stay.roomID ?? stay.startDate}`} type="button" onClick={() => onSelect(stay)} className={`absolute top-2 h-7 truncate rounded-md border px-2 text-left text-[11px] font-bold ${tone[stay.roomStatus] ?? tone.not_checked_in}`} style={{ left: start * DAY + 3, width: (end - start) * DAY - 6 }}>{stay.guestName}</button>;
+        const caption = stayCaption(stay, dayIndex(stay.startDate, from) >= 0, dayIndex(stay.endDate, from) <= span);
+        return <button key={`${stay.reservationID}-${stay.subReservationID ?? stay.roomID ?? stay.startDate}`} type="button" onClick={(event) => onSelect(stay, event)} className={`absolute top-[8px] h-10 overflow-hidden rounded-md border px-2 text-left leading-tight ${tone[stay.tone || stay.roomStatus] ?? tone.not_checked_in}`} style={{ left: start * DAY + 3, width: (end - start) * DAY - 6 }}>
+          <span className="block truncate text-[11px] font-extrabold">{stay.guestName}</span>
+          <span className="block truncate text-[9px] font-semibold opacity-80">{caption}</span>
+        </button>;
       })}
     </div>
   </div>;
