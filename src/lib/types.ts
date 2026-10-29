@@ -235,6 +235,7 @@ export interface Order {
   paymentStatus: OrderPaymentStatus;
   paidAt?: string | null;
   paidBy?: Pick<User, "id" | "name"> | null;
+  roomCharge?: { signedByName?: string | null; signatureData?: string | null } | null;
   waiterId: string;
   waiter: Pick<User, "id" | "name">;
   servedBy?: Pick<User, "id" | "name"> | null;

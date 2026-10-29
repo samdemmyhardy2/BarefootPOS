@@ -54,12 +54,12 @@ const ordersText: Record<Exclude<Language, "en">, Record<string, string>> = {
   my: {
     Orders: "အော်ဒါများ", "Order history": "အော်ဒါမှတ်တမ်း", "Service · Order history": "ဝန်ဆောင်မှု · အော်ဒါမှတ်တမ်း", "Browse orders by date, or scroll through the complete order history.": "ရက်စွဲအလိုက် အော်ဒါများကိုကြည့်ပါ သို့မဟုတ် အော်ဒါမှတ်တမ်းအားလုံးကို ဆွဲကြည့်ပါ။",
     "Filter by date": "ရက်စွဲဖြင့် စစ်ထုတ်ရန်", "Orders for selected date": "ရွေးထားသောရက်စွဲ၏ အော်ဒါများ", "All dates": "ရက်စွဲအားလုံး", "Clear date": "ရက်စွဲဖယ်ရှားရန်", "Loading orders": "အော်ဒါများကို ဖွင့်နေသည်", "of": "မှ", orders: "အော်ဒါများ",
-    "Served by": "ဝန်ဆောင်မှုပေးသူ", "Collected by": "လာယူသူ", "You’ve reached the end of the order history.": "အော်ဒါမှတ်တမ်းအဆုံးသို့ ရောက်ပါပြီ။", "No orders found": "အော်ဒါမတွေ့ပါ", "There are no orders for this date.": "ဤရက်စွဲတွင် အော်ဒါမရှိပါ။", "Orders will appear here as they are placed.": "အော်ဒါတင်သည်နှင့် ဤနေရာတွင် ပေါ်လာပါမည်။", "Retry": "ထပ်ကြိုးစားရန်",
+    "Served by": "ဝန်ဆောင်မှုပေးသူ", "Collected by": "လာယူသူ", "Walk-in": "လမ်းလျှောက်ဧည့်သည်", "Room": "အခန်း", "On tab": "အခန်းစာရင်းတွင်", "Paid · Cash": "ပေးပြီး · ငွေသား", "Paid · QR": "ပေးပြီး · QR", "Paid · Card": "ပေးပြီး · ကတ်", "Unpaid": "မပေးရသေး", "You’ve reached the end of the order history.": "အော်ဒါမှတ်တမ်းအဆုံးသို့ ရောက်ပါပြီ။", "No orders found": "အော်ဒါမတွေ့ပါ", "There are no orders for this date.": "ဤရက်စွဲတွင် အော်ဒါမရှိပါ။", "Orders will appear here as they are placed.": "အော်ဒါတင်သည်နှင့် ဤနေရာတွင် ပေါ်လာပါမည်။", "Retry": "ထပ်ကြိုးစားရန်",
   },
   th: {
     Orders: "คำสั่งซื้อ", "Order history": "ประวัติคำสั่งซื้อ", "Service · Order history": "บริการ · ประวัติคำสั่งซื้อ", "Browse orders by date, or scroll through the complete order history.": "ดูคำสั่งซื้อตามวันที่ หรือเลื่อนดูประวัติคำสั่งซื้อทั้งหมด",
     "Filter by date": "กรองตามวันที่", "Orders for selected date": "คำสั่งซื้อในวันที่เลือก", "All dates": "ทุกวันที่", "Clear date": "ล้างวันที่", "Loading orders": "กำลังโหลดคำสั่งซื้อ", "of": "จาก", orders: "คำสั่งซื้อ",
-    "Served by": "พนักงานบริการ", "Collected by": "ผู้รับอาหาร", "You’ve reached the end of the order history.": "ถึงท้ายประวัติคำสั่งซื้อแล้ว", "No orders found": "ไม่พบคำสั่งซื้อ", "There are no orders for this date.": "ไม่มีคำสั่งซื้อในวันนี้", "Orders will appear here as they are placed.": "คำสั่งซื้อจะแสดงที่นี่เมื่อมีการสั่ง", "Retry": "ลองอีกครั้ง",
+    "Served by": "พนักงานบริการ", "Collected by": "ผู้รับอาหาร", "Walk-in": "ลูกค้าเดินเข้า", "Room": "ห้อง", "On tab": "ในบัญชีห้อง", "Paid · Cash": "ชำระแล้ว · เงินสด", "Paid · QR": "ชำระแล้ว · QR", "Paid · Card": "ชำระแล้ว · บัตร", "Unpaid": "ยังไม่ชำระ", "You’ve reached the end of the order history.": "ถึงท้ายประวัติคำสั่งซื้อแล้ว", "No orders found": "ไม่พบคำสั่งซื้อ", "There are no orders for this date.": "ไม่มีคำสั่งซื้อในวันนี้", "Orders will appear here as they are placed.": "คำสั่งซื้อจะแสดงที่นี่เมื่อมีการสั่ง", "Retry": "ลองอีกครั้ง",
   },
 };
 

@@ -45,7 +45,8 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
   const [thankYouPhrase, setThankYouPhrase] = useState(() => getThanks(receipt.receiptKind));
   const paperRef = useRef<HTMLDivElement>(null);
   const isFolio = receipt.paymentMethod === "ROOM_CHECKOUT";
-  const showSignature = isFolio && signatureCopy;
+  const signatureImage = receipt.signature?.data ?? receipt.folioCharges?.find((charge) => charge.signatureData)?.signatureData;
+  const showSignature = isFolio && signatureCopy && Boolean(signatureImage);
   const receiptRooms = receipt.rooms?.length ? receipt.rooms : receipt.room ? [receipt.room] : [];
   useEffect(() => {
     const clearPrintMode = () => {
@@ -111,19 +112,20 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
           <div className="flex justify-between gap-2 rounded-xl bg-pink-100/80 px-3 py-2.5 font-display text-sm font-extrabold text-slate-900"><span>Total</span><span className="tabular-nums">{money(receipt.totalAmount)}</span></div>
           <div className="flex justify-between gap-2 px-1 pt-1"><span className="text-slate-500">Payment</span><span className="font-bold text-[#b90b6b]">{receipt.paymentMethod === "CASH" ? "Cash · Paid" : receipt.paymentMethod === "CARD" ? "Card · Paid" : receipt.paymentMethod === "PROMPTPAY" ? "PromptPay QR · Paid" : "Room folio"}</span></div>
           {receiptRooms.map((room) => <div key={room.roomNumber} className="space-y-1"><div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Room</span><span className="font-semibold">{room.roomNumber}</span></div><div className="flex justify-between gap-2 px-1"><span className="shrink-0 text-slate-500">Guests</span><span className="text-right font-semibold">{(room.guestNames?.length ? room.guestNames : [room.guestName]).join(", ")}</span></div></div>)}
-          <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Served by</span><span className="text-right font-semibold">{[...new Set(receipt.orders.map((order) => order.servedBy?.name).filter(Boolean))].join(", ") || "—"}</span></div>
+          <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Served by</span><span className="text-right font-semibold">{[...new Set(receipt.orders.map((order) => order.waiter?.name).filter(Boolean))].join(", ") || "—"}</span></div>
+          <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Collected by</span><span className="text-right font-semibold">{[...new Set(receipt.orders.map((order) => order.servedBy?.name).filter(Boolean))].join(", ") || "—"}</span></div>
           <div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Processed by</span><span className="text-right font-semibold">{receipt.cashierName}</span></div>
         </div>
-        {showSignature && <div className="relative mt-7 rounded-xl border border-pink-200 bg-white/80 px-4 pb-3 pt-2 text-center"><p className="font-bold text-[#b90b6b]">Guest signature</p>{(receipt.signature?.data ?? receipt.folioCharges?.find((charge) => charge.signatureData)?.signatureData) ? <img src={receipt.signature?.data ?? receipt.folioCharges?.find((charge) => charge.signatureData)?.signatureData ?? ""} alt={`Signature by ${receipt.signature?.name ?? receipt.folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}`} className="mx-auto mt-2 h-16 max-w-full object-contain" /> : <div className="mt-9 border-t border-slate-400" />}<p className="mt-2 border-t border-slate-300 pt-1 text-[10px] font-semibold text-slate-700">{receipt.signature?.name ?? receipt.folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}</p><p className="mt-2 text-[10px] leading-4 text-slate-500">I authorize these restaurant charges to be added to my room folio.</p></div>}
+        {showSignature && signatureImage && <div className="relative mt-7 rounded-xl border border-pink-200 bg-white/80 px-4 pb-3 pt-2 text-center"><p className="font-bold text-[#b90b6b]">Guest signature</p><img src={signatureImage} alt={`Signature by ${receipt.signature?.name ?? receipt.folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}`} className="mx-auto mt-2 h-16 max-w-full object-contain" /><p className="mt-2 border-t border-slate-300 pt-1 text-[10px] font-semibold text-slate-700">{receipt.signature?.name ?? receipt.folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}</p><p className="mt-2 text-[10px] leading-4 text-slate-500">I authorize these restaurant charges to be added to my room folio.</p></div>}
         <p className="relative mt-6 text-center text-[10px] font-semibold tracking-wide text-[#b90b6b]">{thankYouPhrase}</p>
         </div>
       </div>
       <div className="receipt-ui-surface no-print mt-5 flex flex-col gap-3 border-t border-pink-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        {isFolio ? <div className="receipt-mode-group flex rounded-xl border border-pink-200 bg-white p-1" aria-label="Receipt type">
-          <button type="button" aria-pressed={!signatureCopy} onClick={() => setSignatureCopy(false)} className={`receipt-mode-button rounded-lg px-3 py-2 text-[10px] font-bold ${!signatureCopy ? "is-active bg-pink-100 text-[#b90b6b]" : "text-slate-600 hover:bg-pink-50"}`}>Guest receipt · no signature</button>
-          <button type="button" aria-pressed={signatureCopy} onClick={() => setSignatureCopy(true)} className={`receipt-mode-button rounded-lg px-3 py-2 text-[10px] font-bold ${signatureCopy ? "is-active bg-pink-100 text-[#b90b6b]" : "text-slate-600 hover:bg-pink-50"}`}>Folio slip · signature</button>
-        </div> : <p className="text-[10px] font-semibold text-slate-500">Cash receipt · no signature</p>}
-        <div className="flex justify-end gap-2"><button onClick={onClose} className="receipt-action-secondary h-10 rounded-xl border border-pink-200 bg-white px-4 text-xs font-bold text-slate-700">Close</button><button onClick={printReceipt} className="receipt-action-primary inline-flex h-10 items-center gap-2 rounded-xl bg-[#f71591] px-4 text-xs font-bold text-white hover:bg-[#d90d7b]"><Printer size={15} /> Print / Save PDF</button></div>
+        {isFolio && signatureImage ? <div className="receipt-mode-group flex rounded-xl border border-pink-200 bg-white p-1" aria-label="Receipt type">
+          <button type="button" aria-pressed={!signatureCopy} onClick={() => setSignatureCopy(false)} className={`receipt-mode-button rounded-lg px-3 py-2 text-[10px] font-bold ${!signatureCopy ? "is-active bg-pink-100 text-[#b90b6b]" : "text-slate-600 hover:bg-pink-50"}`}>Guest receipt</button>
+          <button type="button" aria-pressed={signatureCopy} onClick={() => setSignatureCopy(true)} className={`receipt-mode-button rounded-lg px-3 py-2 text-[10px] font-bold ${signatureCopy ? "is-active bg-pink-100 text-[#b90b6b]" : "text-slate-600 hover:bg-pink-50"}`}>Folio slip</button>
+        </div> : null}
+        <div className="flex justify-end gap-2 sm:ml-auto"><button onClick={onClose} className="receipt-action-secondary h-10 rounded-xl border border-pink-200 bg-white px-4 text-xs font-bold text-slate-700">Close</button><button onClick={printReceipt} className="receipt-action-primary inline-flex h-10 items-center gap-2 rounded-xl bg-[#f71591] px-4 text-xs font-bold text-white hover:bg-[#d90d7b]"><Printer size={15} /> Print / Save PDF</button></div>
       </div>
     </div>
   </div>;

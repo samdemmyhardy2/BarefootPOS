@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { PageHeader, Panel, EmptyState, OrderBadge, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
+import { postOnce, SavedLocallyError } from "../lib/outbox";
 import type { Category, DiningTable, MenuItem, ModifierGroup, PrepStation } from "../lib/types";
 import { money } from "../lib/types";
 import { useOrderStore } from "../stores/orderStore";
@@ -40,11 +41,11 @@ function PlusJumpBadge({ jump, onDone }: { jump: PlusJump; onDone: (id: string) 
   const [moved, setMoved] = useState(false);
   useEffect(() => {
     const frame = requestAnimationFrame(() => setMoved(true));
-    const timer = window.setTimeout(() => onDone(jump.id), 1100);
+    const timer = window.setTimeout(() => onDone(jump.id), 850);
     return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [jump.id, onDone]);
-  return <span className="pointer-events-none fixed z-[90] [perspective:600px]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 900ms ease-in-out, top 900ms ease-in-out" }}>
-    <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700 [transform-style:preserve-3d]" style={{ transform: moved ? "rotateX(720deg)" : "rotateX(0deg)", transition: "transform 900ms linear" }}>{jump.label}</span>
+  return <span className="pointer-events-none fixed z-[90] [perspective:600px]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 700ms ease-in-out, top 700ms ease-in-out" }}>
+    <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700 [transform-style:preserve-3d]" style={{ transform: moved ? "rotateX(720deg)" : "rotateX(0deg)", transition: "transform 700ms linear" }}>{jump.label}</span>
   </span>;
 }
 const categoryColors = [
@@ -109,9 +110,7 @@ export function NewOrderPage() {
   const [plusJumps, setPlusJumps] = useState<PlusJump[]>([]);
   const ticketMarkRef = useRef<HTMLSpanElement>(null);
   const pendingAddOrigin = useRef<DOMRect | null>(null);
-  const [partySetupOpen, setPartySetupOpen] = useState(false);
-  const [partyRoomSearch, setPartyRoomSearch] = useState("");
-  const [walkInPartyCount, setWalkInPartyCount] = useState(partySetup?.walkInCount ?? 1);
+  const [walkInPartyCount] = useState(partySetup?.walkInCount ?? 1);
   const [orderKitchenNote, setOrderKitchenNote] = useState("");
   const [configuringItem, setConfiguringItem] = useState<MenuItem | null>(null);
   const [editingCartLineId, setEditingCartLineId] = useState<string | null>(null);
@@ -203,6 +202,7 @@ export function NewOrderPage() {
     [categories, selectedCategory, search],
   );
   const cartLines = cart;
+  const serveAtTable = cartLines.length > 0 && cartLines.every((line) => line.prepStation === "BAR");
   const getLineUnitPrice = (item: MenuItem, selections: Record<string, string[]>) => Number(item.price) + openModifierGroups(item, selections).filter((group) => group.appearance !== "TEXT").reduce((sum, group) => {
     const selected = selections[group.id] ?? [];
     const selectedOptions = selected.flatMap((id) => {
@@ -334,6 +334,7 @@ export function NewOrderPage() {
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
   const bumpMenuItem = (item: MenuItem, delta: 1 | -1, origin?: DOMRect | null) => {
     const lines = cart.filter((line) => line.item.id === item.id);
+    if (delta > 0 && itemModifierGroups(item).length) { add(item, origin); return; }
     if (delta > 0 && !lines.length) { add(item, origin); return; }
     const target = lines[lines.length - 1];
     if (!target) return;
@@ -357,10 +358,12 @@ export function NewOrderPage() {
     setPlacing(true);
     setError("");
     const submittedLineIds = new Set<string>();
+    let waitingToSend = false;
     try {
       const byPayer = new Map<string, CartLine[]>();
       cartLines.forEach((line) => byPayer.set(line.payerId, [...(byPayer.get(line.payerId) ?? []), line]));
       for (const [payerId, lines] of byPayer) {
+        try {
         await createOrder(
           { tableId, ...(payerId !== "walk-ins" ? { roomStayId: payerId } : {}) },
           lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation }) => ({
@@ -371,14 +374,29 @@ export function NewOrderPage() {
             ...([orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).length ? { specialNotes: [orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).join(" · ") } : {}),
           })),
         );
+        } catch (cause) {
+          if (!(cause instanceof SavedLocallyError)) throw cause;
+          waitingToSend = true;
+        }
         lines.forEach((line) => submittedLineIds.add(line.id));
       }
-      notify("Order sent to the kitchen.");
+      if (waitingToSend) {
+        setCart((current) => current.filter((line) => !submittedLineIds.has(line.id)));
+        notify("Saved on this device. It will send when the connection returns.");
+        return;
+      }
+      const paidAtTable = cartLines.every((line) => line.prepStation === "BAR");
       setCart([]);
       setOrderKitchenNote("");
       const { data } = await api.get<DiningTable[]>("/tables");
       setTables(data);
       await fetchOrders();
+      if (paidAtTable) {
+        const openTickets = useOrderStore.getState().orders.filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status));
+        const readyToPay = openTickets.length > 0 && openTickets.every((order) => order.status === "SERVED");
+        notify(readyToPay ? "Ready to pay. Nothing was sent to the kitchen." : "Saved on the ticket. Pay once the kitchen orders are served.");
+        if (readyToPay) setSettleOpen(true);
+      } else notify("Order sent to the kitchen.");
     } catch (e) {
       if (submittedLineIds.size) setCart((current) => current.filter((line) => !submittedLineIds.has(line.id)));
       reportError(errorMessage(e));
@@ -391,9 +409,12 @@ export function NewOrderPage() {
     if (method === "ROOM_CHECKOUT" && (!signedName?.trim() || !signature)) { setSignaturePayerId(group.id); setSignatureName(group.name); setSignatureData(""); return; }
     setPlacing(true); setError("");
     try {
-      const { data } = await api.post<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>(`/tables/${tableId}/settle-party`, {
-        orderIds: group.orders.map((order) => order.id), paymentMethod: method,
-        ...(method === "ROOM_CHECKOUT" ? { signedByName: signedName, signatureData: signature } : {}),
+      const data = await postOnce<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>({
+        scope: "table.settle",
+        url: `/tables/${tableId}/settle-party`,
+        body: { orderIds: group.orders.map((order) => order.id), paymentMethod: method, ...(method === "ROOM_CHECKOUT" ? { signedByName: signedName, signatureData: signature } : {}) },
+        label: `Settle ${group.label}`,
+        dedupeKey: `table-settle:${tableId}:${group.orders.map((order) => order.id).sort().join(",")}`,
       });
       const stays = group.roomStayId ? activeStays.filter((stay) => stay.id === group.roomStayId) : [];
       const rooms = stays.map((stay) => ({ roomNumber: stay.room.roomNumber, guestName: stay.primaryGuestName, guestNames: [...new Set([stay.primaryGuestName, ...stay.occupants.map((occupant) => occupant.name)])] }));
@@ -404,7 +425,10 @@ export function NewOrderPage() {
       const updated = await api.get<DiningTable[]>("/tables"); setTables(updated.data);
       await fetchOrders();
       if (data.tableCleared) { setSettleOpen(false); notify(`${data.tableNumber} is settled and cleared.`); }
-    } catch (cause) { reportError(errorMessage(cause)); }
+    } catch (cause) {
+      if (cause instanceof SavedLocallyError) notify("Settlement saved on this device. It will send when the connection returns.");
+      else reportError(errorMessage(cause));
+    }
     finally { setPlacing(false); }
   };
   const saveSignature = async () => {
@@ -440,14 +464,6 @@ export function NewOrderPage() {
       reportError(errorMessage(cause));
     } finally {
       setSavingRoomAssignments(false);
-    }
-  };
-  const updateRoomPayer = (roomStayId: string, checked: boolean) => {
-    const nextIds = checked ? [...assignedRoomStayIds, roomStayId] : assignedRoomStayIds.filter((id) => id !== roomStayId);
-    void assignRoomsToTable(nextIds);
-    if (!checked) {
-      const fallbackPayerId = nextIds[0] ?? (walkInPartyCount > 0 ? "walk-ins" : "");
-      setCart((current) => current.map((line) => line.payerId === roomStayId ? { ...line, payerId: fallbackPayerId } : line));
     }
   };
 
@@ -658,10 +674,7 @@ export function NewOrderPage() {
             </span>
           </div>
           <div className="p-5">
-            <div className="mb-4 space-y-3 border-b border-line pb-4">
-              <SelectField label="Order destination" value="TABLE" onChange={() => undefined}>
-                <option value="TABLE">Restaurant table</option>
-              </SelectField>
+            <div className="mb-4 border-b border-line pb-4">
               <SelectField label="Table" value={selectedTable?.id ?? ""} onChange={(event) => {
                 if (event.target.value) navigate(`/tables/${event.target.value}`);
               }}>
@@ -669,35 +682,29 @@ export function NewOrderPage() {
                 {tables.map((table) => <option key={table.id} value={table.id}>{table.tableNumber}</option>)}
               </SelectField>
             </div>
-            {selectedTable && <section className="mb-4 border-b border-line pb-3"><div className="flex items-center justify-between gap-2"><p className="text-[11px] font-bold">New items go to</p><button type="button" onClick={() => setPartySetupOpen(true)} className="shrink-0 text-[10px] font-bold text-[#ed168c]">Who’s at the table <ArrowRight size={11} className="ml-0.5 inline" /></button></div><div className="mt-2 flex flex-wrap gap-1.5">{payers.map((payer, index) => <span key={payer.id} className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${payer.id === "walk-ins" ? "bg-[#f4f3f1] text-[#726b67]" : index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]"}`}>{payer.label}</span>)}</div></section>}
-            {selectedTable && activeTableOrders.length === 0 && activeStays.length > 0 && <details className="mb-3 rounded-xl border border-line px-3 py-2.5">
-              <summary className="cursor-pointer text-[11px] font-semibold text-muted">Guest room assignment</summary>
-              <div className="mt-2 space-y-1">{activeStays.map((stay) => <label key={stay.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-1 py-1.5 text-[11px] text-ink"><input type="checkbox" checked={assignedRoomStayIds.includes(stay.id)} disabled={savingRoomAssignments} onChange={(event) => { const next = event.target.checked ? [...assignedRoomStayIds, stay.id] : assignedRoomStayIds.filter((id) => id !== stay.id); void assignRoomsToTable(next); }} /><span>Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span></label>)}</div>
-            </details>}
+            {selectedTable && <div className="mb-4 border-b border-line pb-3" ref={roomPickerRef}>
+              <label className="mb-2 block text-xs font-semibold text-ink">{t("Assign guest rooms to this table")}</label>
+              {activeStays.length ? <div className="relative">
+                <button type="button" aria-haspopup="listbox" aria-expanded={roomPickerOpen} disabled={savingRoomAssignments} onClick={() => setRoomPickerOpen((open) => !open)} className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-line bg-white px-3 py-2 text-left text-xs font-semibold text-ink hover:bg-canvas disabled:opacity-60">
+                  <span className="min-w-0 truncate">{assignedRoomStayIds.length ? `${assignedRoomStayIds.length} ${t("guest rooms assigned")}` : t("Select guest rooms")}</span>
+                  <ChevronDown size={15} className={`shrink-0 text-muted transition-transform ${roomPickerOpen ? "rotate-180" : ""}`} />
+                </button>
+                {roomPickerOpen && <div role="listbox" aria-multiselectable="true" aria-label={t("Assign guest rooms to this table")} className="absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
+                  {activeStays.map((stay) => <label key={stay.id} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-ink hover:bg-canvas">
+                    <input type="checkbox" checked={assignedRoomStayIds.includes(stay.id)} disabled={savingRoomAssignments} onChange={(event) => {
+                      const next = event.target.checked ? [...assignedRoomStayIds, stay.id] : assignedRoomStayIds.filter((id) => id !== stay.id);
+                      void assignRoomsToTable(next);
+                    }} />
+                    <span className="truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
+                    {assignedRoomStayIds.includes(stay.id) && <Check size={13} className="ml-auto shrink-0 text-olive" />}
+                  </label>)}
+                </div>}
+              </div> : <p className="rounded-xl border border-line bg-white px-3 py-2.5 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
+            </div>}
             {selectedTable && activeTableOrders.length > 0 && <section className="mb-4 rounded-2xl border border-line bg-[#fbfcf9] p-4" aria-label={`Table ${selectedTable.tableNumber} open orders`}>
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
                 <div><h3 className="text-sm font-bold">{selectedTable.tableNumber} · Open tab</h3><p className="mt-1 text-[10px] text-muted">{selectedTable.capacity} seats · {activeTableOrders.length} active tickets</p></div>
                 <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-olive">{selectedTable.status}</span>
-              </div>
-              <div className="mt-3" ref={roomPickerRef}>
-                <label className="mb-2 block text-xs font-semibold text-ink">{t("Assign guest rooms to this table")}</label>
-                {activeStays.length ? <div className="relative">
-                  <button type="button" aria-haspopup="listbox" aria-expanded={roomPickerOpen} disabled={savingRoomAssignments} onClick={() => setRoomPickerOpen((open) => !open)} className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-line bg-white px-3 py-2 text-left text-xs font-semibold text-ink hover:bg-canvas disabled:opacity-60">
-                    <span className="min-w-0 truncate">{assignedRoomStayIds.length ? `${assignedRoomStayIds.length} ${t("guest rooms assigned")}` : t("Select guest rooms")}</span>
-                    <ChevronDown size={15} className={`shrink-0 text-muted transition-transform ${roomPickerOpen ? "rotate-180" : ""}`} />
-                  </button>
-                  {roomPickerOpen && <div role="listbox" aria-multiselectable="true" aria-label={t("Assign guest rooms to this table")} className="absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
-                    {activeStays.map((stay) => <label key={stay.id} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-ink hover:bg-canvas">
-                      <input type="checkbox" checked={assignedRoomStayIds.includes(stay.id)} disabled={savingRoomAssignments} onChange={(event) => {
-                        const next = event.target.checked ? [...assignedRoomStayIds, stay.id] : assignedRoomStayIds.filter((id) => id !== stay.id);
-                        void assignRoomsToTable(next);
-                      }} />
-                      <span className="truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
-                      {assignedRoomStayIds.includes(stay.id) && <Check size={13} className="ml-auto shrink-0 text-olive" />}
-                    </label>)}
-                  </div>}
-                </div> : <p className="rounded-xl border border-line bg-white px-3 py-2.5 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
-                {assignedRoomStayIds.length > 0 && <p className="mt-2 text-[10px] text-muted">{t("Choose the guest room to receive the table bill at folio checkout.")}</p>}
               </div>
               {activeTableOrders.length ? <div className="mt-3">
                 <div className={`space-y-3 ${activeTableOrders.length > 2 ? "max-h-[26rem] overflow-y-auto pr-1" : ""}`}>
@@ -705,12 +712,6 @@ export function NewOrderPage() {
                   <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="font-mono text-[10px] font-bold">#{order.id.slice(-6).toUpperCase()}</span><OrderBadge status={order.status} /></div><span className="text-[10px] text-muted">Ordered by {order.waiter?.name}</span></div>
                   <ul className="mt-2 space-y-1 text-xs">{order.items.map((line, index) => <li key={line.id ?? `${order.id}-${index}`}><span className="font-bold">{line.quantity}×</span> {line.menuItem.name}{line.addExtras ? <span className="text-muted"> · {line.addExtras}</span> : null}</li>)}</ul>
                   {order.servedBy && <p className="mt-2 text-[10px] font-semibold text-emerald-700">Collected / served by {order.servedBy.name}</p>}
-                  {order.status === "READY" && <button type="button" disabled={ticketActionId === order.id} onClick={() => void (async () => {
-                    setTicketActionId(order.id); setError("");
-                    try { await cookAction(order.id, "served"); notify("Picked up. Ticket marked served."); }
-                    catch (cause) { reportError(errorMessage(cause)); }
-                    finally { setTicketActionId(null); }
-                  })()} className="mt-3 h-9 w-full rounded-lg bg-[#ed168c] text-[11px] font-bold text-white hover:bg-[#d80d7c] disabled:opacity-50">Pickup</button>}
                   {order.status === "SERVED" && <button type="button" disabled={ticketActionId === order.id} onClick={() => void (async () => {
                     setTicketActionId(order.id); setError("");
                     try { await cookAction(order.id, "revert"); notify("Pickup undone. Ticket is ready again."); }
@@ -724,7 +725,7 @@ export function NewOrderPage() {
               {activeTableOrders.length > 0 && <div className="mt-4 border-t border-line pt-4">
                 <div className="flex items-center justify-between"><span className="text-xs font-semibold">Open table total</span><span className="font-display text-lg font-extrabold">{money(tableTotal)}</span></div>
                 {!allOrdersServed && <p className="mt-2 text-[10px] text-muted">All active tickets must be marked served before checkout.</p>}
-                <button onClick={() => setSettleOpen(true)} disabled={placing || !allOrdersServed} className="mt-3 h-11 w-full rounded-xl border border-olive bg-white text-xs font-bold text-olive hover:bg-[#edf2e9] disabled:cursor-not-allowed disabled:opacity-40">Settle each payer</button>
+                <button onClick={() => setSettleOpen(true)} disabled={placing || !allOrdersServed} className="mt-3 h-11 w-full rounded-xl bg-[#ed168c] text-xs font-bold text-white hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40">Pay</button>
               </div>}
             </section>}
             <div className="my-4 h-px bg-line" />
@@ -736,7 +737,7 @@ export function NewOrderPage() {
                   return <article key={line.id} className="border-b border-line pb-3 last:border-0">
                     <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${line.payerId === "walk-ins" ? "bg-[#f4f3f1] text-[#726b67]" : "bg-[#eef0ff] text-[#5866a0]"}`}>{payers.find((payer) => payer.id === line.payerId)?.label ?? "Walk-ins"}</span><p className="min-w-0 truncate text-xs font-bold leading-5">{line.item.name}</p></div><button onClick={() => removeCartLine(line.id)} className="shrink-0 text-[#a4a89f] hover:text-rose-600" aria-label={`Remove ${line.item.name}`}><Trash2 size={14} /></button></div>
                     {payers.length > 0 && <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>For</span><select value={payers.some((payer) => payer.id === line.payerId) ? line.payerId : payers[0].id} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, payerId: event.target.value } : entry))} className="max-w-[150px] rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink">{payers.map((payer) => <option key={payer.id} value={payer.id}>{payer.name}</option>)}</select></label>}
-                    <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>Send dish to</span><select value={line.prepStation} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, prepStation: event.target.value as PrepStation } : entry))} className="rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink"><option value="KITCHEN">Kitchen</option><option value="BAR">Bar</option></select></label>
+                    <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>Send dish to</span><select value={line.prepStation} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, prepStation: event.target.value as PrepStation } : entry))} className="rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink"><option value="KITCHEN">Kitchen</option><option value="BAR">Serve at table</option></select></label>
                     <div className="mt-2 flex items-center justify-between gap-3"><span className="text-xs text-muted">{money(unitPrice * line.quantity)}</span><div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label={`Remove one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity - 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{line.quantity}</span><button type="button" aria-label={`Add one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity + 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button></div></div>
                     {modifierLines.length > 0 && <div className="mt-2 space-y-1">{modifierLines.map((modifier) => <div key={modifier.id} className={`flex items-start justify-between gap-2 text-[10px] leading-4 text-muted ${modifier.depth ? "ml-3 border-l border-[#f3cade] pl-2" : ""}`}><span className="min-w-0">{modifier.name}{modifier.count > 1 ? ` ×${modifier.count}` : ""}</span>{!(modifier.nested && modifier.amount <= 0) && <span className="shrink-0">{modifier.amount > 0 ? `+${money(modifier.amount)}` : "Free"}</span>}</div>)}</div>}
                     {line.specialNotes && <p className="mt-2 inline-block rounded-lg bg-amber-50 px-2 py-1 text-[10px] italic text-amber-800">“{line.specialNotes}”</p>}
@@ -786,11 +787,11 @@ export function NewOrderPage() {
                 onClick={() => void placeOrder()}
                 className="focus-ring mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#ed168c] text-sm font-bold text-white transition hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {placing ? "Sending to kitchen…" : "Send new items to kitchen"}
+                {placing ? (serveAtTable ? "Saving ticket…" : "Sending to kitchen…") : serveAtTable ? "Pay" : "Send new items to kitchen"}
                 <ArrowRight size={16} />
               </button>
               <p className="mt-3 text-center text-[10px] text-muted">
-                The kitchen sees new tickets instantly.
+                {serveAtTable ? "Staff serve these at the table. They stay on the ticket and receipt." : cartLines.some((line) => line.prepStation === "BAR") ? "Only kitchen dishes are sent. Anything served straight away stays on the ticket." : "The kitchen sees new tickets instantly."}
               </p>
             </div>
           </div>
@@ -819,7 +820,6 @@ export function NewOrderPage() {
         </footer>
       </aside>
     </div>}
-    {partySetupOpen && selectedTable && <div className="fixed inset-0 z-[80] flex items-center justify-center bg-ink/35 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setPartySetupOpen(false); }}><section role="dialog" aria-modal="true" aria-label={`Who's at ${selectedTable.tableNumber}`} className="flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-float"><header className="flex items-start gap-3 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="font-display text-lg font-bold">Who’s at {selectedTable.tableNumber}?</h2><p className="mt-1 text-xs text-muted">Assign current room guests and walk-in parties to this table.</p></div><button type="button" onClick={() => setPartySetupOpen(false)} aria-label="Close party setup" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" /><input value={partyRoomSearch} onChange={(event) => setPartyRoomSearch(event.target.value)} placeholder="Add a room by number or surname" className="h-10 w-full rounded-xl border border-line pl-9 pr-3 text-xs outline-none focus:border-[#ed168c]" /></div><section className="overflow-hidden rounded-xl border border-line"><header className="flex items-center justify-between border-b border-line px-3 py-2"><h3 className="text-[10px] font-bold uppercase tracking-wide text-muted">Current occupied rooms</h3><span className="text-[10px] text-muted">{activeStays.length}</span></header><div className="max-h-40 divide-y divide-line overflow-y-auto">{activeStays.filter((stay) => !partyRoomSearch.trim() || `${stay.primaryGuestName} ${stay.room.roomNumber} ${stay.occupants.map((occupant) => occupant.name).join(" ")}`.toLowerCase().includes(partyRoomSearch.trim().toLowerCase())).map((stay) => <label key={stay.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 hover:bg-canvas"><input type="checkbox" checked={assignedRoomStayIds.includes(stay.id)} disabled={savingRoomAssignments} onChange={(event) => updateRoomPayer(stay.id, event.target.checked)} className="accent-[#ed168c]" /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold">{stay.primaryGuestName}</span><span className="text-[10px] text-muted">Room {stay.room?.roomNumber} · {stay.occupants.length + 1} guests</span></span><span className="text-[9px] font-bold text-[#ed168c]">{assignedRoomStayIds.includes(stay.id) ? "Added" : "Add"}</span></label>)}{!activeStays.length && <p className="px-3 py-4 text-xs text-muted">No occupied rooms right now.</p>}</div></section><div className="flex items-center gap-3 rounded-xl border border-line p-3"><span className="rounded-full bg-[#f4f3f1] px-2.5 py-1 text-[9px] font-bold text-[#726b67]">Walk-ins</span><span className="min-w-0 flex-1 text-xs font-semibold">Walk-in party</span><div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label="Remove walk-in party" onClick={() => { if (walkInPartyCount <= 1) { setWalkInPartyCount(0); const fallback = assignedRoomStayIds[0] ?? ""; setCart((current) => current.map((line) => line.payerId === "walk-ins" ? { ...line, payerId: fallback } : line)); } else setWalkInPartyCount((count) => count - 1); }} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{walkInPartyCount}</span><button type="button" aria-label="Add walk-in party" onClick={() => setWalkInPartyCount((count) => Math.min(20, count + 1))} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button></div></div></div><footer className="border-t border-line p-4"><button type="button" onClick={() => setPartySetupOpen(false)} className="h-10 w-full rounded-xl bg-[#ed168c] text-xs font-bold text-white">Done</button></footer></section></div>}
     {settleOpen && selectedTable && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-ink/40 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettleOpen(false); }}><section role="dialog" aria-modal="true" aria-label={`Settle ${selectedTable.tableNumber}`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-float"><header className="flex items-start gap-4 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="font-display text-lg font-bold">Settle {selectedTable.tableNumber}</h2><p className="mt-1 text-[11px] text-muted">Each payer settles separately. Room guests can add their bill to the room tab or pay now; walk-ins pay now.</p></div><button type="button" onClick={() => setSettleOpen(false)} aria-label="Close settlement" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{orderPayerGroups.map((group, index) => { const method = settlementMethods[group.id] ?? (group.roomStayId ? "ROOM_CHECKOUT" : "CASH"); const paid = settledPayers.find((entry) => entry.id === group.id); const stay = activeStays.find((entry) => entry.id === group.roomStayId); return <article key={group.id} className="self-start rounded-xl border border-line bg-white p-3.5"><header className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${group.roomStayId ? index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]" : "bg-[#f4f3f1] text-[#726b67]"}`}>{group.label}</span><div className="min-w-0"><h3 className="truncate text-xs font-bold">{group.name}</h3><p className="text-[9px] text-muted">{group.orders.length} {group.orders.length === 1 ? "item" : "items"}{stay ? ` · Room ${stay.room.roomNumber}` : group.id === "walk-ins" ? ` · ${walkInPartyCount} people · pay now` : ""}</p></div></div><span className="shrink-0 text-xs font-bold">{money(group.total)}</span></header><div className="mt-3 space-y-1.5 border-b border-line pb-3">{group.orders.flatMap((order) => order.items.map((line) => <div key={`${order.id}-${line.id}`} className="flex justify-between gap-2 text-[9px] text-muted"><span>{line.quantity} × {line.menuItem.name}</span><span>{money(Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity))}</span></div>))}</div>{paid ? <div className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{paid.note}</div> : <><p className="mt-3 text-[9px] text-muted">{group.roomStayId ? "How are they paying?" : "Payment method"}</p>{group.roomStayId && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["ROOM_CHECKOUT", "Add to room tab"], ["CASH", "Pay now"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT")} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2.5 py-1.5 text-[9px] font-semibold ${(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT") ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}{(method !== "ROOM_CHECKOUT" || !group.roomStayId) && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["CASH", "Cash"], ["CARD", "Card"], ["PROMPTPAY", "PromptPay QR"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={method === value} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2 py-1.5 text-[9px] font-semibold ${method === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}<button type="button" disabled={placing} onClick={() => void settlePayer(group, method)} className="mt-2.5 h-9 w-full rounded-lg bg-[#ed168c] px-2 text-[10px] font-bold text-white disabled:opacity-50">{method === "ROOM_CHECKOUT" ? `Add ${money(group.total)} to room tab` : `Take ${money(group.total)} ${method === "PROMPTPAY" ? "PromptPay" : method.toLowerCase()}`}</button></>}</article>; })}{settledPayers.filter((entry) => !orderPayerGroups.some((group) => group.id === entry.id)).map((entry) => <article key={entry.id} className="self-start rounded-xl border border-emerald-200 bg-white p-3.5"><div className="flex justify-between text-xs font-bold"><span>{entry.label}</span><span>{money(entry.total)}</span></div><p className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{entry.note}</p></article>)}</div>{error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}</div><footer className="flex items-end justify-between gap-4 border-t border-line px-5 py-3"><div><p className="text-[10px] text-muted">Table total</p><p className="font-display text-base font-extrabold">{money(orderPayerGroups.reduce((sum, group) => sum + group.total, 0) + settledPayers.reduce((sum, payer) => sum + payer.total, 0))}</p></div><p className="text-right text-[9px] text-muted">The table clears once everyone has settled.</p></footer></section></div>}
     {signaturePayerId && signatureGroup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink/45 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setSignaturePayerId(null); }}><section role="dialog" aria-modal="true" aria-label={`Sign for ${signatureGroup.name}`} className="w-full max-w-lg rounded-2xl border border-line bg-white p-5 shadow-float"><header className="flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-bold">Sign for Room {activeStays.find((stay) => stay.id === signatureGroup.roomStayId)?.room.roomNumber}</h2><p className="mt-1 text-[11px] text-muted">{signatureName}, please sign to add {money(signatureGroup.total)} to the room’s tab. You’ll pay at checkout.</p></div><button type="button" onClick={() => setSignaturePayerId(null)} aria-label="Close signature" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="mt-4 flex justify-between rounded-lg border border-line px-3 py-2 text-[10px] text-muted"><span>{signatureGroup.orders.map((order) => `${order.items.reduce((sum, line) => sum + line.quantity, 0)} × ${order.items.map((line) => line.menuItem.name).join(", ")}`).join(" · ")} · {selectedTable?.tableNumber}</span><span className="font-semibold">{money(signatureGroup.total)}</span></div><label className="mt-4 block text-[10px] font-semibold text-muted">Guest signing<input value={signatureName} onChange={(event) => setSignatureName(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-line px-3 text-xs text-ink outline-none focus:border-[#ed168c]" /></label><canvas ref={signatureCanvasRef} width={900} height={220} onPointerDown={startSignature} onPointerMove={drawSignature} onPointerUp={() => setSignatureDrawing(false)} onPointerCancel={() => setSignatureDrawing(false)} className="mt-3 h-40 w-full touch-none rounded-lg border border-line bg-[#fffafb]" aria-label="Sign here" /><p className="mt-1 text-[9px] text-muted">Sign above</p><div className="mt-4 flex gap-2"><button type="button" onClick={() => { const canvas = signatureCanvasRef.current; canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height); setSignatureData(""); }} className="h-10 flex-1 rounded-lg border border-line text-xs font-bold">Clear</button><button type="button" disabled={placing || !signatureName.trim() || !signatureData} onClick={() => void saveSignature()} className="h-10 flex-1 rounded-lg bg-[#ed168c] text-xs font-bold text-white disabled:opacity-40">{placing ? "Saving…" : "Confirm and add to tab"}</button></div></section></div>}
     {receipt && <ReceiptPreview receipt={receipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setReceipt(null)} />}

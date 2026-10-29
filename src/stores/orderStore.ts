@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api } from "../lib/api";
+import { postOnce } from "../lib/outbox";
 import type { Order, OrderPaymentMethod, OrderStatus } from "../lib/types";
 import { useAuthStore } from "./authStore";
 import { useUiStore } from "./uiStore";
@@ -189,7 +190,8 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     });
   },
   createOrder: async (location, items) => {
-    const { data } = await api.post<Order>("/orders", { ...location, items });
+    const count = items.reduce((sum, item) => sum + item.quantity, 0);
+    const data = await postOnce<Order>({ scope: "order.create", url: "/orders", body: { ...location, items }, label: `Order · ${count} item${count === 1 ? "" : "s"}` });
     get().upsertOrder(data);
     return data;
   },

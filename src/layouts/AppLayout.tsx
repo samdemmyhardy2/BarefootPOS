@@ -19,6 +19,7 @@ import { useAuthStore } from "../stores/authStore";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { initials } from "../lib/types";
+import { OutboxBanner } from "../components/OutboxBanner";
 import { Toast } from "../components/Toast";
 import { observeUiTranslations } from "../lib/uiLocalization";
 import { hasJobPermission, type JobPermission } from "../lib/access";
@@ -29,7 +30,7 @@ const baseNav = [
   { label: "Overview", to: "/overview", icon: LayoutDashboard, permission: "ORDER_VIEW" },
   { label: "Order history", to: "/orders", icon: ClipboardList, permission: "ORDER_VIEW" },
   { label: "Tables", to: "/tables", icon: Utensils, permission: "TABLES" },
-  { label: "Rooms and folios", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
+  { label: "Rooms", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
   { label: "Menu", to: "/menu", icon: BookOpen, adminOnly: true },
   { label: "Kitchen display", to: "/kitchen", icon: ChefHat, permission: "KITCHEN" },
 ];
@@ -144,6 +145,7 @@ export function AppLayout() {
           <Menu size={18} />
         </button>
         <main className={`mx-auto min-h-screen w-full ${location.pathname === "/tables" ? "pt-16 px-4 pb-4 sm:px-5 md:pt-5" : location.pathname.startsWith("/rooms") ? "pt-16 px-4 pb-4 sm:px-5 md:pt-5" : "pt-16 px-4 pb-4 sm:px-7 lg:px-9 md:pt-8"} ${fullCanvas ? "max-w-none" : "max-w-[1500px]"}`}>
+          <OutboxBanner />
           <Outlet />
         </main>
       </div>

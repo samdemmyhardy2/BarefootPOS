@@ -3,7 +3,6 @@ import {
   ArrowRight,
   ChefHat,
   Clock3,
-  Coffee,
   Flame,
   UtensilsCrossed,
 } from "lucide-react";
@@ -59,11 +58,58 @@ export function KitchenPage({ station }: { station: PrepStation }) {
       setBusy(null);
     }
   };
+  const pickup = async (orderId: string, ticketId: string | null) => {
+    const ticketKey = ticketId ?? orderId;
+    setBusy(ticketKey);
+    setError("");
+    try {
+      const { data } = await api.patch<Order>(ticketId ? `/orders/kitchen/tickets/${ticketId}/pickup` : `/orders/kitchen/orders/${orderId}/pickup`);
+      upsertOrder(data);
+      notify("Picked up. Ticket marked served.");
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
   const renderTicketCards = (targetStation: PrepStation, entries: QueueEntry[]) => <div className="grid gap-4 2xl:grid-cols-2">
     {entries.map(({ order, ticket }) => {
       const status = ticket?.status ?? order.status;
       const ticketItems = ticket?.items ?? order.items.map((item) => ({ menuItemName: item.menuItem.name, quantity: item.quantity, modifierSelections: item.modifierSelections ?? [], removeIngredients: item.removeIngredients, addExtras: item.addExtras, specialNotes: item.specialNotes, selectedAllergens: item.selectedAllergens }));
       const ticketKey = ticket?.id ?? order.id;
+      if (targetStation === "KITCHEN") return <Panel key={ticketKey} className="overflow-hidden">
+        <div className={`h-1.5 ${status === "PENDING" ? "bg-amber-400" : "bg-sky-400"}`} />
+        <div className="p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              {ticketItems.map((item, index) => {
+                const noteParts = (item.specialNotes ?? "").split(" · ").map((part) => part.trim()).filter(Boolean);
+                const kitchenNotes = noteParts.filter((part) => part.toLowerCase().startsWith("order note:")).map((part) => part.replace(/^order note:\s*/i, ""));
+                const otherNotes = noteParts.filter((part) => !part.toLowerCase().startsWith("order note:"));
+                return <div key={`${ticketKey}-${index}`} className={index ? "mt-4" : ""}>
+                  <div className="flex items-center gap-2"><span className="font-display text-[22px] font-extrabold tracking-tight">{item.quantity}× {item.menuItemName}</span>{index === 0 && <OrderBadge status={status} />}</div>
+                  {item.modifierSelections?.map((selection) => <p key={selection.groupId} className="mt-1 text-[11px] font-medium text-[#6f5964]">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}
+                  {item.removeIngredients && <p className="mt-1 text-[11px] text-[#ba694b]">No: {item.removeIngredients}</p>}
+                  {item.addExtras && <p className="mt-1 text-[11px] text-olive">Extra: {item.addExtras}</p>}
+                  {item.selectedAllergens?.length ? <p className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">Allergens: {item.selectedAllergens.join(", ")}</p> : null}
+                  {kitchenNotes.map((note) => <p key={note} className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900">Kitchen note: {note}</p>)}
+                  {otherNotes.map((note) => <p key={note} className="mt-1 rounded-lg bg-amber-50 px-2.5 py-1.5 text-[11px] italic text-amber-800">“{note}”</p>)}
+                </div>;
+              })}
+              <p className="mt-1 font-mono text-[10px] text-muted">Order #{order.id.slice(-6).toUpperCase()}</p>
+              <p className="mt-1 text-[11px] font-semibold text-olive">{status === "PREPARING" ? "Preparing" : "Waiting to start"}: {formatOrderDuration(status === "PREPARING" ? ticket?.preparingAt ?? order.preparingAt ?? order.createdAt : order.createdAt, now)}</p>
+            </div>
+            <span className="flex shrink-0 items-center gap-1.5 text-[11px] font-semibold text-muted"><Clock3 size={13} />{Math.max(0, Math.floor((now - +new Date(order.createdAt)) / 60000))} min ago</span>
+          </div>
+          <div className="my-4 border-y border-dashed border-line py-4">
+            <p className="text-sm font-bold">{orderLocation(order)}</p>
+          </div>
+          <div className="mb-4 flex items-center justify-between text-[11px] text-muted"><span>Placed by {order.waiter?.name}</span><span>{new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(order.createdAt))}</span></div>
+          <button disabled={busy === ticketKey} onClick={() => void pickup(order.id, ticket?.id ?? null)} className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-ink text-xs font-bold text-white transition hover:bg-[#353c34] disabled:opacity-50">
+            {busy === ticketKey ? "Saving…" : "Pickup"}<ArrowRight size={15} />
+          </button>
+        </div>
+      </Panel>;
       return <Panel key={ticketKey} className="overflow-hidden">
         <div className={`h-1.5 ${status === "PENDING" ? "bg-amber-400" : "bg-sky-400"}`} />
         <div className="p-5">
@@ -105,7 +151,7 @@ export function KitchenPage({ station }: { station: PrepStation }) {
       <PageHeader
         eyebrow={station === "BAR" ? "Back of house · Bar display" : "Kitchen · Live tickets"}
         title={station === "BAR" ? "At the bar." : "Kitchen display"}
-        description={station === "BAR" ? "New bar tickets land here in real time. Start prep, then mark each ticket ready." : "Each station only sees its part of the order. The coffee from DIY Breakfast goes to the bar."}
+        description={station === "BAR" ? "New bar tickets land here in real time. Start prep, then mark each ticket ready." : "Kitchen tickets land here. Dishes staff serve straight away stay on the table ticket and are not shown here."}
         action={
           <div
             className={`flex items-center gap-2 rounded-full px-3 py-2 text-[11px] font-bold ${liveState === "live" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}
@@ -162,16 +208,7 @@ export function KitchenPage({ station }: { station: PrepStation }) {
           </div>
         </Panel>
       </div>}
-      {station === "KITCHEN" ? <div className="grid items-start gap-6 xl:grid-cols-2">
-        {(["KITCHEN", "BAR"] as const).map((lane) => {
-          const laneQueue = queues[lane];
-          const Icon = lane === "KITCHEN" ? ChefHat : Coffee;
-          return <section key={lane} className="min-w-0">
-            <header className="mb-4 flex items-center gap-3"><span className={`grid h-10 w-10 place-items-center rounded-xl ${lane === "KITCHEN" ? "bg-[#fff0f7] text-[#ed168c]" : "bg-sky-50 text-sky-700"}`}><Icon size={19} /></span><div><h2 className="font-display text-base font-bold">{lane === "KITCHEN" ? "Kitchen" : "Bar"}</h2><p className="mt-0.5 text-xs text-muted">{laneQueue.length} {laneQueue.length === 1 ? "ticket" : "tickets"}</p></div></header>
-            {laneQueue.length ? renderTicketCards(lane, laneQueue) : <Panel className="p-4 text-xs text-muted">No active {lane === "KITCHEN" ? "kitchen" : "bar"} tickets.</Panel>}
-          </section>;
-        })}
-      </div> : queue.length ? (
+      {station === "KITCHEN" ? (queue.length ? renderTicketCards("KITCHEN", queue) : <Panel><EmptyState icon={ChefHat} title="Kitchen is caught up" body="New kitchen tickets will show here as soon as the floor sends them through." /></Panel>) : queue.length ? (
         renderTicketCards(station, queue)
       ) : (
         <Panel>
