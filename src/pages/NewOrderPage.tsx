@@ -659,8 +659,8 @@ export function NewOrderPage() {
             </Panel>
           )}
         </div>
-        <Panel className="sticky top-[86px] overflow-hidden">
-          <div className="flex items-center justify-between border-b border-line px-5 py-4">
+        <Panel className="sticky top-[86px] z-20 flex max-h-[calc(100dvh-6.5rem)] flex-col self-start overflow-hidden">
+          <div className="flex shrink-0 items-center justify-between border-b border-line px-5 py-4">
             <div>
               <h2 className="font-display text-[15px] font-bold">
                 Current ticket
@@ -673,7 +673,7 @@ export function NewOrderPage() {
               <ShoppingBag size={17} />
             </span>
           </div>
-          <div className="p-5">
+          <div className="min-h-0 overflow-y-auto p-5">
             <div className="mb-4 border-b border-line pb-4">
               <SelectField label="Table" value={selectedTable?.id ?? ""} onChange={(event) => {
                 if (event.target.value) navigate(`/tables/${event.target.value}`);
@@ -730,7 +730,7 @@ export function NewOrderPage() {
             </section>}
             <div className="my-4 h-px bg-line" />
             {cartLines.length ? (
-              <div className="max-h-[min(45vh,430px)] space-y-3 overflow-y-auto pr-1">
+              <div className="space-y-3 pr-1">
                 {cartLines.map((line) => {
                   const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
                   const modifierLines = selectedModifierLines(line.item, line.modifierSelections);
@@ -768,7 +768,8 @@ export function NewOrderPage() {
                 className="mt-2 w-full resize-y rounded-xl border border-line bg-white px-3 py-2.5 text-xs font-normal text-ink outline-none transition placeholder:text-muted focus:border-[#ed168c]"
               />
             </label>
-            <div className="mt-4 border-t border-line pt-4">
+            </div>
+          <div className="shrink-0 border-t border-line bg-white px-5 pb-5 pt-4">
               {partyTotals.length > 0 && <div className="mb-4 space-y-2 border-b border-line pb-3">{partyTotals.map((payer, index) => <div key={payer.id} className="flex items-center justify-between gap-2 text-[10px]"><span className="flex min-w-0 items-center gap-2 text-muted"><span className={`rounded-full px-2 py-1 text-[9px] font-bold ${payer.id === "walk-ins" ? "bg-[#f4f3f1] text-[#726b67]" : index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]"}`}>{payer.label}</span><span className="truncate">{payer.name}</span></span><span className="shrink-0 font-bold text-ink">{money(payer.total)}</span></div>)}</div>}
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted">Subtotal</span>
@@ -794,7 +795,6 @@ export function NewOrderPage() {
                 {serveAtTable ? "Staff serve these at the table. They stay on the ticket and receipt." : cartLines.some((line) => line.prepStation === "BAR") ? "Only kitchen dishes are sent. Anything served straight away stays on the ticket." : "The kitchen sees new tickets instantly."}
               </p>
             </div>
-          </div>
         </Panel>
       </div>
     </div>

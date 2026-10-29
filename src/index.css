@@ -65,7 +65,7 @@ html.dark .bg-\[\#cce790\] { background-color: #3c512b !important; }
 html.dark .bg-\[\#f8edf2\] { background-color: #45212b !important; }
 
 .page-enter { animation: page-enter 320ms cubic-bezier(.2,.75,.25,1) both; }
-@keyframes page-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes page-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
 
 .scrollbar-hide { scrollbar-width: none; }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
