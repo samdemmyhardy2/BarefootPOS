@@ -5,9 +5,11 @@ const STORAGE_KEY = "restaurant-outbox";
 const CHANGE_EVENT = "restaurant-outbox";
 
 export class SavedLocallyError extends Error {
-  constructor() {
+  readonly requestId: string;
+  constructor(requestId = "") {
     super("Saved on this device. It will send when the connection returns.");
     this.name = "SavedLocallyError";
+    this.requestId = requestId;
   }
 }
 
@@ -55,6 +57,21 @@ function isNetwork(error: unknown) {
   return axios.isAxiosError(error) && !error.response;
 }
 
+export function localUuid() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") crypto.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function offlineNow() {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
 async function send(item: OutboxItem) {
   const { data } = await api.post(item.url, { ...item.body, clientRequestId: item.id });
   write(read().filter((entry) => entry.id !== item.id));
@@ -64,11 +81,11 @@ async function send(item: OutboxItem) {
 export async function postOnce<T>(entry: { scope: string; url: string; body: Record<string, unknown>; label: string; dedupeKey?: string }): Promise<T> {
   if (entry.dedupeKey) {
     const existing = read().find((item) => item.dedupeKey === entry.dedupeKey);
-    if (existing?.status === "pending") throw new SavedLocallyError();
-    if (existing?.status === "blocked") throw new Error(existing.lastError || "This action is waiting for attention on this device.");
+    if (existing?.status === "pending") throw new SavedLocallyError(existing.id);
+    if (existing?.status === "blocked") write(read().filter((item) => item.id !== existing.id));
   }
   const item: OutboxItem = {
-    id: crypto.randomUUID(),
+    id: localUuid(),
     scope: entry.scope,
     url: entry.url,
     body: entry.body,
@@ -78,10 +95,11 @@ export async function postOnce<T>(entry: { scope: string; url: string; body: Rec
     dedupeKey: entry.dedupeKey,
   };
   remember(item);
+  if (offlineNow()) throw new SavedLocallyError(item.id);
   try {
     return await send(item) as T;
   } catch (error) {
-    if (isNetwork(error)) throw new SavedLocallyError();
+    if (isNetwork(error)) throw new SavedLocallyError(item.id);
     const status = axios.isAxiosError(error) ? error.response?.status ?? 0 : 0;
     if (status >= 400 && status < 500) {
       remember({ ...item, status: "blocked", lastError: errorMessage(error) });
@@ -92,7 +110,7 @@ export async function postOnce<T>(entry: { scope: string; url: string; body: Rec
 
 let flushing = false;
 export async function flushOutbox() {
-  if (flushing) return;
+  if (flushing || offlineNow()) return;
   flushing = true;
   try {
     for (const item of read().filter((entry) => entry.status === "pending")) {

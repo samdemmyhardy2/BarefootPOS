@@ -1,7 +1,20 @@
 import { create } from "zustand";
 import { api } from "../lib/api";
-import { postOnce } from "../lib/outbox";
+import { listOutbox, postOnce } from "../lib/outbox";
 import type { Order, OrderPaymentMethod, OrderStatus } from "../lib/types";
+
+const ORDERS_KEY = "restaurant-orders-cache";
+function readCachedOrders(): Order[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ORDERS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed as Order[] : [];
+  } catch {
+    return [];
+  }
+}
+function writeCachedOrders(orders: Order[]) {
+  try { localStorage.setItem(ORDERS_KEY, JSON.stringify(orders)); } catch { /* The ticket is still held in memory for this visit. */ }
+}
 import { useAuthStore } from "./authStore";
 import { useUiStore } from "./uiStore";
 
@@ -84,7 +97,7 @@ function playRoleNotification(kind: "new" | "ready") {
 }
 
 export const useOrderStore = create<OrderState>((set, get) => ({
-  orders: [],
+  orders: readCachedOrders(),
   liveState: "offline",
   loading: false,
   source: null,
@@ -94,7 +107,11 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     set({ loading: true });
     try {
       const { data } = await api.get<Order[]>("/orders");
-      set({ orders: data });
+      const waiting = new Set(listOutbox().filter((item) => item.status === "pending").map((item) => `local-${item.id}`));
+      const pending = get().orders.filter((order) => waiting.has(order.id));
+      const orders = [...pending, ...data];
+      writeCachedOrders(orders);
+      set({ orders });
     } finally {
       set({ loading: false });
     }
@@ -120,12 +137,15 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         const event = raw as MessageEvent<string>;
         const snapshot = JSON.parse(event.data) as Order[];
         const activeIds = new Set(snapshot.map((order) => order.id));
-        set((state) => ({
-          orders: [
+        set((state) => {
+          const orders = [
+            ...state.orders.filter((order) => String(order.id).startsWith("local-")),
             ...snapshot,
-            ...state.orders.filter((order) => !activeIds.has(order.id) && (order.status === "COMPLETED" || order.status === "CANCELLED")),
-          ],
-        }));
+            ...state.orders.filter((order) => !String(order.id).startsWith("local-") && !activeIds.has(order.id) && (order.status === "COMPLETED" || order.status === "CANCELLED")),
+          ];
+          writeCachedOrders(orders);
+          return { orders };
+        });
       });
       for (const type of ["created", "updated"]) {
         source.addEventListener(type, (raw) => {
@@ -212,9 +232,8 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   upsertOrder: (order) =>
     set((state) => {
       const index = state.orders.findIndex((item) => item.id === order.id);
-      if (index === -1) return { orders: [order, ...state.orders] };
-      const orders = [...state.orders];
-      orders[index] = { ...orders[index], ...order };
+      const orders = index === -1 ? [order, ...state.orders] : state.orders.map((item, itemIndex) => itemIndex === index ? { ...item, ...order } : item);
+      writeCachedOrders(orders);
       return { orders };
     }),
 }));

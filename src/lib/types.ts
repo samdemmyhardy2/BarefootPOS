@@ -144,7 +144,7 @@ export interface DiningTable {
   width: number;
   height: number;
   sectionId?: string;
-  assignedRoomStays?: Pick<RoomStay, "id" | "primaryGuestName" | "room" | "occupants">[];
+  assignedRoomStays?: Pick<RoomStay, "id" | "primaryGuestName" | "room" | "occupants" | "cashOnly">[];
 }
 
 export interface FloorSection {

@@ -37,6 +37,10 @@ type CartLine = {
   payerId: string;
 };
 type PlusJump = { id: string; fromX: number; fromY: number; toX: number; toY: number; label: string };
+function localId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 function PlusJumpBadge({ jump, onDone }: { jump: PlusJump; onDone: (id: string) => void }) {
   const [moved, setMoved] = useState(false);
   useEffect(() => {
@@ -44,8 +48,8 @@ function PlusJumpBadge({ jump, onDone }: { jump: PlusJump; onDone: (id: string) 
     const timer = window.setTimeout(() => onDone(jump.id), 850);
     return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [jump.id, onDone]);
-  return <span className="pointer-events-none fixed z-[90] [perspective:600px]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 700ms ease-in-out, top 700ms ease-in-out" }}>
-    <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700 [transform-style:preserve-3d]" style={{ transform: moved ? "rotateX(720deg)" : "rotateX(0deg)", transition: "transform 700ms linear" }}>{jump.label}</span>
+  return <span className="pointer-events-none fixed z-[90]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 700ms ease-in-out, top 700ms ease-in-out" }}>
+    <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700">{jump.label}</span>
   </span>;
 }
 const categoryColors = [
@@ -55,7 +59,20 @@ const categoryColors = [
   "from-[#e0edf0] to-[#f1f7f7]",
   "from-[#ece7d8] to-[#f6f3e9]",
 ];
-type ActiveRoomStay = { id: string; primaryGuestName: string; occupants: { id: string; name: string }[]; room: { roomNumber: string | number } };
+type ActiveRoomStay = { id: string; primaryGuestName: string; cashOnly?: boolean; occupants: { id: string; name: string }[]; room: { roomNumber: string | number } };
+const ORDER_DESK_KEY = "restaurant-order-desk";
+function readOrderDesk(): { categories: Category[]; tables: DiningTable[]; stays: ActiveRoomStay[] } | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ORDER_DESK_KEY) ?? "null") as { categories?: Category[]; tables?: DiningTable[]; stays?: ActiveRoomStay[] } | null;
+    if (!parsed || !Array.isArray(parsed.categories) || !Array.isArray(parsed.tables) || !Array.isArray(parsed.stays)) return null;
+    return { categories: parsed.categories, tables: parsed.tables, stays: parsed.stays };
+  } catch {
+    return null;
+  }
+}
+function writeOrderDesk(value: { categories: Category[]; tables: DiningTable[]; stays: ActiveRoomStay[] }) {
+  try { localStorage.setItem(ORDER_DESK_KEY, JSON.stringify(value)); } catch { /* The open order screen still has this visit's menu. */ }
+}
 
 function itemModifierGroups(item: MenuItem): ModifierGroup[] {
   const groups = new Map<string, ModifierGroup>();
@@ -129,7 +146,7 @@ export function NewOrderPage() {
   const [signatureData, setSignatureData] = useState("");
   const [signatureDrawing, setSignatureDrawing] = useState(false);
   const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
-  const [settledPayers, setSettledPayers] = useState<{ id: string; label: string; total: number; note: string }[]>([]);
+  const [settledPayers, setSettledPayers] = useState<{ id: string; label: string; total: number; note: string; orderIds: string[] }[]>([]);
   const createOrder = useOrderStore((state) => state.createOrder);
   const cookAction = useOrderStore((state) => state.cookAction);
   const [ticketActionId, setTicketActionId] = useState<string | null>(null);
@@ -157,13 +174,18 @@ export function NewOrderPage() {
     };
   }, [roomPickerOpen]);
   useEffect(() => {
+    const cached = readOrderDesk();
+    if (cached) { setCategories(cached.categories); setTables(cached.tables); setActiveStays(cached.stays); }
     void Promise.all([
       api.get<Category[]>("/categories"),
       api.get<DiningTable[]>("/tables"),
       api.get<ActiveRoomStay[]>("/orders/active-room-stays"),
     ])
-      .then(([cat, tbl, stays]) => { setCategories(cat.data); setTables(tbl.data); setActiveStays(stays.data); })
-      .catch((e) => reportError(errorMessage(e)));
+      .then(([cat, tbl, stays]) => {
+        setCategories(cat.data); setTables(tbl.data); setActiveStays(stays.data);
+        writeOrderDesk({ categories: cat.data, tables: tbl.data, stays: stays.data });
+      })
+      .catch((e) => { if (!cached) reportError(errorMessage(e)); });
   }, []);
   useEffect(() => {
     void fetchOrders().catch(() => undefined);
@@ -185,6 +207,7 @@ export function NewOrderPage() {
     }),
     ...(walkInPartyCount > 0 ? [{ id: "walk-ins", label: "Walk-ins", name: "Walk-ins", roomStayId: undefined }] : []),
   ];
+  const orderForChoices = payers.some((payer) => payer.id === "walk-ins") ? payers : [...payers, { id: "walk-ins", label: "Walk-ins", name: "Walk-ins", roomStayId: undefined }];
   const menuItems = useMemo(
     () =>
       categories
@@ -215,31 +238,26 @@ export function NewOrderPage() {
     (sum, line) => sum + getLineUnitPrice(line.item, line.modifierSelections) * line.quantity,
     0,
   );
-  const partyTotals = payers.map((payer) => ({ ...payer, total: cartLines.reduce((sum, line) => sum + (line.payerId === payer.id ? getLineUnitPrice(line.item, line.modifierSelections) * line.quantity : 0), 0) })).filter((payer) => payer.total > 0);
   const tableTotal = activeTableOrders.reduce((sum, order) => sum + Number(order.totalAmount), 0);
-  const allOrdersServed = activeTableOrders.length > 0 && activeTableOrders.every((order) => order.status === "SERVED");
-  const orderPayerGroups = activeTableOrders.reduce<{ id: string; label: string; name: string; roomStayId?: string; orders: typeof activeTableOrders; total: number }[]>((groups, order) => {
-    const id = order.roomStayId ?? "walk-ins";
-    let group = groups.find((entry) => entry.id === id);
-    if (!group) {
-      const payer = payers.find((entry) => entry.id === id);
-      const roomNumber = order.roomStay?.room?.roomNumber;
-      group = { id, label: payer?.label ?? (roomNumber ? `R${roomNumber}` : "Walk-ins"), name: payer?.name ?? order.roomStay?.primaryGuestName ?? "Walk-ins", roomStayId: order.roomStayId ?? undefined, orders: [], total: 0 };
-      groups.push(group);
-    }
-    group.orders.push(order);
-    group.total += Number(order.totalAmount);
-    return groups;
-  }, []);
+  const orderPayerGroups = activeTableOrders.map((order) => {
+    const payerId = order.roomStayId ?? "walk-ins";
+    const payer = payers.find((entry) => entry.id === payerId);
+    const roomNumber = order.roomStay?.room?.roomNumber;
+    return { id: order.id, label: payer?.label ?? (roomNumber ? `R${roomNumber}` : "Walk-ins"), name: payer?.name ?? order.roomStay?.primaryGuestName ?? "Walk-ins", roomStayId: order.roomStayId ?? undefined, orders: [order], total: Number(order.totalAmount) };
+  });
   const signatureGroup = orderPayerGroups.find((group) => group.id === signaturePayerId);
   const clearPlusJump = useCallback((id: string) => setPlusJumps((current) => current.filter((jump) => jump.id !== id)), []);
   const launchPlus = (origin: DOMRect | null, amount = 1) => {
+    if (/Android/i.test(navigator.userAgent)) return;
     const ticket = ticketMarkRef.current?.getBoundingClientRect();
     if (!origin || !ticket) return;
-    setPlusJumps((current) => [...current, { id: crypto.randomUUID(), fromX: origin.left + origin.width / 2, fromY: origin.top + origin.height / 2, toX: ticket.left + ticket.width / 2, toY: ticket.top + ticket.height / 2, label: `+${amount}` }]);
+    const id = localId();
+    setPlusJumps((current) => [...current, { id, fromX: origin.left + origin.width / 2, fromY: origin.top + origin.height / 2, toX: ticket.left + ticket.width / 2, toY: ticket.top + ticket.height / 2, label: `+${amount}` }]);
   };
-  const addToCart = (item: MenuItem, modifierSelections: Record<string, string[]> = {}, quantity = 1, specialNotes = "") => setCart((current) => [...current, {
-      id: crypto.randomUUID(),
+  const addToCart = (item: MenuItem, modifierSelections: Record<string, string[]> = {}, quantity = 1, specialNotes = "") => {
+    const id = localId();
+    setCart((current) => [...current, {
+      id,
       item,
       quantity,
       specialNotes,
@@ -247,6 +265,7 @@ export function NewOrderPage() {
       prepStation: item.prepStation ?? "KITCHEN",
       payerId: payers[0]?.id ?? "walk-ins",
     }]);
+  };
   const add = (item: MenuItem, origin?: DOMRect | null) => {
     setEditingCartLineId(null);
     const groups = itemModifierGroups(item);
@@ -332,6 +351,7 @@ export function NewOrderPage() {
   const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); pendingAddOrigin.current = null; };
   const removeCartLine = (lineId: string) => setCart((current) => current.filter((line) => line.id !== lineId));
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
+  const assignCartPayer = (lineId: string, payerId: string) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, payerId } : line));
   const bumpMenuItem = (item: MenuItem, delta: 1 | -1, origin?: DOMRect | null) => {
     const lines = cart.filter((line) => line.item.id === item.id);
     if (delta > 0 && itemModifierGroups(item).length) { add(item, origin); return; }
@@ -369,7 +389,7 @@ export function NewOrderPage() {
           lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation }) => ({
             menuItemId: item.id,
             quantity,
-            prepStation,
+            prepStation: item.prepStation ?? prepStation,
             modifierSelections: openModifierGroups(item, modifierSelections).filter((group) => group.appearance !== "TEXT").map((group) => ({ groupId: group.id, optionIds: modifierSelections[group.id] ?? [] })),
             ...([orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).length ? { specialNotes: [orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).join(" · ") } : {}),
           })),
@@ -377,12 +397,33 @@ export function NewOrderPage() {
         } catch (cause) {
           if (!(cause instanceof SavedLocallyError)) throw cause;
           waitingToSend = true;
+          const now = new Date().toISOString();
+          const note = orderKitchenNote.trim();
+          const items = lines.map((line) => {
+            const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
+            return { id: `local-line-${line.id}`, menuItemId: line.item.id, quantity: line.quantity, unitPrice, subtotal: unitPrice * line.quantity, specialNotes: [note && `Order note: ${note}`, line.specialNotes.trim()].filter(Boolean).join(" · ") || null, menuItem: line.item };
+          });
+          useOrderStore.getState().upsertOrder({
+            id: `local-${cause.requestId || localId()}`,
+            tableId,
+            table: selectedTable,
+            roomStayId: payerId === "walk-ins" ? null : payerId,
+            paymentMethod: "CASH",
+            paymentStatus: "UNPAID",
+            waiterId: currentUser?.id ?? "local",
+            waiter: { id: currentUser?.id ?? "local", name: currentUser?.name ?? "This device" },
+            status: "PENDING",
+            totalAmount: items.reduce((sum, line) => sum + Number(line.subtotal), 0),
+            items,
+            createdAt: now,
+            updatedAt: now,
+          });
         }
         lines.forEach((line) => submittedLineIds.add(line.id));
       }
       if (waitingToSend) {
         setCart((current) => current.filter((line) => !submittedLineIds.has(line.id)));
-        notify("Saved on this device. It will send when the connection returns.");
+        notify("Saved on this device. The kitchen receives it when the connection returns.");
         return;
       }
       const paidAtTable = cartLines.every((line) => line.prepStation === "BAR");
@@ -405,7 +446,6 @@ export function NewOrderPage() {
     }
   };
   const settlePayer = async (group: typeof orderPayerGroups[number], method: "ROOM_CHECKOUT" | "CASH" | "CARD" | "PROMPTPAY", signedName?: string, signature?: string) => {
-    if (!allOrdersServed) { reportError("All table orders must be served before settlement."); return; }
     if (method === "ROOM_CHECKOUT" && (!signedName?.trim() || !signature)) { setSignaturePayerId(group.id); setSignatureName(group.name); setSignatureData(""); return; }
     setPlacing(true); setError("");
     try {
@@ -414,20 +454,24 @@ export function NewOrderPage() {
         url: `/tables/${tableId}/settle-party`,
         body: { orderIds: group.orders.map((order) => order.id), paymentMethod: method, ...(method === "ROOM_CHECKOUT" ? { signedByName: signedName, signatureData: signature } : {}) },
         label: `Settle ${group.label}`,
-        dedupeKey: `table-settle:${tableId}:${group.orders.map((order) => order.id).sort().join(",")}`,
+        dedupeKey: `table-settle:${tableId}:${method}:${group.orders.map((order) => order.id).sort().join(",")}`,
       });
       const stays = group.roomStayId ? activeStays.filter((stay) => stay.id === group.roomStayId) : [];
       const rooms = stays.map((stay) => ({ roomNumber: stay.room.roomNumber, guestName: stay.primaryGuestName, guestNames: [...new Set([stay.primaryGuestName, ...stay.occupants.map((occupant) => occupant.name)])] }));
       if (method === "ROOM_CHECKOUT") setReceipt({ tableNumber: data.tableNumber, orders: group.orders, paymentMethod: method, room: null, rooms, totalAmount: Number(data.totalAmount), checkedOutAt: data.checkedOutAt, cashierName: currentUser?.name ?? "Restaurant staff", signature: { name: data.signedByName ?? signedName ?? "Guest", data: signature ?? "" } });
       notify(method === "ROOM_CHECKOUT" ? `Added to Room ${rooms[0]?.roomNumber ?? "guest"}’s tab. Signed by ${data.signedByName ?? signedName}.` : `${group.label} paid by ${method === "PROMPTPAY" ? "PromptPay QR" : method.toLowerCase()}.`);
-      setSettledPayers((current) => [...current.filter((entry) => entry.id !== group.id), { id: group.id, label: group.label, total: Number(data.totalAmount), note: method === "ROOM_CHECKOUT" ? `Added to Room ${rooms[0]?.roomNumber ?? "guest"}’s tab. Signed by ${data.signedByName ?? signedName}.` : `Paid by ${method === "PROMPTPAY" ? "PromptPay QR" : method.toLowerCase()}.` }]);
+      setSettledPayers((current) => [...current.filter((entry) => entry.id !== group.id), { id: group.id, label: group.label, total: Number(data.totalAmount), orderIds: group.orders.map((order) => order.id), note: method === "ROOM_CHECKOUT" ? `Added to Room ${rooms[0]?.roomNumber ?? "guest"}’s tab. Signed by ${data.signedByName ?? signedName}.` : `Paid by ${method === "PROMPTPAY" ? "PromptPay QR" : method.toLowerCase()}.` }]);
       if (signaturePayerId) setSignaturePayerId(null);
       const updated = await api.get<DiningTable[]>("/tables"); setTables(updated.data);
       await fetchOrders();
       if (data.tableCleared) { setSettleOpen(false); notify(`${data.tableNumber} is settled and cleared.`); }
     } catch (cause) {
       if (cause instanceof SavedLocallyError) notify("Settlement saved on this device. It will send when the connection returns.");
-      else reportError(errorMessage(cause));
+      else {
+        const message = errorMessage(cause);
+        if (/cash only/i.test(message)) setSettlementMethods((current) => ({ ...current, [group.id]: "CASH" }));
+        reportError(/cash only/i.test(message) ? "This stay is cash only. Take cash, card, or PromptPay." : message);
+      }
     }
     finally { setPlacing(false); }
   };
@@ -532,7 +576,7 @@ export function NewOrderPage() {
 
   return (
     <>
-    <div className="page-enter">
+    <div>
       <PageHeader
         eyebrow="Floor · New ticket"
         title="Build an order"
@@ -659,7 +703,7 @@ export function NewOrderPage() {
             </Panel>
           )}
         </div>
-        <Panel className="sticky top-[86px] z-20 flex max-h-[calc(100dvh-6.5rem)] flex-col self-start overflow-hidden">
+        <Panel className="flex flex-col self-start md:sticky md:top-16 md:z-20 md:max-h-[calc(100dvh-5rem)] md:overflow-hidden">
           <div className="flex shrink-0 items-center justify-between border-b border-line px-5 py-4">
             <div>
               <h2 className="font-display text-[15px] font-bold">
@@ -673,7 +717,7 @@ export function NewOrderPage() {
               <ShoppingBag size={17} />
             </span>
           </div>
-          <div className="min-h-0 overflow-y-auto p-5">
+          <div className="p-4 md:min-h-0 md:flex-1 md:overflow-y-auto">
             <div className="mb-4 border-b border-line pb-4">
               <SelectField label="Table" value={selectedTable?.id ?? ""} onChange={(event) => {
                 if (event.target.value) navigate(`/tables/${event.target.value}`);
@@ -707,10 +751,11 @@ export function NewOrderPage() {
                 <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-olive">{selectedTable.status}</span>
               </div>
               {activeTableOrders.length ? <div className="mt-3">
-                <div className={`space-y-3 ${activeTableOrders.length > 2 ? "max-h-[26rem] overflow-y-auto pr-1" : ""}`}>
+                <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
                 {activeTableOrders.map((order) => <article key={order.id} className="rounded-xl border border-line bg-white p-3">
                   <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="font-mono text-[10px] font-bold">#{order.id.slice(-6).toUpperCase()}</span><OrderBadge status={order.status} /></div><span className="text-[10px] text-muted">Ordered by {order.waiter?.name}</span></div>
-                  <ul className="mt-2 space-y-1 text-xs">{order.items.map((line, index) => <li key={line.id ?? `${order.id}-${index}`}><span className="font-bold">{line.quantity}×</span> {line.menuItem.name}{line.addExtras ? <span className="text-muted"> · {line.addExtras}</span> : null}</li>)}</ul>
+                  <ul className="mt-2 space-y-1 text-xs">{(order.items ?? []).map((line, index) => <li key={line.id ?? `${order.id}-${index}`}><span className="font-bold">{line.quantity}×</span> {line.menuItem?.name ?? "Item"}{line.addExtras ? <span className="text-muted"> · {line.addExtras}</span> : null}</li>)}</ul>
+                  {String(order.id).startsWith("local-") && <p className="mt-2 text-[10px] font-semibold text-amber-800">Saved on this device. The kitchen receives it when the connection returns.</p>}
                   {order.servedBy && <p className="mt-2 text-[10px] font-semibold text-emerald-700">Collected / served by {order.servedBy.name}</p>}
                   {order.status === "SERVED" && <button type="button" disabled={ticketActionId === order.id} onClick={() => void (async () => {
                     setTicketActionId(order.id); setError("");
@@ -722,10 +767,9 @@ export function NewOrderPage() {
                 </div>
                 <p className="mt-3 text-[10px] text-muted">Add another ticket below to continue this table’s order.</p>
               </div> : <p className="mt-3 text-xs text-muted">No items have been ordered at this table yet. Start with the menu below.</p>}
-              {activeTableOrders.length > 0 && <div className="mt-4 border-t border-line pt-4">
+              {activeTableOrders.length > 0 && <div className="mt-3 border-t border-line pt-3">
                 <div className="flex items-center justify-between"><span className="text-xs font-semibold">Open table total</span><span className="font-display text-lg font-extrabold">{money(tableTotal)}</span></div>
-                {!allOrdersServed && <p className="mt-2 text-[10px] text-muted">All active tickets must be marked served before checkout.</p>}
-                <button onClick={() => setSettleOpen(true)} disabled={placing || !allOrdersServed} className="mt-3 h-11 w-full rounded-xl bg-[#ed168c] text-xs font-bold text-white hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40">Pay</button>
+                <button onClick={() => setSettleOpen(true)} disabled={placing} className="mt-3 h-11 w-full rounded-xl bg-[#ed168c] text-xs font-bold text-white hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40">Pay</button>
               </div>}
             </section>}
             <div className="my-4 h-px bg-line" />
@@ -735,9 +779,8 @@ export function NewOrderPage() {
                   const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
                   const modifierLines = selectedModifierLines(line.item, line.modifierSelections);
                   return <article key={line.id} className="border-b border-line pb-3 last:border-0">
-                    <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${line.payerId === "walk-ins" ? "bg-[#f4f3f1] text-[#726b67]" : "bg-[#eef0ff] text-[#5866a0]"}`}>{payers.find((payer) => payer.id === line.payerId)?.label ?? "Walk-ins"}</span><p className="min-w-0 truncate text-xs font-bold leading-5">{line.item.name}</p></div><button onClick={() => removeCartLine(line.id)} className="shrink-0 text-[#a4a89f] hover:text-rose-600" aria-label={`Remove ${line.item.name}`}><Trash2 size={14} /></button></div>
-                    {payers.length > 0 && <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>For</span><select value={payers.some((payer) => payer.id === line.payerId) ? line.payerId : payers[0].id} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, payerId: event.target.value } : entry))} className="max-w-[150px] rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink">{payers.map((payer) => <option key={payer.id} value={payer.id}>{payer.name}</option>)}</select></label>}
-                    <label className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted"><span>Send dish to</span><select value={line.prepStation} onChange={(event) => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, prepStation: event.target.value as PrepStation } : entry))} className="rounded-lg border border-line bg-white px-2 py-1 text-[10px] font-semibold text-ink"><option value="KITCHEN">Kitchen</option><option value="BAR">Serve at table</option></select></label>
+                    <div className="flex items-start justify-between gap-2"><p className="min-w-0 truncate text-xs font-bold leading-5">{line.item.name}</p><button onClick={() => removeCartLine(line.id)} className="shrink-0 text-[#a4a89f] hover:text-rose-600" aria-label={`Remove ${line.item.name}`}><Trash2 size={14} /></button></div>
+                    <select aria-label={`Who ordered ${line.item.name}`} value={orderForChoices.some((payer) => payer.id === line.payerId) ? line.payerId : (orderForChoices[0]?.id ?? "walk-ins")} onChange={(event) => assignCartPayer(line.id, event.target.value)} className="mt-2 h-8 w-full rounded-lg border border-line bg-white px-2 text-[11px] font-semibold text-ink outline-none focus:border-[#ed168c]">{orderForChoices.map((payer) => <option key={payer.id} value={payer.id}>{payer.id === "walk-ins" ? "Walk-ins" : `${payer.label} · ${payer.name}`}</option>)}</select>
                     <div className="mt-2 flex items-center justify-between gap-3"><span className="text-xs text-muted">{money(unitPrice * line.quantity)}</span><div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label={`Remove one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity - 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{line.quantity}</span><button type="button" aria-label={`Add one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity + 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button></div></div>
                     {modifierLines.length > 0 && <div className="mt-2 space-y-1">{modifierLines.map((modifier) => <div key={modifier.id} className={`flex items-start justify-between gap-2 text-[10px] leading-4 text-muted ${modifier.depth ? "ml-3 border-l border-[#f3cade] pl-2" : ""}`}><span className="min-w-0">{modifier.name}{modifier.count > 1 ? ` ×${modifier.count}` : ""}</span>{!(modifier.nested && modifier.amount <= 0) && <span className="shrink-0">{modifier.amount > 0 ? `+${money(modifier.amount)}` : "Free"}</span>}</div>)}</div>}
                     {line.specialNotes && <p className="mt-2 inline-block rounded-lg bg-amber-50 px-2 py-1 text-[10px] italic text-amber-800">“{line.specialNotes}”</p>}
@@ -764,18 +807,13 @@ export function NewOrderPage() {
                 value={orderKitchenNote}
                 onChange={(event) => setOrderKitchenNote(event.target.value)}
                 placeholder="Add a note for this ticket"
-                rows={3}
+                rows={2}
                 className="mt-2 w-full resize-y rounded-xl border border-line bg-white px-3 py-2.5 text-xs font-normal text-ink outline-none transition placeholder:text-muted focus:border-[#ed168c]"
               />
             </label>
             </div>
-          <div className="shrink-0 border-t border-line bg-white px-5 pb-5 pt-4">
-              {partyTotals.length > 0 && <div className="mb-4 space-y-2 border-b border-line pb-3">{partyTotals.map((payer, index) => <div key={payer.id} className="flex items-center justify-between gap-2 text-[10px]"><span className="flex min-w-0 items-center gap-2 text-muted"><span className={`rounded-full px-2 py-1 text-[9px] font-bold ${payer.id === "walk-ins" ? "bg-[#f4f3f1] text-[#726b67]" : index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]"}`}>{payer.label}</span><span className="truncate">{payer.name}</span></span><span className="shrink-0 font-bold text-ink">{money(payer.total)}</span></div>)}</div>}
+          <div className="shrink-0 border-t border-line bg-white px-4 pb-3 pt-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted">Subtotal</span>
-                <span className="text-sm font-bold">{money(total)}</span>
-              </div>
-              <div className="mt-3 flex items-center justify-between">
                 <span className="font-display text-sm font-bold">Total</span>
                 <span className="font-display text-lg font-extrabold">
                   {money(total)}
@@ -798,8 +836,8 @@ export function NewOrderPage() {
         </Panel>
       </div>
     </div>
-    {configuringItem && <div className="fixed inset-0 z-[9999] flex justify-end bg-ink/35 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemEditor(); }}>
-      <aside role="dialog" aria-modal="true" aria-label={`Customize ${configuringItem.name}`} className="flex h-full w-full max-w-[min(100vw,700px)] flex-col border-l border-line bg-white shadow-float">
+    {configuringItem && <div className="fixed inset-0 z-[9999] flex justify-end bg-black/40" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemEditor(); }}>
+      <aside role="dialog" aria-modal="true" aria-label={`Customize ${configuringItem.name}`} className="flex h-dvh max-h-dvh w-full min-h-0 max-w-full flex-col border-l border-line bg-white shadow-float sm:max-w-[700px]">
         <header className="flex shrink-0 items-center gap-4 border-b border-line px-5 py-4 sm:px-6">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#fff0f7] text-[#ed168c]"><Utensils size={19} /></span>
           <div className="min-w-0 flex-1"><h2 className="truncate font-display text-base font-bold">{configuringItem.name}</h2><p className="mt-0.5 line-clamp-1 text-xs text-muted">{configuringItem.description || "Choose options for this dish."} From {money(configuringItem.price)}.</p></div>
@@ -820,7 +858,7 @@ export function NewOrderPage() {
         </footer>
       </aside>
     </div>}
-    {settleOpen && selectedTable && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-ink/40 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettleOpen(false); }}><section role="dialog" aria-modal="true" aria-label={`Settle ${selectedTable.tableNumber}`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-float"><header className="flex items-start gap-4 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="font-display text-lg font-bold">Settle {selectedTable.tableNumber}</h2><p className="mt-1 text-[11px] text-muted">Each payer settles separately. Room guests can add their bill to the room tab or pay now; walk-ins pay now.</p></div><button type="button" onClick={() => setSettleOpen(false)} aria-label="Close settlement" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{orderPayerGroups.map((group, index) => { const method = settlementMethods[group.id] ?? (group.roomStayId ? "ROOM_CHECKOUT" : "CASH"); const paid = settledPayers.find((entry) => entry.id === group.id); const stay = activeStays.find((entry) => entry.id === group.roomStayId); return <article key={group.id} className="self-start rounded-xl border border-line bg-white p-3.5"><header className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${group.roomStayId ? index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]" : "bg-[#f4f3f1] text-[#726b67]"}`}>{group.label}</span><div className="min-w-0"><h3 className="truncate text-xs font-bold">{group.name}</h3><p className="text-[9px] text-muted">{group.orders.length} {group.orders.length === 1 ? "item" : "items"}{stay ? ` · Room ${stay.room.roomNumber}` : group.id === "walk-ins" ? ` · ${walkInPartyCount} people · pay now` : ""}</p></div></div><span className="shrink-0 text-xs font-bold">{money(group.total)}</span></header><div className="mt-3 space-y-1.5 border-b border-line pb-3">{group.orders.flatMap((order) => order.items.map((line) => <div key={`${order.id}-${line.id}`} className="flex justify-between gap-2 text-[9px] text-muted"><span>{line.quantity} × {line.menuItem.name}</span><span>{money(Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity))}</span></div>))}</div>{paid ? <div className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{paid.note}</div> : <><p className="mt-3 text-[9px] text-muted">{group.roomStayId ? "How are they paying?" : "Payment method"}</p>{group.roomStayId && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["ROOM_CHECKOUT", "Add to room tab"], ["CASH", "Pay now"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT")} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2.5 py-1.5 text-[9px] font-semibold ${(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT") ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}{(method !== "ROOM_CHECKOUT" || !group.roomStayId) && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["CASH", "Cash"], ["CARD", "Card"], ["PROMPTPAY", "PromptPay QR"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={method === value} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2 py-1.5 text-[9px] font-semibold ${method === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}<button type="button" disabled={placing} onClick={() => void settlePayer(group, method)} className="mt-2.5 h-9 w-full rounded-lg bg-[#ed168c] px-2 text-[10px] font-bold text-white disabled:opacity-50">{method === "ROOM_CHECKOUT" ? `Add ${money(group.total)} to room tab` : `Take ${money(group.total)} ${method === "PROMPTPAY" ? "PromptPay" : method.toLowerCase()}`}</button></>}</article>; })}{settledPayers.filter((entry) => !orderPayerGroups.some((group) => group.id === entry.id)).map((entry) => <article key={entry.id} className="self-start rounded-xl border border-emerald-200 bg-white p-3.5"><div className="flex justify-between text-xs font-bold"><span>{entry.label}</span><span>{money(entry.total)}</span></div><p className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{entry.note}</p></article>)}</div>{error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}</div><footer className="flex items-end justify-between gap-4 border-t border-line px-5 py-3"><div><p className="text-[10px] text-muted">Table total</p><p className="font-display text-base font-extrabold">{money(orderPayerGroups.reduce((sum, group) => sum + group.total, 0) + settledPayers.reduce((sum, payer) => sum + payer.total, 0))}</p></div><p className="text-right text-[9px] text-muted">The table clears once everyone has settled.</p></footer></section></div>}
+    {settleOpen && selectedTable && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-ink/40 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettleOpen(false); }}><section role="dialog" aria-modal="true" aria-label={`Settle ${selectedTable.tableNumber}`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-float"><header className="flex items-start gap-4 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="font-display text-lg font-bold">Settle {selectedTable.tableNumber}</h2><p className="mt-1 text-[11px] text-muted">Each payer settles separately. Room guests can add their bill to the room tab or pay now; walk-ins pay now.</p></div><button type="button" onClick={() => setSettleOpen(false)} aria-label="Close settlement" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{orderPayerGroups.map((group, index) => { const stay = activeStays.find((entry) => entry.id === group.roomStayId); const cashOnly = Boolean(stay?.cashOnly || selectedTable.assignedRoomStays?.find((entry) => entry.id === group.roomStayId)?.cashOnly); const chosen = settlementMethods[group.id] ?? (group.roomStayId && !cashOnly ? "ROOM_CHECKOUT" : "CASH"); const method = cashOnly && chosen === "ROOM_CHECKOUT" ? "CASH" : chosen; const paid = settledPayers.find((entry) => entry.id === group.id && group.orders.every((order) => entry.orderIds.includes(order.id) && (order.paymentStatus === "PAID" || order.paymentStatus === "ROOM_FOLIO"))); return <article key={group.id} className="self-start rounded-xl border border-line bg-white p-3.5"><header className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${group.roomStayId ? index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]" : "bg-[#f4f3f1] text-[#726b67]"}`}>{group.label}</span><div className="min-w-0"><h3 className="truncate text-xs font-bold">{group.name}</h3><p className="text-[9px] text-muted">#{group.id.slice(-6).toUpperCase()} · {group.orders[0]?.items.length ?? 0} {group.orders[0]?.items.length === 1 ? "item" : "items"}{stay ? ` · Room ${stay.room.roomNumber}` : !group.roomStayId ? ` · ${walkInPartyCount} people · pay now` : ""}</p></div></div><span className="shrink-0 text-xs font-bold">{money(group.total)}</span></header><div className="mt-3 space-y-1.5 border-b border-line pb-3">{group.orders.flatMap((order) => order.items.map((line) => <div key={`${order.id}-${line.id}`} className="flex justify-between gap-2 text-[9px] text-muted"><span>{line.quantity} × {line.menuItem.name}</span><span>{money(Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity))}</span></div>))}</div>{paid ? <div className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{paid.note}</div> : <><p className="mt-3 text-[9px] text-muted">{group.roomStayId && !cashOnly ? "How are they paying?" : "Payment method"}</p>{cashOnly && <p className="mt-1 text-[9px] font-semibold text-[#a64728]">Cash only. Pay now.</p>}{group.roomStayId && !cashOnly && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["ROOM_CHECKOUT", "Add to room tab"], ["CASH", "Pay now"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT")} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2.5 py-1.5 text-[9px] font-semibold ${(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT") ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}{(method !== "ROOM_CHECKOUT" || !group.roomStayId) && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["CASH", "Cash"], ["CARD", "Card"], ["PROMPTPAY", "PromptPay QR"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={method === value} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2 py-1.5 text-[9px] font-semibold ${method === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}<button type="button" disabled={placing} onClick={() => void settlePayer(group, method)} className="mt-2.5 h-9 w-full rounded-lg bg-[#ed168c] px-2 text-[10px] font-bold text-white disabled:opacity-50">{method === "ROOM_CHECKOUT" ? `Add ${money(group.total)} to room tab` : `Take ${money(group.total)} ${method === "PROMPTPAY" ? "PromptPay" : method.toLowerCase()}`}</button></>}</article>; })}{settledPayers.filter((entry) => !orderPayerGroups.some((group) => group.id === entry.id)).map((entry) => <article key={entry.id} className="self-start rounded-xl border border-emerald-200 bg-white p-3.5"><div className="flex justify-between text-xs font-bold"><span>{entry.label}</span><span>{money(entry.total)}</span></div><p className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{entry.note}</p></article>)}</div>{error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}</div><footer className="flex items-end justify-between gap-4 border-t border-line px-5 py-3"><div><p className="text-[10px] text-muted">Table total</p><p className="font-display text-base font-extrabold">{money(orderPayerGroups.reduce((sum, group) => sum + group.total, 0) + settledPayers.filter((payer) => !orderPayerGroups.some((group) => group.id === payer.id)).reduce((sum, payer) => sum + payer.total, 0))}</p></div><p className="text-right text-[9px] text-muted">The table clears once everyone has settled.</p></footer></section></div>}
     {signaturePayerId && signatureGroup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink/45 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setSignaturePayerId(null); }}><section role="dialog" aria-modal="true" aria-label={`Sign for ${signatureGroup.name}`} className="w-full max-w-lg rounded-2xl border border-line bg-white p-5 shadow-float"><header className="flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-bold">Sign for Room {activeStays.find((stay) => stay.id === signatureGroup.roomStayId)?.room.roomNumber}</h2><p className="mt-1 text-[11px] text-muted">{signatureName}, please sign to add {money(signatureGroup.total)} to the room’s tab. You’ll pay at checkout.</p></div><button type="button" onClick={() => setSignaturePayerId(null)} aria-label="Close signature" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="mt-4 flex justify-between rounded-lg border border-line px-3 py-2 text-[10px] text-muted"><span>{signatureGroup.orders.map((order) => `${order.items.reduce((sum, line) => sum + line.quantity, 0)} × ${order.items.map((line) => line.menuItem.name).join(", ")}`).join(" · ")} · {selectedTable?.tableNumber}</span><span className="font-semibold">{money(signatureGroup.total)}</span></div><label className="mt-4 block text-[10px] font-semibold text-muted">Guest signing<input value={signatureName} onChange={(event) => setSignatureName(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-line px-3 text-xs text-ink outline-none focus:border-[#ed168c]" /></label><canvas ref={signatureCanvasRef} width={900} height={220} onPointerDown={startSignature} onPointerMove={drawSignature} onPointerUp={() => setSignatureDrawing(false)} onPointerCancel={() => setSignatureDrawing(false)} className="mt-3 h-40 w-full touch-none rounded-lg border border-line bg-[#fffafb]" aria-label="Sign here" /><p className="mt-1 text-[9px] text-muted">Sign above</p><div className="mt-4 flex gap-2"><button type="button" onClick={() => { const canvas = signatureCanvasRef.current; canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height); setSignatureData(""); }} className="h-10 flex-1 rounded-lg border border-line text-xs font-bold">Clear</button><button type="button" disabled={placing || !signatureName.trim() || !signatureData} onClick={() => void saveSignature()} className="h-10 flex-1 rounded-lg bg-[#ed168c] text-xs font-bold text-white disabled:opacity-40">{placing ? "Saving…" : "Confirm and add to tab"}</button></div></section></div>}
     {receipt && <ReceiptPreview receipt={receipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setReceipt(null)} />}
     {plusJumps.map((jump) => <PlusJumpBadge key={jump.id} jump={jump} onDone={clearPlusJump} />)}

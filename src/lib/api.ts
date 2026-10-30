@@ -29,11 +29,17 @@ export function errorMessage(
   fallback = "Something went wrong. Please try again.",
 ) {
   if (axios.isAxiosError(error)) {
-    const message = error.response?.data?.message;
-    if (Array.isArray(message)) return message.join(", ");
-    if (typeof message === "string") return message;
+    const data = error.response?.data;
+    const message = data && typeof data === "object" ? (data as { message?: unknown }).message : undefined;
+    if (Array.isArray(message)) {
+      const text = message.filter((item) => typeof item === "string").join(", ");
+      if (text) return text;
+    }
+    if (typeof message === "string" && message.trim()) return message;
+    if (typeof data === "string" && data.trim() && !data.trim().startsWith("<")) return data.trim();
     if (!error.response)
       return "Could not reach the restaurant server. Check your connection and API URL.";
   }
+  if (error instanceof Error && error.message.trim()) return error.message;
   return fallback;
 }

@@ -9,6 +9,7 @@ type LocalStay = {
   endDate: string;
   arriveTime: string;
   leaveTime: string;
+  leaveDate: string;
   adults: string;
   guestNotes: string | null;
   checkedOut: boolean;
@@ -46,11 +47,33 @@ function formatDay(value: string, withYear = false) {
 function roomLabel(roomNumber: string) {
   return /^\d+$/.test(roomNumber) ? `Room ${roomNumber}` : roomNumber;
 }
-function stayCaption(stay: LocalStay, showArrive: boolean, showLeave: boolean) {
+function clockSeconds(value: string) {
+  const [hours = "00", minutes = "00", seconds = "00"] = value.split(":");
+  return `${hours.padStart(2, "0")}:${minutes.padStart(2, "0")}:${seconds.padStart(2, "0")}`;
+}
+function isDeparting(stay: LocalStay, today: string) {
+  return !stay.checkedOut && stay.leaveDate === today;
+}
+function relativeWhen(label: "Arrives" | "Leaves", day: string, time: string, today: string, now: Date) {
+  if (!day || !time) return "";
+  const [year, month, date] = day.split("-").map(Number);
+  const [hours, minutes, seconds] = clockSeconds(time).split(":").map(Number);
+  const when = new Date(year, month - 1, date, hours, minutes, seconds);
+  const remaining = when.getTime() - now.getTime();
+  if (remaining <= 0) return "";
+  const totalHours = Math.max(1, Math.ceil(remaining / 3600000));
+  const days = Math.floor(totalHours / 24);
+  const hourCount = totalHours % 24;
+  const hoursText = (count: number) => `${count} hour${count === 1 ? "" : "s"}`;
+  if (day === today || days === 0) return `${label} ${hoursText(day === today ? totalHours : hourCount || totalHours)}`;
+  const daysText = `${days} day${days === 1 ? "" : "s"}`;
+  return hourCount ? `${label} ${daysText} ${hoursText(hourCount)}` : `${label} ${daysText}`;
+}
+function stayCaption(stay: LocalStay, showArrive: boolean, showLeave: boolean, today: string, now: Date) {
   const guests = Number(stay.adults || 0);
   const parts = [
-    showArrive && stay.arriveTime ? `Arrives ${stay.arriveTime}` : "",
-    showLeave && stay.leaveTime ? `Leaves ${stay.leaveTime}` : "",
+    showArrive ? relativeWhen("Arrives", stay.startDate, stay.arriveTime, today, now) : "",
+    showLeave ? relativeWhen("Leaves", stay.leaveDate, stay.leaveTime, today, now) : "",
     `${guests} guest${guests === 1 ? "" : "s"}`,
   ].filter(Boolean);
   return parts.join(" · ");
@@ -64,12 +87,13 @@ function takenOn(room: LocalRoom, day: string) {
 }
 function barTone(stay: LocalStay, today: string) {
   if (stay.checkedOut) return "border-[#e6e1e4] bg-[#f6f4f5] text-[#8a8388]";
+  if (isDeparting(stay, today)) return "border-[#f3c56b] bg-[#fff8e6] text-[#8a5a00]";
   if (stay.startDate > today) return "border-[#f6c4de] bg-[#ffe8f4] text-[#b30d6e]";
   if (stay.startDate === today) return "border-[#f6c4de] bg-[#ffe8f4] text-[#b30d6e]";
   return "border-[#b9ddf5] bg-[#e7f4fc] text-[#1d6794]";
 }
 
-export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToken?: number; onVacant: (roomId: string) => void; onStay: (roomId: string, stayId: string) => void }) {
+export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToken?: number; onVacant: (roomId: string, date: string) => void; onStay: (roomId: string, stayId: string) => void }) {
   const [span, setSpan] = useState<(typeof SPANS)[number][0]>(14);
   const [anchor, setAnchor] = useState(() => isoDate(new Date()));
   const [calendar, setCalendar] = useState<CalendarResponse | null>(null);
@@ -78,7 +102,8 @@ export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToke
   const from = anchor;
   const to = isoDate(addDays(parseDate(anchor), span));
   const days = useMemo(() => Array.from({ length: span }, (_, index) => addDays(parseDate(from), index)), [from, span]);
-  const today = isoDate(new Date());
+  const [now, setNow] = useState(() => new Date());
+  const today = isoDate(now);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,6 +121,11 @@ export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToke
     })();
     return () => { cancelled = true; };
   }, [from, to, reloadToken]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const rooms = calendar?.rooms ?? [];
 
@@ -139,23 +169,24 @@ export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToke
             </div>;
           })}
         </div>
-        {rooms.map((room) => <RoomRow key={room.id} room={room} from={from} span={span} today={today} onVacant={onVacant} onStay={onStay} />)}
+        {rooms.map((room) => <RoomRow key={room.id} room={room} from={from} span={span} today={today} now={now} onVacant={onVacant} onStay={onStay} />)}
         {!rooms.length && !loading && <p className="px-4 py-10 text-center text-sm text-muted">No rooms yet.</p>}
       </div>
     </div>}
     <footer className="flex flex-wrap gap-4 border-t border-[#f6e8ee] px-4 py-2.5 text-[10px] font-semibold text-muted">
       <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#ffe8f4] ring-1 ring-[#f6c4de]" /> Arriving</span>
       <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#e7f4fc] ring-1 ring-[#b9ddf5]" /> In house</span>
+      <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#fff8e6] ring-1 ring-[#f3c56b]" /> Departing</span>
       <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#fff1e6] ring-1 ring-[#f6d2b4]" /> Under maintenance</span>
       <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-2.5 rounded-sm bg-[#f6f4f5] ring-1 ring-[#e6e1e4]" /> Checked out</span>
     </footer>
   </section>;
 }
 
-function RoomRow({ room, from, span, today, onVacant, onStay }: { room: LocalRoom; from: string; span: number; today: string; onVacant: (roomId: string) => void; onStay: (roomId: string, stayId: string) => void }) {
+function RoomRow({ room, from, span, today, now, onVacant, onStay }: { room: LocalRoom; from: string; span: number; today: string; now: Date; onVacant: (roomId: string, date: string) => void; onStay: (roomId: string, stayId: string) => void }) {
   const openStay = room.stays.find((stay) => !stay.checkedOut);
   const openRoom = () => {
-    if (room.status === "AVAILABLE") onVacant(room.id);
+    if (room.status === "AVAILABLE") onVacant(room.id, today);
     else if (openStay) onStay(room.id, openStay.id);
   };
   return <div className="relative flex border-b border-[#f7eef2]" style={{ height: 58 }}>
@@ -165,17 +196,20 @@ function RoomRow({ room, from, span, today, onVacant, onStay }: { room: LocalRoo
         const key = isoDate(addDays(parseDate(from), index));
         return <span key={key} className={`absolute inset-y-0 border-r border-[#f8eef3] ${key === today ? "bg-[#fff7fb]" : ""}`} style={{ left: index * DAY, width: DAY }} />;
       })}
-      {room.status === "AVAILABLE" && <button type="button" aria-label={`Check in ${roomLabel(room.roomNumber)}`} onClick={() => onVacant(room.id)} className="absolute inset-0 z-[1]" />}
-      {room.status === "OCCUPIED" && openStay && <button type="button" aria-label={`Open ${roomLabel(room.roomNumber)}`} onClick={() => onStay(room.id, openStay.id)} className="absolute inset-0 z-[1]" />}
+      {room.status === "AVAILABLE" && Array.from({ length: span }, (_, index) => {
+        const key = isoDate(addDays(parseDate(from), index));
+        return <button key={key} type="button" aria-label={`Check in ${roomLabel(room.roomNumber)} on ${key}`} onClick={() => onVacant(room.id, key)} className="absolute inset-y-0 z-[1]" style={{ left: index * DAY, width: DAY }} />;
+      })}
       {(room.status === "MAINTENANCE" || room.status === "ARCHIVED") && <div className={`absolute top-[8px] h-10 overflow-hidden rounded-md border px-2 leading-tight ${room.status === "MAINTENANCE" ? "border-[#f6d2b4] bg-[#fff1e6] text-[#a85b1c]" : "border-[#e6e1e4] bg-[#f6f4f5] text-[#8a8388]"}`} style={{ left: 3, width: span * DAY - 6 }}>
         <span className="block truncate text-[11px] font-extrabold">{room.status === "MAINTENANCE" ? "Under maintenance" : "Archived"}</span>
         <span className="block truncate text-[9px] font-semibold opacity-80">{roomLabel(room.roomNumber)}</span>
       </div>}
       {room.status !== "MAINTENANCE" && room.status !== "ARCHIVED" && room.stays.map((stay) => {
         const start = Math.max(0, dayIndex(stay.startDate, from));
-        const end = Math.min(span, dayIndex(stay.endDate, from));
+        const leaveDay = stay.leaveDate || stay.endDate;
+        const end = Math.min(span, dayIndex(leaveDay, from) + (stay.leaveDate ? 1 : 0));
         if (end <= start) return null;
-        const caption = stayCaption(stay, dayIndex(stay.startDate, from) >= 0, dayIndex(stay.endDate, from) <= span);
+        const caption = stayCaption(stay, dayIndex(stay.startDate, from) >= 0, dayIndex(leaveDay, from) < span, today, now);
         return <button key={stay.id} type="button" onClick={() => onStay(room.id, stay.id)} className={`absolute top-[8px] z-[2] h-10 overflow-hidden rounded-md border px-2 text-left leading-tight ${barTone(stay, today)}`} style={{ left: start * DAY + 3, width: (end - start) * DAY - 6 }}>
           <span className="block truncate text-[11px] font-extrabold">{stay.guestName}</span>
           <span className="block truncate text-[9px] font-semibold opacity-80">{caption}</span>

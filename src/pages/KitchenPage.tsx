@@ -31,6 +31,7 @@ export function KitchenPage({ station }: { station: PrepStation }) {
   }, []);
   const queues = useMemo<Record<PrepStation, QueueEntry[]>>(() => {
     const entries = (target: PrepStation) => orders.flatMap<QueueEntry>((order) => {
+      if (order.status === "COMPLETED" || order.status === "CANCELLED") return [];
       const stationTickets = (order.prepTickets ?? []).filter((ticket) => ticket.station === target && ["PENDING", "PREPARING"].includes(ticket.status));
       if (stationTickets.length) return stationTickets.map((ticket) => ({ order, ticket }));
       if (target === "KITCHEN" && !order.prepTickets?.length && ["PENDING", "PREPARING"].includes(order.status)) return [{ order, ticket: null }];
@@ -78,6 +79,7 @@ export function KitchenPage({ station }: { station: PrepStation }) {
       const ticketItems = ticket?.items ?? order.items.map((item) => ({ menuItemName: item.menuItem.name, quantity: item.quantity, modifierSelections: item.modifierSelections ?? [], removeIngredients: item.removeIngredients, addExtras: item.addExtras, specialNotes: item.specialNotes, selectedAllergens: item.selectedAllergens }));
       const ticketKey = ticket?.id ?? order.id;
       if (targetStation === "KITCHEN") return <Panel key={ticketKey} className="overflow-hidden">
+        <button type="button" disabled={busy === ticketKey} onClick={() => void pickup(order.id, ticket?.id ?? null)} className="block w-full text-left disabled:opacity-60">
         <div className={`h-1.5 ${status === "PENDING" ? "bg-amber-400" : "bg-sky-400"}`} />
         <div className="p-3.5">
           <div className="flex items-start justify-between gap-2">
@@ -105,10 +107,11 @@ export function KitchenPage({ station }: { station: PrepStation }) {
             <p className="text-xs font-bold">{orderLocation(order)}</p>
           </div>
           <div className="mb-2.5 flex items-center justify-between text-[10px] text-muted"><span className="truncate">Placed by {order.waiter?.name}</span><span className="shrink-0">{new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(order.createdAt))}</span></div>
-          <button disabled={busy === ticketKey} onClick={() => void pickup(order.id, ticket?.id ?? null)} className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-ink text-[11px] font-bold text-white transition hover:bg-[#353c34] disabled:opacity-50">
+          <span className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-ink text-[11px] font-bold text-white">
             {busy === ticketKey ? "Saving…" : "Pickup"}<ArrowRight size={15} />
-          </button>
+          </span>
         </div>
+        </button>
       </Panel>;
       return <Panel key={ticketKey} className="overflow-hidden">
         <div className={`h-1.5 ${status === "PENDING" ? "bg-amber-400" : "bg-sky-400"}`} />

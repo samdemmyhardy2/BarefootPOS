@@ -18,6 +18,21 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Temporary Android console. Remove when the plus-icon crash is fixed. -->
+    <script>
+      if (/Android/i.test(navigator.userAgent)) {
+        const saved = [];
+        window.addEventListener("error", (event) => { saved.push(event.message); });
+        window.addEventListener("unhandledrejection", (event) => { saved.push(String(event.reason)); });
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/eruda";
+        script.onload = () => {
+          window.eruda.init();
+          saved.forEach((entry) => console.error(entry));
+        };
+        document.head.appendChild(script);
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

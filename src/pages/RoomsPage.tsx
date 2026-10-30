@@ -7,7 +7,6 @@ import { postOnce, SavedLocallyError } from "../lib/outbox";
 import { money, type Room, type RoomChargeKind, type RoomPaymentMethod, type RoomStay } from "../lib/types";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
-import { translate } from "../lib/translations";
 import { hasJobPermission } from "../lib/access";
 import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
 import { RoomCalendar } from "../components/RoomCalendar";
@@ -57,7 +56,10 @@ export function RoomsPage() {
   const [roomNumber, setRoomNumber] = useState("");
   const [guestName, setGuestName] = useState("");
   const [occupants, setOccupants] = useState("");
+  const [arrivalDate, setArrivalDate] = useState("");
+  const [arrivalTime, setArrivalTime] = useState("");
   const [expectedCheckoutAt, setExpectedCheckoutAt] = useState("");
+  const [leaveTime, setLeaveTime] = useState("");
   const [guestNotes, setGuestNotes] = useState("");
   const [cashOnly, setCashOnly] = useState(false);
   const [chargeLimit, setChargeLimit] = useState("");
@@ -79,8 +81,6 @@ export function RoomsPage() {
   const canManageStays = hasJobPermission(currentUser, "ROOM_MANAGE");
   const canManageFolios = hasJobPermission(currentUser, "ROOM_FOLIO");
   const notify = useUiStore((state) => state.notify);
-  const language = useUiStore((state) => state.language);
-  const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
   const restaurantName = useUiStore((state) => state.restaurantName);
   const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
 
@@ -146,7 +146,7 @@ export function RoomsPage() {
     event.preventDefault(); if (!selectedRoom) return; setBusy(true); setError("");
     try {
       const names = occupants.split(/[\n,]/).map((value) => value.trim()).filter(Boolean);
-      await postOnce({ scope: "room.check-in", url: `/rooms/${selectedRoom.id}/check-in`, body: { primaryGuestName: guestName, occupants: [guestName, ...names], expectedCheckoutAt: expectedCheckoutAt ? new Date(`${expectedCheckoutAt}T12:00:00`).toISOString() : undefined, guestNotes, cashOnly, chargeLimit: chargeLimit === "" ? null : Number(chargeLimit) }, label: `Check-in ${guestName.trim() || "guest"} · Room ${selectedRoom.roomNumber}`, dedupeKey: `check-in:${selectedRoom.id}:${guestName.trim()}` });
+      await postOnce({ scope: "room.check-in", url: `/rooms/${selectedRoom.id}/check-in`, body: { primaryGuestName: guestName, occupants: [guestName, ...names], ...(arrivalDate ? { checkedInAt: atLocal(arrivalDate, arrivalTime).toISOString() } : {}), expectedCheckoutAt: expectedCheckoutAt ? atLocal(expectedCheckoutAt, leaveTime).toISOString() : undefined, guestNotes, cashOnly, chargeLimit: chargeLimit === "" ? null : Number(chargeLimit) }, label: `Check-in ${guestName.trim() || "guest"} · Room ${selectedRoom.roomNumber}`, dedupeKey: `check-in:${selectedRoom.id}:${guestName.trim()}` });
       setModal(null); setGuestName(""); setOccupants(""); setGuestNotes(""); setFocusedRoomId(selectedRoom.id); notify(`Guest checked into room ${selectedRoom.roomNumber}.`); await load();
     } catch (e) {
       if (e instanceof SavedLocallyError) { setModal(null); notify("Check-in saved on this device. It will send when the connection returns."); }
@@ -164,7 +164,8 @@ export function RoomsPage() {
       await api.patch<RoomStay>(`/rooms/stays/${stay.id}`, {
         primaryGuestName: guestName,
         occupants: [guestName, ...names],
-        expectedCheckoutAt: expectedCheckoutAt ? new Date(`${expectedCheckoutAt}T12:00:00`).toISOString() : null,
+        ...(arrivalDate ? { checkedInAt: atLocal(arrivalDate, arrivalTime).toISOString() } : {}),
+        expectedCheckoutAt: expectedCheckoutAt ? atLocal(expectedCheckoutAt, leaveTime).toISOString() : null,
         guestNotes,
         cashOnly,
         chargeLimit: chargeLimit === "" ? null : Number(chargeLimit),
@@ -175,21 +176,30 @@ export function RoomsPage() {
   };
   const openCheckIn = (room: Room) => {
     setSelectedRoom(room); setGuestName(""); setOccupants(""); setGuestNotes(""); setCashOnly(false); setChargeLimit("");
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1); setExpectedCheckoutAt(tomorrow.toISOString().slice(0, 10));
+    const now = new Date();
+    const start = localDay(now);
+    setArrivalDate(start); setArrivalTime(localTime(now));
+    setExpectedCheckoutAt(nextDay(start)); setLeaveTime(localTime(now));
     setError(""); setModal("checkin");
   };
-  const openArrival = (room: Room) => {
+  const openArrival = (room: Room, date?: string) => {
     setSelectedRoom(room); setGuestName(""); setOccupants(""); setGuestNotes(""); setCashOnly(false); setChargeLimit("");
-    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-    const pad = (value: number) => String(value).padStart(2, "0");
-    setExpectedCheckoutAt(`${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}`);
+    const now = new Date();
+    const start = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : localDay(now);
+    const time = localTime(now);
+    setArrivalDate(start); setArrivalTime(time);
+    setExpectedCheckoutAt(nextDay(start)); setLeaveTime(time);
     setError(""); setModal("arrival");
   };
   const openEditStay = (room: Room) => {
     const stay = room.stays?.[0]; if (!stay) return;
     setSelectedRoom(room); setGuestName(stay.primaryGuestName);
     setOccupants(stay.occupants.filter((person) => person.name !== stay.primaryGuestName).map((person) => person.name).join("\n"));
-    setExpectedCheckoutAt(stay.expectedCheckoutAt?.slice(0, 10) ?? ""); setGuestNotes(stay.guestNotes ?? ""); setCashOnly(stay.cashOnly ?? false); setChargeLimit(stay.chargeLimit == null ? "" : String(stay.chargeLimit));
+    const arrived = new Date(stay.checkedInAt);
+    const leaving = stay.expectedCheckoutAt ? new Date(stay.expectedCheckoutAt) : null;
+    setArrivalDate(localDay(arrived)); setArrivalTime(localTime(arrived));
+    setExpectedCheckoutAt(leaving ? localDay(leaving) : ""); setLeaveTime(leaving ? localTime(leaving) : localTime(new Date()));
+    setGuestNotes(stay.guestNotes ?? ""); setCashOnly(stay.cashOnly ?? false); setChargeLimit(stay.chargeLimit == null ? "" : String(stay.chargeLimit));
     setError(""); setModal("editStay");
   };
   const addCharge = async (event: FormEvent) => {
@@ -383,8 +393,8 @@ export function RoomsPage() {
     <div className="page-enter min-h-full w-full">
       <div className="mb-5 flex items-center justify-between gap-4"><div><p className="mb-1 text-[9px] font-bold uppercase tracking-[.2em] text-[#ec1593]">Front desk · Guest stays</p><h1 className="font-display text-2xl font-extrabold tracking-tight text-ink">Rooms</h1><p className="mt-1 text-[11px] text-muted">Who’s staying, what’s on their tab, and who arrives or leaves today.</p></div><div className="flex shrink-0 items-center gap-2">{isAdmin && <button type="button" onClick={() => setEditMode((value) => !value)} title={editMode ? "Done editing rooms" : "Edit rooms"} className={`grid h-9 w-9 place-items-center rounded-xl border ${editMode ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-line bg-white text-muted hover:text-ink"}`}><Pencil size={14} /></button>}{canManageStays && <button type="button" disabled={!rooms.some((room) => room.status === "AVAILABLE")} onClick={() => { const available = rooms.find((room) => room.status === "AVAILABLE"); if (available) openCheckIn(available); }} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#f01898] px-3.5 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"><Plus size={13} /> Check in</button>}</div></div>
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
-      <div className="mb-4 inline-flex rounded-lg bg-[#fff4f9] p-0.5">{(["calendar", "folios"] as const).map((view) => <button key={view} type="button" onClick={() => setDeskView(view)} className={`h-8 rounded-md px-3 text-[11px] font-bold ${deskView === view ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{view === "calendar" ? "Calendar" : "Folios"}</button>)}</div>
-      {deskView === "calendar" && <RoomCalendar reloadToken={calendarToken} onVacant={(roomId) => { const room = rooms.find((item) => item.id === roomId); if (canManageStays && room?.status === "AVAILABLE") openArrival(room); }} onStay={(roomId, stayId) => { const room = rooms.find((item) => item.id === roomId); if (!room) return; preferredStayRef.current = stayId; if (focusedRoomId === roomId) void openTimeline(stayId); else focusRoom(room); }} />}
+      <div className="mb-4 inline-flex rounded-lg bg-[#fff4f9] p-0.5">{(["calendar", "folios"] as const).map((view) => <button key={view} type="button" onClick={() => setDeskView(view)} className={`h-8 rounded-md px-3 text-[11px] font-bold ${deskView === view ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{view === "calendar" ? "Calendar" : "Room"}</button>)}</div>
+      {deskView === "calendar" && <RoomCalendar reloadToken={calendarToken} onVacant={(roomId, date) => { const room = rooms.find((item) => item.id === roomId); if (canManageStays && room?.status === "AVAILABLE") openArrival(room, date); }} onStay={(roomId, stayId) => { const room = rooms.find((item) => item.id === roomId); if (!room) return; preferredStayRef.current = stayId; if (focusedRoomId === roomId) void openTimeline(stayId); else focusRoom(room); }} />}
       {deskView === "folios" && <>
       <div className="mb-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
         <Panel className="flex items-center gap-2.5 rounded-2xl p-3"><BedDouble size={16} className="text-[#ec1593]" /><div><p className="text-sm font-extrabold leading-none">{rooms.length}</p><p className="mt-1 text-[9px] text-muted">Total rooms</p></div></Panel>
@@ -395,14 +405,13 @@ export function RoomsPage() {
       <div className="mb-3 flex flex-wrap items-center gap-2"><div className="flex flex-1 flex-wrap gap-1.5">{(["ALL", "OCCUPIED", "ARRIVING", "DEPARTING", "VACANT"] as const).map((filter) => { const count = filter === "ALL" ? rooms.length : filter === "OCCUPIED" ? activeRooms : filter === "ARRIVING" ? arrivingRooms : filter === "DEPARTING" ? departingRooms : vacantRooms; const label = filter === "ALL" ? "All" : filter === "OCCUPIED" ? "Occupied" : filter === "ARRIVING" ? "Arriving" : filter === "DEPARTING" ? "Departing" : "Vacant"; return <button key={filter} type="button" onClick={() => setRoomFilter(filter)} className={`rounded-lg px-2.5 py-1.5 text-[9px] font-bold transition ${roomFilter === filter ? "bg-[#f01898] text-white" : "bg-white text-muted hover:bg-pink-50 hover:text-[#bf0c73]"}`}>{label}{filter !== "ALL" && <span className="ml-1 opacity-70">{count}</span>}</button>; })}</div><label className="flex h-8 w-full items-center gap-2 rounded-lg border border-line bg-white px-2.5 text-muted sm:w-48"><Search size={12} /><input value={roomSearch} onChange={(event) => setRoomSearch(event.target.value)} placeholder="Search room or surname" className="w-full bg-transparent text-[10px] text-ink outline-none placeholder:text-muted" /></label></div>
       {loading ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 8 }, (_, i) => <div key={i} className="aspect-[262/178] min-h-[178px] animate-pulse rounded-2xl bg-white" />)}</div> : rooms.length ? visibleRooms.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{visibleRooms.map((room) => {
         const stay = room.stays?.[0];
-        const badge = room.status === "OCCUPIED" ? t("occupied") : room.status === "AVAILABLE" ? "Vacant" : room.status === "MAINTENANCE" ? t("maintenance") : t("archived");
-        const badgeStyle = room.status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : room.status === "AVAILABLE" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800";
+        const badge = roomBadge(room);
         const tabTotal = Number(stay?.folioTotal ?? (stay?.charges ?? []).reduce((sum, charge) => sum + Number(charge.amount), 0));
-        const stripeColor = room.status === "AVAILABLE" ? "#19bf8f" : room.status === "MAINTENANCE" ? "#ffb11b" : room.status === "ARCHIVED" ? "#b8b2b6" : "#ff6685";
+        const stripeColor = badge.label === "Vacant" ? "#19bf8f" : badge.label === "Under maintenance" ? "#ffb11b" : badge.label === "Archived" ? "#b8b2b6" : badge.label === "Arriving" ? "#f6c4de" : badge.label === "Departing" ? "#f3c56b" : "#ff6685";
         return <Panel key={room.id} className="flex aspect-[262/178] min-h-[178px] flex-col overflow-hidden rounded-[15px] border border-[#f1dfe7] bg-white shadow-[0_3px_12px_rgba(63,29,46,0.035)] transition-shadow hover:shadow-card">
           <div className="h-1.5 w-full" style={{ backgroundColor: stripeColor }} />
           <button type="button" onClick={() => focusRoom(room)} className="flex min-h-0 w-full flex-1 flex-col px-5 pb-4 pt-4 text-left">
-            <div className="flex items-center justify-between gap-2"><h3 className="font-display text-lg font-extrabold leading-6">{roomLabel(room.roomNumber)}</h3><span className={`rounded-full px-2.5 py-1.5 text-[9px] font-bold leading-none ${badgeStyle}`}>{badge}</span></div>
+            <div className="flex items-center justify-between gap-2"><h3 className="font-display text-lg font-extrabold leading-6">{roomLabel(room.roomNumber)}</h3><span className={`rounded-full px-2.5 py-1.5 text-[9px] font-bold leading-none ${badge.className}`}>{badge.label}</span></div>
             <div className="mt-3 rounded-lg bg-[#fff7fa] px-4 py-3">{stay ? <><p className="truncate text-sm font-semibold leading-5 text-ink">{[...new Set([stay.primaryGuestName, ...stay.occupants.map((person) => person.name)])].join(" and ")}</p><p className="mt-0.5 text-[10px] leading-4 text-muted">{stay.occupants.length} guest{stay.occupants.length === 1 ? "" : "s"} · {stayDateRange(stay.checkedInAt, stay.expectedCheckoutAt)}</p></> : <><p className="text-[11px] leading-4 text-muted">No one checked in</p><p className="mt-0.5 text-[10px] leading-4 text-muted">Ready for the next guest</p></>}</div>
             <div className="mt-auto flex items-center gap-2 pt-2 text-xs"><span className="text-muted">Tab</span><strong className="text-sm text-ink">{stay ? money(tabTotal) : "—"}</strong></div>
           </button>
@@ -412,7 +421,7 @@ export function RoomsPage() {
       })}{isAdmin && <button type="button" onClick={() => openRoom()} className="flex aspect-[262/178] min-h-[178px] flex-col items-center justify-center rounded-[15px] border border-dashed border-[#f3c6db] bg-white/70 text-center transition hover:border-[#f01898] hover:bg-white"><span className="grid h-10 w-10 place-items-center rounded-full bg-[#ffe4f2] text-[#f01898]"><Plus size={18} /></span><span className="mt-3 text-sm font-bold text-ink">Add room</span><span className="mt-1 text-[11px] text-muted">Set up a new room</span></button>}</div> : <Panel className="p-10 text-center"><p className="text-sm font-semibold">No rooms match this view.</p><p className="mt-1 text-xs text-muted">Change the filter or search term to see other rooms.</p></Panel> : isAdmin ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"><button type="button" onClick={() => openRoom()} className="flex aspect-[262/178] min-h-[178px] flex-col items-center justify-center rounded-[15px] border border-dashed border-[#f3c6db] bg-white/70 text-center transition hover:border-[#f01898] hover:bg-white"><span className="grid h-10 w-10 place-items-center rounded-full bg-[#ffe4f2] text-[#f01898]"><Plus size={18} /></span><span className="mt-3 text-sm font-bold text-ink">Add room</span><span className="mt-1 text-[11px] text-muted">Set up a new room</span></button></div> : <Panel className="p-12 text-center"><BedDouble className="mx-auto text-muted" /><p className="mt-3 font-semibold">No rooms configured</p><p className="mt-1 text-sm text-muted">Add a room to begin managing guest stays and folios.</p></Panel>}
 
       </>}
-      {focusedRoom && createPortal(<div className="fixed inset-0 z-40 flex h-[100dvh] w-screen justify-end bg-[#291923]/35 backdrop-blur-[1px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setFocusedRoomId(null); }}><aside className="flex h-full w-full flex-col overflow-hidden border-l border-line bg-white shadow-float md:w-[min(70vw,960px)] lg:w-[min(60vw,1040px)]"><div className="flex items-center justify-between border-b border-[#f4e6ed] px-6 py-4"><div><div className="flex items-center gap-2"><h2 className="font-display text-2xl font-extrabold">{roomLabel(focusedRoom.roomNumber)}</h2><span className={`rounded-full px-2 py-1 text-xs font-bold ${focusedRoom.status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}>{focusedRoom.status === "OCCUPIED" ? "Occupied" : "Vacant"}</span></div></div><button type="button" onClick={() => setFocusedRoomId(null)} aria-label="Close room details" className="grid h-10 w-10 place-items-center rounded-full text-muted hover:bg-canvas"><X size={20} /></button></div>
+      {focusedRoom && createPortal(<div className="fixed inset-0 z-40 flex h-[100dvh] w-screen justify-end bg-[#291923]/35 backdrop-blur-[1px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setFocusedRoomId(null); }}><aside className="flex h-full w-full flex-col overflow-hidden border-l border-line bg-white shadow-float md:w-[min(70vw,960px)] lg:w-[min(60vw,1040px)]"><div className="flex items-center justify-between border-b border-[#f4e6ed] px-6 py-4"><div><div className="flex items-center gap-2"><h2 className="font-display text-2xl font-extrabold">{roomLabel(focusedRoom.roomNumber)}</h2><span className={`rounded-full px-2 py-1 text-xs font-bold ${roomBadge(focusedRoom).className}`}>{roomBadge(focusedRoom).label}</span></div></div><button type="button" onClick={() => setFocusedRoomId(null)} aria-label="Close room details" className="grid h-10 w-10 place-items-center rounded-full text-muted hover:bg-canvas"><X size={20} /></button></div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <section className="mb-4 rounded-xl border border-[#f2e6ec] p-3.5">
             <div className="mb-2 flex items-center justify-between gap-3">
@@ -463,15 +472,15 @@ export function RoomsPage() {
         </div>
       </form></Modal>}
 
-      {modal === "arrival" && selectedRoom && <ArrivalCard room={selectedRoom} guestName={guestName} occupants={occupants} leaves={expectedCheckoutAt} notes={guestNotes} busy={busy} error={error} onGuestName={setGuestName} onOccupants={setOccupants} onLeaves={setExpectedCheckoutAt} onNotes={setGuestNotes} onClose={() => setModal(null)} onSubmit={(event) => void checkIn(event)} />}
+      {modal === "arrival" && selectedRoom && <ArrivalCard room={selectedRoom} guestName={guestName} occupants={occupants} arrives={arrivalDate} arrivesAt={arrivalTime} leaves={expectedCheckoutAt} leavesAt={leaveTime} notes={guestNotes} busy={busy} error={error} onGuestName={setGuestName} onOccupants={setOccupants} onArrives={(value) => { setArrivalDate(value); setExpectedCheckoutAt((current) => !current || current <= value ? nextDay(value) : current); }} onArrivesAt={setArrivalTime} onLeaves={setExpectedCheckoutAt} onLeavesAt={setLeaveTime} onNotes={setGuestNotes} onClose={() => setModal(null)} onSubmit={(event) => void checkIn(event)} />}
       {(modal === "checkin" || modal === "editStay") && <Modal title={modal === "checkin" ? "Check in" : `Edit stay · Room ${selectedRoom?.roomNumber}`} onClose={() => setModal(null)}><form onSubmit={(event) => void (modal === "checkin" ? checkIn(event) : editStay(event))} className="space-y-3.5">
         {modal === "checkin" && <SelectField label="Room" value={selectedRoom?.id ?? ""} onChange={(event) => setSelectedRoom(rooms.find((room) => room.id === event.target.value) ?? null)}>{rooms.filter((room) => room.status === "AVAILABLE").map((room) => <option key={room.id} value={room.id}>{roomLabel(room.roomNumber)}</option>)}</SelectField>}
         <Field label="Guest name" required value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Primary guest" />
         <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">Additional guests</span><textarea value={occupants} onChange={(event) => setOccupants(event.target.value)} rows={2} placeholder="One name per line" className="w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm outline-none focus:border-[#f01898]" /></label>
-        <div className="grid grid-cols-2 gap-3"><Field label="Arrives" type="date" value={modal === "editStay" && selectedRoom?.stays[0] ? selectedRoom.stays[0].checkedInAt.slice(0, 10) : new Date().toISOString().slice(0, 10)} disabled /><Field label="Leaves" type="date" value={expectedCheckoutAt} onChange={(event) => setExpectedCheckoutAt(event.target.value)} /></div>
+        <div className="grid grid-cols-2 gap-3"><Field label="Arrives" type="date" value={arrivalDate} onChange={(event) => setArrivalDate(event.target.value)} /><Field label="Arrives at" type="time" required value={arrivalTime} onChange={(event) => setArrivalTime(event.target.value)} /><Field label="Leaves" type="date" min={arrivalDate || undefined} value={expectedCheckoutAt} onChange={(event) => setExpectedCheckoutAt(event.target.value)} /><Field label="Leaves at" type="time" required value={leaveTime} onChange={(event) => setLeaveTime(event.target.value)} /></div>
         <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">Notes for staff (allergies, dietary, VIP)</span><textarea value={guestNotes} onChange={(event) => setGuestNotes(event.target.value)} rows={2} placeholder="e.g. Peanut allergy, vegetarian" className="w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm outline-none focus:border-[#f01898]" /></label>
         <div className="grid grid-cols-[1fr_1fr] gap-3 rounded-xl border border-line p-3"><label className="flex cursor-pointer items-center gap-2 text-xs font-semibold"><input type="checkbox" checked={cashOnly} onChange={(event) => setCashOnly(event.target.checked)} className="accent-[#f01898]" /> Cash only</label><Field label="Charge limit" type="number" min="0" step="0.01" placeholder="No limit" value={chargeLimit} onChange={(event) => setChargeLimit(event.target.value)} /></div>
-        <button disabled={busy || !selectedRoom} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white disabled:opacity-50">{modal === "checkin" ? "Check in guest" : "Save stay details"}</button>
+        <button disabled={busy || !selectedRoom || !arrivalDate || !arrivalTime || !expectedCheckoutAt || !leaveTime || atLocal(expectedCheckoutAt, leaveTime).getTime() <= atLocal(arrivalDate, arrivalTime).getTime()} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white disabled:opacity-50">{modal === "checkin" ? "Check in guest" : "Save stay details"}</button>
       </form></Modal>}
       {modal === "charge" && <Modal title={`Add charge · Room ${selectedRoom?.roomNumber ?? ""}`} onClose={() => setModal(null)}><form onSubmit={(event) => void addCharge(event)} className="space-y-4"><p className="text-[10px] font-semibold text-muted">Quick add</p><div className="grid grid-cols-2 gap-2">{[{ name: "Laundry", kind: "OTHER" as const, description: "Laundry, 1 bag", price: "5" }, { name: "Scooter rental", kind: "OTHER" as const, description: "Scooter rental, 1 day", price: "15" }, { name: "Island tour", kind: "OTHER" as const, description: "Island tour", price: "45" }, { name: "Boat transfer", kind: "OTHER" as const, description: "Boat transfer", price: "30" }].map((preset) => <button type="button" key={preset.name} onClick={() => { setChargeKind(preset.kind); setChargeDescription(preset.description); setChargeQuantity("1"); setChargePrice(preset.price); }} className={`rounded-xl border px-3 py-3 text-left ${chargeDescription === preset.description ? "border-[#f01898] bg-pink-50" : "border-line hover:border-pink-200"}`}><span className="block text-xs font-bold">{preset.name}</span><span className="mt-1 block text-[10px] text-muted">{money(preset.price)} per unit</span></button>)}</div><Field label="Description" required value={chargeDescription} onChange={(event) => setChargeDescription(event.target.value)} placeholder="Describe this charge" /><div className="grid grid-cols-2 gap-3"><Field label="Quantity" type="number" required min="1" value={chargeQuantity} onChange={(event) => setChargeQuantity(event.target.value)} /><Field label="Price each" type="number" required min="0" step="0.01" value={chargePrice} onChange={(event) => setChargePrice(event.target.value)} /></div><div className="flex justify-between border-t border-line pt-3 text-sm"><span className="text-muted">Amount</span><strong>{money(Number(chargePrice || 0) * Number(chargeQuantity || 0))}</strong></div><button disabled={busy} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white">Add charge to tab</button></form></Modal>}
       {modal === "settle" && <Modal title={`${settlingCharge ? "Settle bill" : "Settle tab"} · Room ${selectedRoom?.roomNumber ?? focusedRoom?.roomNumber ?? ""}`} onClose={() => { setModal(null); setSettlingChargeId(null); }}><div className="space-y-4"><p className="text-xs text-muted">{settlingCharge ? "Choose how the guest paid this bill. It is marked settled and stays on the receipt." : "Choose how the guest paid. The stay remains open and settled bills move to history."}</p><div className="grid grid-cols-2 gap-2">{(["CASH", "CARD"] as const).map((method) => <button key={method} disabled={method === "CARD" && !!timeline?.cashOnly} onClick={() => setRoomPaymentMethod(method)} className={`rounded-xl border p-3 text-sm font-bold disabled:opacity-40 ${roomPaymentMethod === method ? "border-[#f01898] bg-pink-50 text-[#c20d77]" : "border-line"}`}>{method === "CASH" ? "Cash" : "Paid by card"}</button>)}</div><div className="flex justify-between rounded-xl bg-canvas p-4 text-sm font-bold"><span>{settlingCharge ? "This bill" : "Tab total"}</span><span>{money(settleAmount)}</span></div><button disabled={busy || settleAmount <= 0} onClick={() => void settleTab()} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white disabled:opacity-50">{settlingCharge ? "Mark settled" : "Settle tab"} · {money(settleAmount)}</button></div></Modal>}
@@ -485,21 +494,52 @@ export function RoomsPage() {
 function localDay(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+function localTime(date: Date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+function atLocal(day: string, time: string) {
+  const [year, month, date] = day.split("-").map(Number);
+  const [hours = 0, minutes = 0] = time.split(":").map(Number);
+  return new Date(year, month - 1, date, hours, minutes, 0, 0);
+}
+function nextDay(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + 1);
+  return localDay(date);
+}
+function roomBadge(room: Room) {
+  if (room.status === "MAINTENANCE") return { label: "Under maintenance", className: "bg-[#fff1e6] text-[#a85b1c]" };
+  if (room.status === "ARCHIVED") return { label: "Archived", className: "bg-[#f6f4f5] text-[#8a8388]" };
+  const stay = room.stays?.find((item) => !item.checkedOutAt);
+  if (room.status !== "OCCUPIED" || !stay) return { label: "Vacant", className: "bg-emerald-50 text-emerald-700" };
+  const today = localDay(new Date());
+  const onDay = (value?: string | null) => value ? localDay(new Date(value)) === today : false;
+  if (onDay(stay.expectedCheckoutAt)) return { label: "Departing", className: "bg-[#fff8e6] text-[#8a5a00]" };
+  if (onDay(stay.checkedInAt)) return { label: "Arriving", className: "bg-[#ffe8f4] text-[#b30d6e]" };
+  return { label: "Occupied", className: "bg-rose-50 text-rose-700" };
+}
 function prettyDay(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   return new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(new Date(year, month - 1, day));
 }
-function ArrivalCard({ room, guestName, occupants, leaves, notes, busy, error, onGuestName, onOccupants, onLeaves, onNotes, onClose, onSubmit }: {
+function ArrivalCard({ room, guestName, occupants, arrives, arrivesAt, leaves, leavesAt, notes, busy, error, onGuestName, onOccupants, onArrives, onArrivesAt, onLeaves, onLeavesAt, onNotes, onClose, onSubmit }: {
   room: Room;
   guestName: string;
   occupants: string;
+  arrives: string;
+  arrivesAt: string;
   leaves: string;
+  leavesAt: string;
   notes: string;
   busy: boolean;
   error: string;
   onGuestName: (value: string) => void;
   onOccupants: (value: string) => void;
+  onArrives: (value: string) => void;
+  onArrivesAt: (value: string) => void;
   onLeaves: (value: string) => void;
+  onLeavesAt: (value: string) => void;
   onNotes: (value: string) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
@@ -510,28 +550,29 @@ function ArrivalCard({ room, guestName, occupants, leaves, notes, busy, error, o
   const extra = occupants.split(/[\n,]/).map((value) => value.trim()).filter(Boolean).length;
   const adults = 1 + extra;
   const stayNights = (() => {
-    if (!leaves) return 0;
+    if (!leaves || !arrives) return 0;
     const [year, month, day] = leaves.split("-").map(Number);
-    const [startYear, startMonth, startDay] = today.split("-").map(Number);
+    const [startYear, startMonth, startDay] = arrives.split("-").map(Number);
     return Math.max(0, Math.round((Date.UTC(year, month - 1, day) - Date.UTC(startYear, startMonth - 1, startDay)) / 86400000));
   })();
   return createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center bg-ink/25 p-4" onMouseDown={onClose}>
     <form role="dialog" aria-modal="true" aria-label="Check in" onSubmit={onSubmit} onMouseDown={(event) => event.stopPropagation()} className="w-full max-w-[420px] rounded-2xl border border-[#f3d5e4] bg-white p-4 shadow-[0_16px_40px_rgba(80,30,55,.16)]">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-bold text-[#1d6794]">Arriving today · {clock}</p>
+        <p className="text-sm font-bold text-[#1d6794]">{arrives === today ? `Arriving today · ${clock}` : `Arriving ${arrives ? prettyDay(arrives) : ""}`}</p>
         <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-[#fff4f9]"><X size={16} /></button>
       </div>
       <input required value={guestName} onChange={(event) => onGuestName(event.target.value)} placeholder="Guest name" className="mt-1 w-full bg-transparent font-display text-[28px] font-extrabold leading-8 tracking-tight text-ink outline-none placeholder:text-[#d7c9d0]" />
       <div className="mt-3 space-y-2.5 rounded-xl border border-[#f3e4eb] px-3 py-3 text-sm">
         <p className="flex items-center gap-2 font-semibold"><BedDouble size={16} className="text-[#8a8388]" /> {roomLabel(room.roomNumber)}</p>
-        <p className="flex items-center gap-2 text-[13px]"><CalendarDays size={16} className="shrink-0 text-[#8a8388]" /><span>{prettyDay(today)} to {leaves ? prettyDay(leaves) : "—"}{stayNights ? ` · ${stayNights} night${stayNights === 1 ? "" : "s"}` : ""}</span></p>
-        <label className="flex items-center gap-2 text-[13px]"><span className="text-muted">Leaves</span><input type="date" min={today} value={leaves} onChange={(event) => onLeaves(event.target.value)} className="bg-transparent text-sm font-semibold outline-none" /></label>
+        <p className="flex items-center gap-2 text-[13px]"><CalendarDays size={16} className="shrink-0 text-[#8a8388]" /><span>{arrives ? prettyDay(arrives) : "—"}{arrivesAt ? ` ${arrivesAt}` : ""} to {leaves ? prettyDay(leaves) : "—"}{leavesAt ? ` ${leavesAt}` : ""}{stayNights ? ` · ${stayNights} night${stayNights === 1 ? "" : "s"}` : ""}</span></p>
+        <label className="flex items-center gap-2 text-[13px]"><span className="w-14 text-muted">Arrives</span><input type="date" required value={arrives} onChange={(event) => onArrives(event.target.value)} className="bg-transparent text-sm font-semibold outline-none" /><input type="time" required value={arrivesAt} onChange={(event) => onArrivesAt(event.target.value)} className="bg-transparent text-sm font-semibold outline-none" /></label>
+        <label className="flex items-center gap-2 text-[13px]"><span className="w-14 text-muted">Leaves</span><input type="date" required min={arrives || undefined} value={leaves} onChange={(event) => onLeaves(event.target.value)} className="bg-transparent text-sm font-semibold outline-none" /><input type="time" required value={leavesAt} onChange={(event) => onLeavesAt(event.target.value)} className="bg-transparent text-sm font-semibold outline-none" /></label>
         <p className="flex items-center gap-2"><Users size={16} className="text-[#8a8388]" /> {adults} adult{adults === 1 ? "" : "s"}</p>
         <textarea value={occupants} onChange={(event) => onOccupants(event.target.value)} rows={2} placeholder="Additional guests, one name per line" className="w-full resize-none rounded-lg border border-[#f3e4eb] px-2.5 py-2 text-xs outline-none focus:border-[#f01898]" />
       </div>
       <textarea value={notes} onChange={(event) => onNotes(event.target.value)} rows={2} placeholder="Vegetarian. Coming on the 13:30 ferry." className="mt-3 w-full resize-none rounded-xl border border-[#f3e0c4] bg-[#fff8ee] px-3 py-2.5 text-sm font-semibold text-[#9a5b24] outline-none placeholder:font-medium placeholder:text-[#c4a27a]" />
       {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
-      <button disabled={busy || !guestName.trim()} className="mt-3 h-12 w-full rounded-xl bg-[#ed168c] text-sm font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check in"}</button>
+      <button disabled={busy || !guestName.trim() || !arrives || !arrivesAt || !leaves || !leavesAt || atLocal(leaves, leavesAt).getTime() <= atLocal(arrives, arrivesAt).getTime()} className="mt-3 h-12 w-full rounded-xl bg-[#ed168c] text-sm font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Check in"}</button>
       <p className="mt-3 text-center text-[11px] text-muted">Saved on this room. Cloudbeds can be connected later.</p>
     </form>
   </div>, document.body);
