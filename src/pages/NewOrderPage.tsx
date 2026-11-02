@@ -1,22 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowRight,
+  Beer,
   Check,
   ChevronDown,
+  ChevronLeft,
+  Citrus,
+  Coffee,
+  CupSoda,
+  Egg,
+  Fish,
+  Flame,
+  GlassWater,
+  IceCreamCone,
+  Martini,
+  MessageCircle,
   Minus,
   Plus,
+  Popcorn,
+  Receipt,
+  Salad,
+  Sandwich,
   Search,
   ShoppingBag,
+  Soup,
   Trash2,
   Utensils,
+  UtensilsCrossed,
+  Wheat,
   X,
+  type LucideIcon,
 } from "lucide-react";
-import { PageHeader, Panel, EmptyState, OrderBadge, SelectField } from "../components/ui";
+import { Panel, EmptyState } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import { postOnce, SavedLocallyError } from "../lib/outbox";
-import type { Category, DiningTable, MenuItem, ModifierGroup, PrepStation } from "../lib/types";
+import { listOutbox, SavedLocallyError } from "../lib/outbox";
+import { SettleTableDialog } from "../components/SettleTableDialog";
+import type { Category, DiningTable, MenuItem, ModifierGroup, SendTo } from "../lib/types";
 import { money } from "../lib/types";
+import { mediaSrc } from "../lib/media";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { useAuthStore } from "../stores/authStore";
@@ -24,7 +46,7 @@ import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPrevi
 import { ModifierGroupIcon } from "../components/ModifierGroupIcon";
 import { LevelSlider } from "../components/LevelSlider";
 import { localizedFoodLabels } from "../lib/foodTranslations";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { translateUiText } from "../lib/translations";
 
 type CartLine = {
@@ -33,9 +55,61 @@ type CartLine = {
   quantity: number;
   specialNotes: string;
   modifierSelections: Record<string, string[]>;
-  prepStation: PrepStation;
+  prepStation: SendTo;
   payerId: string;
+  kitchenFlag?: boolean;
 };
+function DishCommentButton({ flagged, label, onClick }: { flagged: boolean; label: string; onClick: () => void }) {
+  return <button type="button" aria-pressed={flagged} aria-label={flagged ? `Clear the kitchen mark on ${label}` : `Mark ${label} for the kitchen`} onClick={(event) => { event.stopPropagation(); onClick(); }} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full ${flagged ? "bg-[#ed168c] text-white" : "text-[#c9a3b6] hover:bg-[#fff1f8] hover:text-[#ed168c]"}`}><MessageCircle size={14} /></button>;
+}
+function SwipeClearRow({ rowKey, open, busy, label, onOpen, onClear, children }: { rowKey: string; open: boolean; busy: boolean; label: string; onOpen: (key: string | null) => void; onClear: () => void; children: ReactNode }) {
+  const reveal = 56;
+  const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const drag = useRef<{ pointer: number; startX: number; startOffset: number; moved: boolean } | null>(null);
+  const suppressClick = useRef(false);
+  useEffect(() => { setOffset(open ? -reveal : 0); }, [open]);
+  return <div className="relative overflow-hidden rounded-lg">
+    <button type="button" disabled={busy} onClick={onClear} className="absolute inset-y-0 right-0 grid w-14 place-items-center bg-[#ff3b30] text-white disabled:opacity-60" aria-label={`Clear ${label}`}>
+      <Trash2 size={18} />
+    </button>
+    <div
+      className="relative bg-white"
+      style={{ transform: `translateX(${offset}px)`, transition: dragging ? "none" : "transform 180ms ease", touchAction: "pan-y" }}
+      onPointerDown={(event) => {
+        if (busy || event.button !== 0) return;
+        drag.current = { pointer: event.pointerId, startX: event.clientX, startOffset: offset, moved: false };
+        setDragging(true);
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const current = drag.current;
+        if (!current || current.pointer !== event.pointerId) return;
+        const delta = event.clientX - current.startX;
+        if (Math.abs(delta) > 8) current.moved = true;
+        setOffset(Math.min(0, Math.max(-reveal, current.startOffset + delta)));
+      }}
+      onPointerUp={(event) => {
+        const current = drag.current;
+        if (!current || current.pointer !== event.pointerId) return;
+        drag.current = null;
+        setDragging(false);
+        if (!current.moved) {
+          if (open) onOpen(null);
+          return;
+        }
+        suppressClick.current = true;
+        const shouldOpen = current.startOffset + (event.clientX - current.startX) < -reveal / 2;
+        onOpen(shouldOpen ? rowKey : null);
+        setOffset(shouldOpen ? -reveal : 0);
+      }}
+      onPointerCancel={() => { drag.current = null; setDragging(false); setOffset(open ? -reveal : 0); }}
+      onClickCapture={(event) => { if (!suppressClick.current) return; suppressClick.current = false; event.preventDefault(); event.stopPropagation(); }}
+    >
+      {children}
+    </div>
+  </div>;
+}
 type PlusJump = { id: string; fromX: number; fromY: number; toX: number; toY: number; label: string };
 function localId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -45,20 +119,73 @@ function PlusJumpBadge({ jump, onDone }: { jump: PlusJump; onDone: (id: string) 
   const [moved, setMoved] = useState(false);
   useEffect(() => {
     const frame = requestAnimationFrame(() => setMoved(true));
-    const timer = window.setTimeout(() => onDone(jump.id), 850);
+    const timer = window.setTimeout(() => onDone(jump.id), 320);
     return () => { cancelAnimationFrame(frame); window.clearTimeout(timer); };
   }, [jump.id, onDone]);
-  return <span className="pointer-events-none fixed z-[90]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 700ms ease-in-out, top 700ms ease-in-out" }}>
+  return <span className="pointer-events-none fixed z-[90]" style={{ left: moved ? jump.toX : jump.fromX, top: moved ? jump.toY : jump.fromY, transform: "translate(-50%, -50%)", transition: "left 240ms cubic-bezier(0.2, 0.8, 0.2, 1), top 240ms cubic-bezier(0.2, 0.8, 0.2, 1)" }}>
     <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-sm font-extrabold text-emerald-700">{jump.label}</span>
   </span>;
 }
 const categoryColors = [
-  "from-[#e1edcf] to-[#f2f6e9]",
-  "from-[#f4e6d9] to-[#fbf2e9]",
-  "from-[#f3e3e4] to-[#fbf1f1]",
-  "from-[#e0edf0] to-[#f1f7f7]",
-  "from-[#ece7d8] to-[#f6f3e9]",
+  "from-[#fde7ef] to-[#fff5f8]",
+  "from-[#e7f0ff] to-[#f4f7ff]",
+  "from-[#fff1e4] to-[#fff8f1]",
+  "from-[#efe7ff] to-[#f7f3ff]",
+  "from-[#e7f6ef] to-[#f3fbf7]",
 ];
+const categoryIconRules: { test: RegExp; icon: LucideIcon }[] = [
+  { test: /breakfast|egg|morning/i, icon: Egg },
+  { test: /starter|snack|appetizer/i, icon: Popcorn },
+  { test: /salad/i, icon: Salad },
+  { test: /toast|burger|sandwich/i, icon: Sandwich },
+  { test: /seafood|fish|squid/i, icon: Fish },
+  { test: /pasta|noodle|rice/i, icon: Wheat },
+  { test: /curry|thai|spicy/i, icon: Flame },
+  { test: /side|soup/i, icon: Soup },
+  { test: /dessert|sweet/i, icon: IceCreamCone },
+  { test: /coffee|tea/i, icon: Coffee },
+  { test: /juice/i, icon: Citrus },
+  { test: /smoothie|shake/i, icon: GlassWater },
+  { test: /beer/i, icon: Beer },
+  { test: /cocktail|spirit|wine/i, icon: Martini },
+  { test: /drink|soda|water/i, icon: CupSoda },
+  { test: /main/i, icon: UtensilsCrossed },
+];
+type MenuSection = "Food" | "Drinks" | "Bar";
+const hiddenCategories = new Set(["morning breakfast", "spicy", "squid"]);
+function visibleCategory(name: string) {
+  return !hiddenCategories.has(name.trim().toLowerCase());
+}
+const sectionOrder: Record<MenuSection, string[]> = {
+  Food: ["Breakfast", "Appetizers", "Salads", "Toasts & burgers", "Seafood", "Pasta", "Mains", "Thai", "Thai curries", "Noodle", "Rice & noodles", "Sides", "Desserts"],
+  Drinks: ["Coffee & tea", "Cold drinks", "Fresh juices", "Smoothies & shakes", "Drinks"],
+  Bar: ["Beer", "Cocktails & spirits"],
+};
+const sectionTone: Record<MenuSection, { card: string; icon: string; count: string }> = {
+  Food: { card: "bg-[#fff1e8]", icon: "bg-white text-[#e07a3d]", count: "text-[#e07a3d]" },
+  Drinks: { card: "bg-[#eef1ff]", icon: "bg-white text-[#6674e4]", count: "text-[#6674e4]" },
+  Bar: { card: "bg-[#f4eefe]", icon: "bg-white text-[#8a63d2]", count: "text-[#8a63d2]" },
+};
+function categoryIcon(name: string) {
+  return categoryIconRules.find((rule) => rule.test.test(name))?.icon ?? Utensils;
+}
+function menuSection(category: Category): MenuSection {
+  const name = category.name.toLowerCase();
+  if (/beer|cocktail|spirit|wine|liquor|whisky|whiskey/.test(name)) return "Bar";
+  if (/coffee|tea|juice|smoothie|shake|soda|drink|water/.test(name)) return "Drinks";
+  const items = category.items ?? [];
+  const bar = items.filter((item) => item.prepStation === "BAR").length;
+  if (items.length && bar > items.length / 2) return "Bar";
+  return "Food";
+}
+function sortCategories(section: MenuSection, list: Category[]) {
+  const names = sectionOrder[section];
+  return [...list].sort((left, right) => {
+    const leftIndex = names.indexOf(left.name);
+    const rightIndex = names.indexOf(right.name);
+    return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex) || left.name.localeCompare(right.name);
+  });
+}
 type ActiveRoomStay = { id: string; primaryGuestName: string; cashOnly?: boolean; occupants: { id: string; name: string }[]; room: { roomNumber: string | number } };
 const ORDER_DESK_KEY = "restaurant-order-desk";
 function readOrderDesk(): { categories: Category[]; tables: DiningTable[]; stays: ActiveRoomStay[] } | null {
@@ -72,6 +199,38 @@ function readOrderDesk(): { categories: Category[]; tables: DiningTable[]; stays
 }
 function writeOrderDesk(value: { categories: Category[]; tables: DiningTable[]; stays: ActiveRoomStay[] }) {
   try { localStorage.setItem(ORDER_DESK_KEY, JSON.stringify(value)); } catch { /* The open order screen still has this visit's menu. */ }
+}
+const OPEN_TICKETS_KEY = "restaurant-open-tickets";
+type HeldTicket = { lines: CartLine[]; note: string };
+function slimTicketLine(line: CartLine): CartLine {
+  const imageUrl = line.item.imageUrl?.startsWith("data:") ? null : line.item.imageUrl;
+  return { ...line, item: { ...line.item, imageUrl } };
+}
+function readOpenTickets(): Record<string, HeldTicket> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(OPEN_TICKETS_KEY) ?? "{}") as Record<string, HeldTicket>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function writeOpenTickets(value: Record<string, HeldTicket>) {
+  try { localStorage.setItem(OPEN_TICKETS_KEY, JSON.stringify(value)); } catch { /* The ticket stays on screen for this visit. */ }
+}
+function queuedLike(tableId: string, lines: CartLine[]) {
+  const bag = lines.map((line) => `${line.item.id}|${line.quantity}`).sort().join(",");
+  if (!bag) return false;
+  return listOutbox().some((item) => {
+    if (item.status !== "pending" || item.scope !== "order.create" || item.body?.tableId !== tableId) return false;
+    const sent = Array.isArray(item.body.items) ? item.body.items as { menuItemId?: string; quantity?: number }[] : [];
+    return sent.map((line) => `${line.menuItemId}|${line.quantity}`).sort().join(",") === bag;
+  });
+}
+function readOpenTicket(tableId: string): HeldTicket {
+  const held = readOpenTickets()[tableId];
+  const lines = Array.isArray(held?.lines) ? held.lines.filter((line) => line?.item?.id) : [];
+  if (!tableId || queuedLike(tableId, lines)) return { lines: [], note: "" };
+  return { lines, note: held?.note ?? "" };
 }
 
 function itemModifierGroups(item: MenuItem): ModifierGroup[] {
@@ -111,24 +270,31 @@ function selectedModifierLines(item: MenuItem, selections: Record<string, string
 
 export function NewOrderPage() {
   const { tableId = "" } = useParams();
-  const location = useLocation();
   const navigate = useNavigate();
-  const partySetup = location.state as { walkInCount?: number; roomStayIds?: string[] } | null;
   const [categories, setCategories] = useState<Category[]>([]);
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [activeStays, setActiveStays] = useState<ActiveRoomStay[]>([]);
   const [assignedRoomStayIds, setAssignedRoomStayIds] = useState<string[]>([]);
-  const [savingRoomAssignments, setSavingRoomAssignments] = useState(false);
   const [roomPickerOpen, setRoomPickerOpen] = useState(false);
+  const [roomListBox, setRoomListBox] = useState<{ top: number; left: number; width: number } | null>(null);
   const roomPickerRef = useRef<HTMLDivElement>(null);
+  const roomButtonRef = useRef<HTMLButtonElement>(null);
+  const roomListRef = useRef<HTMLDivElement>(null);
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  const [tableListBox, setTableListBox] = useState<{ top: number; left: number; width: number } | null>(null);
+  const tableButtonRef = useRef<HTMLButtonElement>(null);
+  const tableListRef = useRef<HTMLDivElement>(null);
+  const [savingRoomAssignments, setSavingRoomAssignments] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState("All");
+  const [browsingDishes, setBrowsingDishes] = useState(false);
   const [search, setSearch] = useState("");
-  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cart, setCart] = useState<CartLine[]>(() => readOpenTicket(tableId).lines);
   const [plusJumps, setPlusJumps] = useState<PlusJump[]>([]);
+  const [ticketOpen, setTicketOpen] = useState(false);
   const ticketMarkRef = useRef<HTMLSpanElement>(null);
   const pendingAddOrigin = useRef<DOMRect | null>(null);
-  const [walkInPartyCount] = useState(partySetup?.walkInCount ?? 1);
-  const [orderKitchenNote, setOrderKitchenNote] = useState("");
+  const [orderKitchenNote, setOrderKitchenNote] = useState(() => readOpenTicket(tableId).note);
+  const ticketTableRef = useRef(tableId);
   const [configuringItem, setConfiguringItem] = useState<MenuItem | null>(null);
   const [editingCartLineId, setEditingCartLineId] = useState<string | null>(null);
   const [draftQuantity, setDraftQuantity] = useState(1);
@@ -140,16 +306,9 @@ export function NewOrderPage() {
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<CheckoutReceipt | null>(null);
   const [settleOpen, setSettleOpen] = useState(false);
-  const [settlementMethods, setSettlementMethods] = useState<Record<string, "ROOM_CHECKOUT" | "CASH" | "CARD" | "PROMPTPAY">>({});
-  const [signaturePayerId, setSignaturePayerId] = useState<string | null>(null);
-  const [signatureName, setSignatureName] = useState("");
-  const [signatureData, setSignatureData] = useState("");
-  const [signatureDrawing, setSignatureDrawing] = useState(false);
-  const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
-  const [settledPayers, setSettledPayers] = useState<{ id: string; label: string; total: number; note: string; orderIds: string[] }[]>([]);
+  const [openSwipe, setOpenSwipe] = useState<string | null>(null);
+  const [clearingId, setClearingId] = useState<string | null>(null);
   const createOrder = useOrderStore((state) => state.createOrder);
-  const cookAction = useOrderStore((state) => state.cookAction);
-  const [ticketActionId, setTicketActionId] = useState<string | null>(null);
   const orders = useOrderStore((state) => state.orders);
   const fetchOrders = useOrderStore((state) => state.fetchOrders);
   const notify = useUiStore((state) => state.notify);
@@ -161,18 +320,23 @@ export function NewOrderPage() {
   const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
   const currentUser = useAuthStore((state) => state.user);
   useEffect(() => {
-    if (!roomPickerOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (event.target instanceof Node && !roomPickerRef.current?.contains(event.target)) setRoomPickerOpen(false);
+    const save = (forTable: string, lines: CartLine[], note: string) => {
+      if (!forTable) return;
+      const stored = readOpenTickets();
+      if (!lines.length && !note.trim()) delete stored[forTable];
+      else stored[forTable] = { lines: lines.map(slimTicketLine), note };
+      writeOpenTickets(stored);
     };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setRoomPickerOpen(false); };
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [roomPickerOpen]);
+    if (ticketTableRef.current !== tableId) {
+      save(ticketTableRef.current, cart, orderKitchenNote);
+      ticketTableRef.current = tableId;
+      const next = readOpenTicket(tableId);
+      setCart(next.lines);
+      setOrderKitchenNote(next.note);
+      return;
+    }
+    save(tableId, cart, orderKitchenNote);
+  }, [tableId, cart, orderKitchenNote]);
   useEffect(() => {
     const cached = readOrderDesk();
     if (cached) { setCategories(cached.categories); setTables(cached.tables); setActiveStays(cached.stays); }
@@ -195,37 +359,105 @@ export function NewOrderPage() {
     const assignedIds = selectedTable?.assignedRoomStays?.map((stay) => stay.id) ?? [];
     setAssignedRoomStayIds(assignedIds);
   }, [tableId, selectedTable?.assignedRoomStays]);
+  useEffect(() => {
+    if (!roomPickerOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !roomPickerRef.current?.contains(event.target) && !roomListRef.current?.contains(event.target)) setRoomPickerOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setRoomPickerOpen(false); };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [roomPickerOpen]);
+  useEffect(() => {
+    if (!roomPickerOpen) return;
+    const place = () => {
+      const anchor = roomPickerRef.current;
+      const button = roomButtonRef.current;
+      if (!anchor || !button) return;
+      const box = anchor.getBoundingClientRect();
+      const trigger = button.getBoundingClientRect();
+      setRoomListBox({ top: trigger.bottom + 6, left: box.left, width: box.width });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [roomPickerOpen]);
+  useEffect(() => {
+    if (!tablePickerOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !tableButtonRef.current?.contains(event.target) && !tableListRef.current?.contains(event.target)) setTablePickerOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setTablePickerOpen(false); };
+    const place = () => {
+      const button = tableButtonRef.current;
+      if (!button) return;
+      const trigger = button.getBoundingClientRect();
+      setTableListBox({ top: trigger.bottom + 6, left: trigger.left, width: trigger.width });
+    };
+    place();
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [tablePickerOpen]);
   const activeTableOrders = orders
     .filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status))
     .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
-  const payers = [
-    ...assignedRoomStayIds.map((id) => {
-      const stay = activeStays.find((entry) => entry.id === id);
-      const assigned = selectedTable?.assignedRoomStays?.find((entry) => entry.id === id);
-      const roomNumber = stay?.room.roomNumber ?? assigned?.room?.roomNumber;
-      return { id, label: `R${roomNumber ?? "?"}`, name: stay?.primaryGuestName ?? assigned?.primaryGuestName ?? `Room ${roomNumber ?? ""}`, roomStayId: id };
-    }),
-    ...(walkInPartyCount > 0 ? [{ id: "walk-ins", label: "Walk-ins", name: "Walk-ins", roomStayId: undefined }] : []),
-  ];
-  const orderForChoices = payers.some((payer) => payer.id === "walk-ins") ? payers : [...payers, { id: "walk-ins", label: "Walk-ins", name: "Walk-ins", roomStayId: undefined }];
+  const roomPayers = assignedRoomStayIds.flatMap((id) => {
+    const stay = activeStays.find((entry) => entry.id === id);
+    if (!stay) return [];
+    return [{ id, label: `R${stay.room.roomNumber}`, name: stay.primaryGuestName, roomStayId: id }];
+  });
   const menuItems = useMemo(
     () =>
       categories
         .flatMap((category) =>
           (category.items ?? []).map((item) => ({ ...item, category })),
         )
-        .filter(
-          (item) =>
-            (selectedCategory === "All" ||
-              item.category?.name === selectedCategory) &&
-            `${item.name} ${item.description ?? ""}`
-              .toLowerCase()
-              .includes(search.toLowerCase()),
-        ),
+        .filter((item) => {
+          if (!visibleCategory(item.category?.name ?? "")) return false;
+          const query = search.trim().toLowerCase();
+          if (query) return `${item.name} ${item.description ?? ""}`.toLowerCase().includes(query);
+          return selectedCategory === "All" || item.category?.name === selectedCategory;
+        }),
     [categories, selectedCategory, search],
   );
+  const showingDishes = browsingDishes || search.trim().length > 0;
+  const menuSections = useMemo(() => {
+    const groups: { key: MenuSection; categories: Category[] }[] = [
+      { key: "Food", categories: [] },
+      { key: "Drinks", categories: [] },
+      { key: "Bar", categories: [] },
+    ];
+    for (const category of categories) if (visibleCategory(category.name)) groups.find((group) => group.key === menuSection(category))?.categories.push(category);
+    return groups
+      .map((group) => ({ ...group, categories: sortCategories(group.key, group.categories) }))
+      .filter((group) => group.categories.length);
+  }, [categories]);
+  const leaveDishes = () => { setBrowsingDishes(false); setSelectedCategory("All"); setSearch(""); };
+  const lineAmount = (line: { subtotal?: number | string | null; unitPrice?: number | string | null; quantity: number; menuItem?: { price?: number | string | null } }) => {
+    const amount = Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem?.price ?? 0) * Number(line.quantity || 0));
+    return Number.isFinite(amount) ? amount : 0;
+  };
   const cartLines = cart;
-  const serveAtTable = cartLines.length > 0 && cartLines.every((line) => line.prepStation === "BAR");
+  const cartCount = cartLines.reduce((count, line) => count + line.quantity, 0);
+  const sentCount = activeTableOrders.reduce((count, order) => count + order.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0), 0);
+  const ticketCount = cartCount + sentCount;
+  const androidTicket = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
   const getLineUnitPrice = (item: MenuItem, selections: Record<string, string[]>) => Number(item.price) + openModifierGroups(item, selections).filter((group) => group.appearance !== "TEXT").reduce((sum, group) => {
     const selected = selections[group.id] ?? [];
     const selectedOptions = selected.flatMap((id) => {
@@ -234,18 +466,20 @@ export function NewOrderPage() {
     });
     return sum + selectedOptions.reduce((charge, option, index) => charge + (index < group.includedPicks ? 0 : Number(option.priceAdjustment) + Number(group.extraPickPrice ?? 0)), 0);
   }, 0);
-  const total = cartLines.reduce(
+  const cartTotal = cartLines.reduce(
     (sum, line) => sum + getLineUnitPrice(line.item, line.modifierSelections) * line.quantity,
     0,
   );
-  const tableTotal = activeTableOrders.reduce((sum, order) => sum + Number(order.totalAmount), 0);
-  const orderPayerGroups = activeTableOrders.map((order) => {
-    const payerId = order.roomStayId ?? "walk-ins";
-    const payer = payers.find((entry) => entry.id === payerId);
-    const roomNumber = order.roomStay?.room?.roomNumber;
-    return { id: order.id, label: payer?.label ?? (roomNumber ? `R${roomNumber}` : "Walk-ins"), name: payer?.name ?? order.roomStay?.primaryGuestName ?? "Walk-ins", roomStayId: order.roomStayId ?? undefined, orders: [order], total: Number(order.totalAmount) };
-  });
-  const signatureGroup = orderPayerGroups.find((group) => group.id === signaturePayerId);
+  const sentTotal = activeTableOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, line) => lineSum + lineAmount(line), 0), 0);
+  const total = Math.round((sentTotal + cartTotal) * 100) / 100;
+  const tableBill = activeTableOrders.length ? {
+    id: "table",
+    label: "Table",
+    name: "This table",
+    roomStayId: undefined as string | undefined,
+    orders: activeTableOrders,
+    total: Math.round(sentTotal * 100) / 100,
+  } : null;
   const clearPlusJump = useCallback((id: string) => setPlusJumps((current) => current.filter((jump) => jump.id !== id)), []);
   const launchPlus = (origin: DOMRect | null, amount = 1) => {
     if (/Android/i.test(navigator.userAgent)) return;
@@ -263,7 +497,7 @@ export function NewOrderPage() {
       specialNotes,
       modifierSelections,
       prepStation: item.prepStation ?? "KITCHEN",
-      payerId: payers[0]?.id ?? "walk-ins",
+      payerId: "",
     }]);
   };
   const add = (item: MenuItem, origin?: DOMRect | null) => {
@@ -335,7 +569,7 @@ export function NewOrderPage() {
     const groups = openModifierGroups(configuringItem, draftSelections);
     const invalid = groups.find((group) => {
       const count = draftSelections[group.id]?.length ?? 0;
-      return group.appearance !== "TEXT" && (count < group.minPicks || count > group.maxPicks || (group.required && count === 0));
+      return group.appearance !== "TEXT" && group.appearance !== "TOGGLE" && (count < group.minPicks || count > group.maxPicks || (group.required && count === 0));
     });
     if (invalid) { setModifierError(`${invalid.name}: choose ${invalid.minPicks === invalid.maxPicks ? invalid.minPicks : `${invalid.minPicks}–${invalid.maxPicks}`} option${invalid.maxPicks === 1 ? "" : "s"}.`); return; }
     if (editingCartLineId) {
@@ -351,7 +585,6 @@ export function NewOrderPage() {
   const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); pendingAddOrigin.current = null; };
   const removeCartLine = (lineId: string) => setCart((current) => current.filter((line) => line.id !== lineId));
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
-  const assignCartPayer = (lineId: string, payerId: string) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, payerId } : line));
   const bumpMenuItem = (item: MenuItem, delta: 1 | -1, origin?: DOMRect | null) => {
     const lines = cart.filter((line) => line.item.id === item.id);
     if (delta > 0 && itemModifierGroups(item).length) { add(item, origin); return; }
@@ -365,6 +598,27 @@ export function NewOrderPage() {
     }
     updateCartQuantity(target.id, target.quantity + 1);
     launchPlus(origin ?? null);
+  };
+  const clearSentLine = async (orderId: string, itemId: string) => {
+    setClearingId(itemId);
+    try {
+      const { data } = await api.delete(`/orders/${orderId}/items/${itemId}`);
+      useOrderStore.getState().upsertOrder(data);
+      setOpenSwipe(null);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    } finally {
+      setClearingId(null);
+    }
+  };
+  const toggleSentFlag = async (orderId: string, itemId: string | undefined, flagged: boolean) => {
+    if (!itemId || itemId.startsWith("local-")) return;
+    try {
+      const { data } = await api.patch(`/orders/${orderId}/items/${itemId}/kitchen-flag`, { flagged: !flagged });
+      useOrderStore.getState().upsertOrder(data);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    }
   };
   const placeOrder = async () => {
     if (!tableId || !selectedTable) {
@@ -380,119 +634,65 @@ export function NewOrderPage() {
     const submittedLineIds = new Set<string>();
     let waitingToSend = false;
     try {
-      const byPayer = new Map<string, CartLine[]>();
-      cartLines.forEach((line) => byPayer.set(line.payerId, [...(byPayer.get(line.payerId) ?? []), line]));
-      for (const [payerId, lines] of byPayer) {
-        try {
+      const lines = cartLines;
+      try {
         await createOrder(
-          { tableId, ...(payerId !== "walk-ins" ? { roomStayId: payerId } : {}) },
-          lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation }) => ({
+          { tableId },
+          lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation, kitchenFlag }) => ({
             menuItemId: item.id,
             quantity,
             prepStation: item.prepStation ?? prepStation,
+            kitchenFlag: Boolean(kitchenFlag),
             modifierSelections: openModifierGroups(item, modifierSelections).filter((group) => group.appearance !== "TEXT").map((group) => ({ groupId: group.id, optionIds: modifierSelections[group.id] ?? [] })),
             ...([orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).length ? { specialNotes: [orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).join(" · ") } : {}),
           })),
         );
-        } catch (cause) {
-          if (!(cause instanceof SavedLocallyError)) throw cause;
-          waitingToSend = true;
-          const now = new Date().toISOString();
-          const note = orderKitchenNote.trim();
-          const items = lines.map((line) => {
-            const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
-            return { id: `local-line-${line.id}`, menuItemId: line.item.id, quantity: line.quantity, unitPrice, subtotal: unitPrice * line.quantity, specialNotes: [note && `Order note: ${note}`, line.specialNotes.trim()].filter(Boolean).join(" · ") || null, menuItem: line.item };
-          });
-          useOrderStore.getState().upsertOrder({
-            id: `local-${cause.requestId || localId()}`,
-            tableId,
-            table: selectedTable,
-            roomStayId: payerId === "walk-ins" ? null : payerId,
-            paymentMethod: "CASH",
-            paymentStatus: "UNPAID",
-            waiterId: currentUser?.id ?? "local",
-            waiter: { id: currentUser?.id ?? "local", name: currentUser?.name ?? "This device" },
-            status: "PENDING",
-            totalAmount: items.reduce((sum, line) => sum + Number(line.subtotal), 0),
-            items,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-        lines.forEach((line) => submittedLineIds.add(line.id));
+      } catch (cause) {
+        if (!(cause instanceof SavedLocallyError)) throw cause;
+        waitingToSend = true;
+        const now = new Date().toISOString();
+        const note = orderKitchenNote.trim();
+        const items = lines.map((line) => {
+          const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
+          return { id: `local-line-${line.id}`, menuItemId: line.item.id, quantity: line.quantity, unitPrice, subtotal: unitPrice * line.quantity, specialNotes: [note && `Order note: ${note}`, line.specialNotes.trim()].filter(Boolean).join(" · ") || null, modifierSelections: [], menuItem: slimTicketLine(line).item };
+        });
+        useOrderStore.getState().upsertOrder({
+          id: `local-${cause.requestId || localId()}`,
+          tableId,
+          table: selectedTable,
+          roomStayId: null,
+          paymentMethod: "CASH",
+          paymentStatus: "UNPAID",
+          waiterId: currentUser?.id ?? "local",
+          waiter: { id: currentUser?.id ?? "local", name: currentUser?.name ?? "This device" },
+          status: "PENDING",
+          totalAmount: items.reduce((sum, line) => sum + Number(line.subtotal), 0),
+          items,
+          createdAt: now,
+          updatedAt: now,
+        });
       }
+      lines.forEach((line) => submittedLineIds.add(line.id));
       if (waitingToSend) {
         setCart((current) => current.filter((line) => !submittedLineIds.has(line.id)));
-        notify("Saved on this device. The kitchen receives it when the connection returns.");
+        setOrderKitchenNote("");
+        notify("Saved on this device. It stays on the ticket and goes to the kitchen when the connection returns.");
         return;
       }
-      const paidAtTable = cartLines.every((line) => line.prepStation === "BAR");
+      const sentKitchen = cartLines.some((line) => (line.prepStation ?? "KITCHEN") === "KITCHEN");
+      const sentBar = cartLines.some((line) => line.prepStation === "BAR");
       setCart([]);
       setOrderKitchenNote("");
       const { data } = await api.get<DiningTable[]>("/tables");
       setTables(data);
       await fetchOrders();
-      if (paidAtTable) {
-        const openTickets = useOrderStore.getState().orders.filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status));
-        const readyToPay = openTickets.length > 0 && openTickets.every((order) => order.status === "SERVED");
-        notify(readyToPay ? "Ready to pay. Nothing was sent to the kitchen." : "Saved on the ticket. Pay once the kitchen orders are served.");
-        if (readyToPay) setSettleOpen(true);
-      } else notify("Order sent to the kitchen.");
+      notify(!sentKitchen && !sentBar ? "Saved on the ticket." : sentKitchen && sentBar ? "Order sent to the kitchen and the bar." : sentKitchen ? "Order sent to the kitchen." : "Order sent to the bar.");
     } catch (e) {
       if (submittedLineIds.size) setCart((current) => current.filter((line) => !submittedLineIds.has(line.id)));
       reportError(errorMessage(e));
     } finally {
       setPlacing(false);
     }
-  };
-  const settlePayer = async (group: typeof orderPayerGroups[number], method: "ROOM_CHECKOUT" | "CASH" | "CARD" | "PROMPTPAY", signedName?: string, signature?: string) => {
-    if (method === "ROOM_CHECKOUT" && (!signedName?.trim() || !signature)) { setSignaturePayerId(group.id); setSignatureName(group.name); setSignatureData(""); return; }
-    setPlacing(true); setError("");
-    try {
-      const data = await postOnce<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>({
-        scope: "table.settle",
-        url: `/tables/${tableId}/settle-party`,
-        body: { orderIds: group.orders.map((order) => order.id), paymentMethod: method, ...(method === "ROOM_CHECKOUT" ? { signedByName: signedName, signatureData: signature } : {}) },
-        label: `Settle ${group.label}`,
-        dedupeKey: `table-settle:${tableId}:${method}:${group.orders.map((order) => order.id).sort().join(",")}`,
-      });
-      const stays = group.roomStayId ? activeStays.filter((stay) => stay.id === group.roomStayId) : [];
-      const rooms = stays.map((stay) => ({ roomNumber: stay.room.roomNumber, guestName: stay.primaryGuestName, guestNames: [...new Set([stay.primaryGuestName, ...stay.occupants.map((occupant) => occupant.name)])] }));
-      if (method === "ROOM_CHECKOUT") setReceipt({ tableNumber: data.tableNumber, orders: group.orders, paymentMethod: method, room: null, rooms, totalAmount: Number(data.totalAmount), checkedOutAt: data.checkedOutAt, cashierName: currentUser?.name ?? "Restaurant staff", signature: { name: data.signedByName ?? signedName ?? "Guest", data: signature ?? "" } });
-      notify(method === "ROOM_CHECKOUT" ? `Added to Room ${rooms[0]?.roomNumber ?? "guest"}’s tab. Signed by ${data.signedByName ?? signedName}.` : `${group.label} paid by ${method === "PROMPTPAY" ? "PromptPay QR" : method.toLowerCase()}.`);
-      setSettledPayers((current) => [...current.filter((entry) => entry.id !== group.id), { id: group.id, label: group.label, total: Number(data.totalAmount), orderIds: group.orders.map((order) => order.id), note: method === "ROOM_CHECKOUT" ? `Added to Room ${rooms[0]?.roomNumber ?? "guest"}’s tab. Signed by ${data.signedByName ?? signedName}.` : `Paid by ${method === "PROMPTPAY" ? "PromptPay QR" : method.toLowerCase()}.` }]);
-      if (signaturePayerId) setSignaturePayerId(null);
-      const updated = await api.get<DiningTable[]>("/tables"); setTables(updated.data);
-      await fetchOrders();
-      if (data.tableCleared) { setSettleOpen(false); notify(`${data.tableNumber} is settled and cleared.`); }
-    } catch (cause) {
-      if (cause instanceof SavedLocallyError) notify("Settlement saved on this device. It will send when the connection returns.");
-      else {
-        const message = errorMessage(cause);
-        if (/cash only/i.test(message)) setSettlementMethods((current) => ({ ...current, [group.id]: "CASH" }));
-        reportError(/cash only/i.test(message) ? "This stay is cash only. Take cash, card, or PromptPay." : message);
-      }
-    }
-    finally { setPlacing(false); }
-  };
-  const saveSignature = async () => {
-    if (!signatureGroup || !signatureData) { reportError("Please sign before adding the bill to the room tab."); return; }
-    await settlePayer(signatureGroup, "ROOM_CHECKOUT", signatureName, signatureData);
-  };
-  const signaturePoint = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    const canvas = signatureCanvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    return { x: (event.clientX - rect.left) * canvas.width / rect.width, y: (event.clientY - rect.top) * canvas.height / rect.height };
-  };
-  const startSignature = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    const canvas = signatureCanvasRef.current; const point = signaturePoint(event); if (!canvas || !point) return;
-    canvas.setPointerCapture(event.pointerId); const ctx = canvas.getContext("2d"); if (!ctx) return;
-    ctx.beginPath(); ctx.moveTo(point.x, point.y); ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.strokeStyle = "#30242b"; setSignatureDrawing(true);
-  };
-  const drawSignature = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!signatureDrawing) return; const canvas = signatureCanvasRef.current; const point = signaturePoint(event); const ctx = canvas?.getContext("2d"); if (!canvas || !point || !ctx) return;
-    ctx.lineTo(point.x, point.y); ctx.stroke(); setSignatureData(canvas.toDataURL("image/png"));
   };
   const assignRoomsToTable = async (nextRoomStayIds: string[]) => {
     if (!selectedTable) return;
@@ -513,7 +713,7 @@ export function NewOrderPage() {
 
   const configureGroups = configuringItem ? openModifierGroups(configuringItem, draftSelections) : [];
   const currentConfigGroup = modifierPickerMode === "step" ? configureGroups[configStep] : undefined;
-  const stepCanContinue = currentConfigGroup ? currentConfigGroup.appearance === "TEXT"
+  const stepCanContinue = currentConfigGroup ? currentConfigGroup.appearance === "TOGGLE" ? true : currentConfigGroup.appearance === "TEXT"
     ? !currentConfigGroup.required || Boolean(draftKitchenNote.trim())
     : (draftSelections[currentConfigGroup.id]?.length ?? 0) >= currentConfigGroup.minPicks : false;
   const advanceConfigStep = () => {
@@ -525,7 +725,7 @@ export function NewOrderPage() {
   function renderModifierGroup(group: ModifierGroup, depth = 0, parentOption?: { name: string; nameMy?: string; nameTh?: string }): JSX.Element {
     const selected = draftSelections[group.id] ?? [];
     const groupOptions = group.options.filter((option) => option.active);
-    const groupDone = group.appearance === "TEXT" ? (!group.required || Boolean(draftKitchenNote.trim())) : selected.length >= group.minPicks && selected.length <= group.maxPicks;
+    const groupDone = group.appearance === "TEXT" ? (!group.required || Boolean(draftKitchenNote.trim())) : group.appearance === "TOGGLE" ? true : selected.length >= group.minPicks && selected.length <= group.maxPicks;
     const childForOption = (optionId: string) => {
       const option = groupOptions.find((candidate) => candidate.id === optionId);
       const child = option?.opensGroup && selected.includes(option.id) ? configureGroups.find((candidate) => candidate.id === option.opensGroup?.id) : undefined;
@@ -548,7 +748,7 @@ export function NewOrderPage() {
       <p className="mb-4 mt-1 text-[11px] text-muted">Tap a level. The kitchen makes it this way unless the guest asks for different.</p>
       <LevelSlider labels={groupOptions.map((option) => modifierLabel(option, language))} value={Math.max(0, groupOptions.findIndex((option) => selected.includes(option.id)))} onChange={(index) => updateDraftSelection(group, groupOptions[index].id, true)} ariaLabel={`Choose ${modifierLabel(group, language)} level`} />
       {modifierPickerMode === "list" && selected[0] && childForOption(selected[0])}
-    </div> : <div className="grid gap-2 sm:grid-cols-2">
+    </div> : group.appearance === "TOGGLE" ? <div className="space-y-2">{groupOptions.map((option) => { const on = selected.includes(option.id); const price = Number(option.priceAdjustment); return <div key={option.id} className={`flex min-h-[62px] items-center gap-3 rounded-xl border px-3 py-2.5 ${on ? "border-[#ed168c] bg-[#fff8fb]" : "border-line bg-white"}`}><div className="min-w-0 flex-1"><p className="text-xs font-semibold">{modifierLabel(option, language)}</p><p className="mt-0.5 text-[10px] text-muted">{on ? "Included" : "Not included"}{on && price > 0 ? ` · +${money(price)}` : ""}</p></div><button type="button" role="switch" aria-checked={on} aria-label={`${on ? "Leave out" : "Include"} ${modifierLabel(option, language)}`} onClick={() => updateDraftSelection(group, option.id, !on)} className={`relative h-7 w-12 shrink-0 rounded-full transition ${on ? "bg-[#ed168c]" : "bg-[#efe4ea]"}`}><span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition ${on ? "left-[22px]" : "left-0.5"}`} /></button></div>; })}</div> : <div className="grid gap-2 sm:grid-cols-2">
       {groupOptions.map((option) => {
         const isSelected = selected.includes(option.id);
         const atLimit = selected.length >= group.maxPicks;
@@ -567,8 +767,8 @@ export function NewOrderPage() {
     return <section key={group.id} className={depth ? "mt-2 rounded-lg border-l-[3px] border-l-[#f7c5df] bg-[#fff8fb] p-3" : "rounded-xl border border-[#f1dfe9] bg-white p-4"}>
       {parentOption && <p className="mb-2 text-[10px] font-semibold text-muted">Because you picked {modifierLabel(parentOption, language)}</p>}
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d]"><ModifierGroupIcon name={group.icon} size={16} /></span><div className="min-w-0"><h3 className="text-sm font-bold">{modifierLabel(group, language)}{language !== "en" && group.name ? <span className="ml-1 font-normal text-muted">{group.name}</span> : null}</h3><p className="mt-0.5 text-[10px] text-muted">{group.required ? "Required" : "Optional"}{group.appearance === "TEXT" ? " · Free text" : ` · Pick ${group.minPicks === group.maxPicks ? group.minPicks : `${group.minPicks}–${group.maxPicks}`}`}</p></div></div>
-        <div className="shrink-0 text-right"><span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${groupDone ? "bg-emerald-50 text-emerald-700" : "bg-[#f5f5f4] text-muted"}`}>{groupDone ? "Done" : group.required ? "Required" : "Optional"}</span><p className="mt-1 text-[10px] text-muted">{group.appearance === "TEXT" ? "Free text" : `${selected.length} picked`}</p></div>
+        <div className="flex min-w-0 items-center gap-2"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d]"><ModifierGroupIcon name={group.icon} size={16} /></span><div className="min-w-0"><h3 className="text-sm font-bold">{modifierLabel(group, language)}{language !== "en" && group.name ? <span className="ml-1 font-normal text-muted">{group.name}</span> : null}</h3><p className="mt-0.5 text-[10px] text-muted">{group.required ? "Required" : "Optional"}{group.appearance === "TEXT" ? " · Free text" : group.appearance === "TOGGLE" ? " · Include or leave out" : ` · Pick ${group.minPicks === group.maxPicks ? group.minPicks : `${group.minPicks}–${group.maxPicks}`}`}</p></div></div>
+        <div className="shrink-0 text-right"><span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${groupDone ? "bg-emerald-50 text-emerald-700" : "bg-[#f5f5f4] text-muted"}`}>{groupDone ? "Done" : group.required ? "Required" : "Optional"}</span><p className="mt-1 text-[10px] text-muted">{group.appearance === "TEXT" ? "Free text" : group.appearance === "TOGGLE" ? `${selected.length} included` : `${selected.length} picked`}</p></div>
       </div>
       {groupBody}
     </section>;
@@ -576,46 +776,47 @@ export function NewOrderPage() {
 
   return (
     <>
-    <div>
-      <PageHeader
-        eyebrow="Floor · New ticket"
-        title="Build an order"
-        description={selectedTable
-          ? `Choose dishes for ${selectedTable.tableNumber}, customize each item, and send the ticket to the kitchen.`
-          : "Choose dishes, customize each item, and send the ticket to the kitchen."}
-        action={
-          <button onClick={() => navigate("/tables")} className="rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold transition hover:border-[#ed168c]/40 hover:text-[#d90c7d]">Back to tables</button>
-        }
-      />
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0">
-          <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="relative flex-1">
-              <Search
-                size={16}
-                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted"
-              />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Find something delicious…"
-                className="focus-ring h-11 w-full rounded-xl border border-line bg-white pl-10 pr-4 text-sm outline-none focus:border-olive"
-              />
-            </div>
-            <div aria-label="Menu categories" className="scrollbar-hide flex min-w-0 gap-2 overflow-x-auto pb-1 lg:flex-1">
-              {["All", ...categories.map((category) => category.name)].map(
-                (name) => (
-                  <button
-                    key={name}
-                    onClick={() => setSelectedCategory(name)}
-                    className={`shrink-0 whitespace-nowrap rounded-xl px-3.5 py-2.5 text-xs font-semibold transition ${selectedCategory === name ? "bg-[#ed168c] text-white" : "border border-line bg-white text-[#697066] hover:border-[#ed168c]/40 hover:text-[#d90c7d]"}`}
-                  >
-                    {name}
-                  </button>
-                ),
-              )}
-            </div>
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden ${androidTicket ? "" : "md:pr-[18.25rem] lg:pr-[20rem]"}`}>
+      <div className="shrink-0 bg-canvas pt-4 md:pt-6">
+        <div className="relative">
+          <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search any dish or drink"
+            className="focus-ring h-11 w-full rounded-xl border border-line bg-white pl-10 pr-11 text-sm outline-none focus:border-olive"
+          />
+          {search && (
+            <button type="button" aria-label="Clear search" onClick={() => setSearch("")} className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-muted hover:bg-[#fff1f8] hover:text-[#d90c7d]">
+              <X size={15} />
+            </button>
+          )}
+        </div>
+        <div className="mb-4 mt-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
+          <div className="min-w-0">
+            <p className="text-[11px] font-extrabold uppercase tracking-[.16em] text-[#e21888]">Floor · New ticket</p>
+            <h1 className="mt-1.5 font-display text-[30px] font-extrabold leading-tight tracking-[-.05em] text-ink sm:text-[34px]">Build an order</h1>
+            <p className="mt-1.5 max-w-2xl text-[13px] leading-5 text-muted sm:text-sm">{showingDishes ? "Choose a table, add a few good things, and send it straight to the kitchen." : "Pick a category to see its dishes, or search for anything."}</p>
           </div>
+          {showingDishes ? (
+            <button type="button" onClick={leaveDishes} className="inline-flex h-fit shrink-0 items-center gap-1.5 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold transition hover:border-[#ed168c]/40 hover:text-[#d90c7d]"><ChevronLeft size={14} /> Back to categories</button>
+          ) : (
+            <button onClick={() => navigate("/tables")} className="h-fit shrink-0 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold transition hover:border-[#ed168c]/40 hover:text-[#d90c7d]">Back to tables</button>
+          )}
+        </div>
+        {showingDishes && (
+            <div aria-label="Menu categories" className="scrollbar-hide mb-5 flex gap-2 overflow-x-auto pb-1">
+              {["All", ...categories.filter((category) => visibleCategory(category.name)).map((category) => category.name)].map((name) => (
+                <button
+                  key={name}
+                  onClick={() => { setSelectedCategory(name); setBrowsingDishes(true); setSearch(""); }}
+                  className={`shrink-0 whitespace-nowrap rounded-xl px-3.5 py-2.5 text-xs font-semibold transition ${selectedCategory === name ? "bg-[#ed168c] text-white" : "border border-line bg-white text-[#697066] hover:border-[#ed168c]/40 hover:text-[#d90c7d]"}`}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
           {error && (
             <div
               role="alert"
@@ -624,49 +825,77 @@ export function NewOrderPage() {
               {error}
             </div>
           )}
-          {menuItems.length ? (
-            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-6">
+          {!showingDishes ? (
+            <div className="space-y-5">
+              {menuSections.map((section) => (
+                <section key={section.key}>
+                  <h2 className="mb-2.5 text-[11px] font-extrabold uppercase tracking-[.16em] text-[#8d939c]">{section.key}</h2>
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                    {section.categories.map((category) => {
+                      const Icon = categoryIcon(category.name);
+                      const count = category.items?.length ?? 0;
+                      const tone = sectionTone[section.key];
+                      const noun = section.key === "Food" ? (count === 1 ? "dish" : "dishes") : (count === 1 ? "drink" : "drinks");
+                      return (
+                        <button key={category.id} type="button" onClick={() => { setSelectedCategory(category.name); setBrowsingDishes(true); setSearch(""); }} className={`rounded-[22px] px-4 py-3.5 text-left transition hover:brightness-[0.98] ${tone.card}`}>
+                          <span className={`grid h-9 w-9 place-items-center rounded-full ${tone.icon}`}><Icon size={17} strokeWidth={2.1} /></span>
+                          <span className="mt-3 block font-display text-[15px] font-extrabold leading-5 text-ink">{category.name}</span>
+                          <span className={`mt-0.5 block text-[12px] font-semibold ${tone.count}`}>{count} {noun}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+              {!menuSections.length && (
+                <Panel>
+                  <EmptyState icon={Utensils} title="No categories yet" body="Add menu categories and they will show up here." />
+                </Panel>
+              )}
+            </div>
+          ) : menuItems.length ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {menuItems.map((item, index) => {
                 const quantity = cart.reduce((sum, line) => line.item.id === item.id ? sum + line.quantity : sum, 0);
+                const Icon = categoryIcon(item.category?.name ?? "");
                 return (
                 <article
                   key={item.id}
                   onClick={(event) => bumpMenuItem(item, 1, event.currentTarget.querySelector("[data-add-mark]")?.getBoundingClientRect() ?? null)}
-                  className="group cursor-pointer overflow-hidden rounded-[18px] border border-[#f0e1e9] bg-white text-left shadow-card transition hover:-translate-y-0.5 hover:border-[#ed168c]/40 hover:shadow-float"
+                  className="group cursor-pointer overflow-hidden rounded-[24px] border border-[#f0e1e9] bg-white text-left shadow-card transition hover:border-[#ed168c]/40"
                 >
                   <div
-                    className={`relative flex h-32 items-end overflow-hidden bg-gradient-to-br ${categoryColors[index % categoryColors.length]} p-4`}
+                    className={`relative flex h-28 items-start overflow-hidden bg-gradient-to-br ${categoryColors[index % categoryColors.length]} p-4`}
                   >
                     {item.imageUrl ? (
                       <img
-                        src={item.imageUrl}
+                        src={mediaSrc(item.imageUrl)}
                         alt=""
-                        className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                        className="absolute inset-0 h-28 w-full object-cover"
                       />
                     ) : (
                       <>
-                        <div className="absolute -right-5 -top-10 h-36 w-36 rounded-full border-[20px] border-white/25" />
-                        <div className="absolute right-7 top-5 h-12 w-12 rounded-full bg-white/25 blur-sm" />
-                        <Utensils
-                          className="relative z-10 text-[#bd5188]/70"
-                          size={23}
-                        />
+                        <div className="absolute -right-6 -top-10 h-36 w-36 rounded-full border-[18px] border-white/40" />
+                        <div className="absolute right-8 top-6 h-16 w-16 rounded-full bg-white/40" />
                       </>
                     )}
-                    <span className="relative z-10 rounded-full bg-white/85 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[.08em] text-olive backdrop-blur">
+                    <span className="relative z-10 inline-flex max-w-full items-center gap-1.5 truncate rounded-full bg-white/90 px-2 py-1 text-[10px] font-extrabold uppercase tracking-[.08em] text-[#e21888]">
+                      <Icon size={12} />
                       {item.category?.name}
                     </span>
                   </div>
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
-                      <h3 className="font-display text-sm font-bold leading-5">
+                      <h3 className="font-display text-[16px] font-extrabold leading-5">
                         {item.name}
                       </h3>
-                      <span className="shrink-0 text-sm font-bold">
+                      <span className="shrink-0 text-[14px] font-bold">
                         {money(item.price)}
                       </span>
                     </div>
-                    <p className="mt-2 line-clamp-2 min-h-9 text-xs leading-[18px] text-muted">
+                    <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-muted">
                       {item.description ||
                         "Prepared fresh by our kitchen team."}
                     </p>
@@ -678,7 +907,7 @@ export function NewOrderPage() {
                     ) : null}
                     {item.availableExtras?.length ? <p className="mt-1 truncate text-[10px] text-sky-800">{language === "my" ? "အပိုထည့်စရာ:" : language === "th" ? "รายการเพิ่มเติม:" : "Extras:"} {localizedFoodLabels(item.availableExtras, item.availableExtrasMy, item.availableExtrasTh, language).join(", ")}</p> : null}
                     <div className="mt-4 flex items-center justify-between border-t border-line pt-3">
-                      <span className="text-[10px] text-muted">{quantity ? "On the ticket" : "Tap to add"}</span>
+                      <span className="text-[12px] text-muted">{quantity ? "On the ticket" : "Tap to choose"}</span>
                       {quantity ? (
                         <div data-add-mark className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5" onClick={(event) => event.stopPropagation()}>
                           <button type="button" aria-label={`Remove one ${item.name}`} onClick={() => bumpMenuItem(item, -1)} className="grid h-7 w-7 place-items-center rounded-md text-[#d90c7d] hover:bg-white"><Minus size={12} /></button>
@@ -686,7 +915,7 @@ export function NewOrderPage() {
                           <button type="button" aria-label={`Add one ${item.name}`} onClick={(event) => bumpMenuItem(item, 1, event.currentTarget.getBoundingClientRect())} className="grid h-7 w-7 place-items-center rounded-md text-[#d90c7d] hover:bg-white"><Plus size={12} /></button>
                         </div>
                       ) : (
-                        <span data-add-mark className="grid h-8 w-8 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d] transition group-hover:bg-[#ed168c] group-hover:text-white"><Plus size={16} /></span>
+                        <span data-add-mark className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff0f7] text-[#d90c7d] transition group-hover:bg-[#ed168c] group-hover:text-white"><Plus size={16} /></span>
                       )}
                     </div>
                   </div>
@@ -703,138 +932,195 @@ export function NewOrderPage() {
             </Panel>
           )}
         </div>
-        <Panel className="flex flex-col self-start md:sticky md:top-16 md:z-20 md:max-h-[calc(100dvh-5rem)] md:overflow-hidden">
-          <div className="flex shrink-0 items-center justify-between border-b border-line px-5 py-4">
-            <div>
-              <h2 className="font-display text-[15px] font-bold">
+        {androidTicket && ticketOpen && (
+          <button
+            type="button"
+            aria-label="Close ticket"
+            onClick={() => setTicketOpen(false)}
+            className="fixed inset-0 z-40 bg-black/40"
+          />
+        )}
+        {androidTicket && (
+          <button
+            type="button"
+            onClick={() => setTicketOpen(true)}
+            className={`fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-30 items-center gap-2 rounded-full bg-[#ed168c] px-4 py-3 text-sm font-bold text-white shadow-float ${ticketOpen ? "hidden" : "flex"}`}
+          >
+            <ShoppingBag size={18} />
+            Ticket
+            <span className="grid min-w-5 place-items-center rounded-full bg-white px-1.5 text-xs font-extrabold text-[#d90c7d]">
+              {cartCount}
+            </span>
+          </button>
+        )}
+        <Panel className={androidTicket
+          ? `fixed inset-y-0 right-0 z-50 flex h-dvh w-[min(22rem,88vw)] flex-col overflow-hidden shadow-float transition-transform duration-300 !rounded-r-none ${ticketOpen ? "translate-x-0" : "pointer-events-none translate-x-full"}`
+          : "fixed bottom-5 right-5 top-[11.5rem] z-30 flex w-80 min-h-0 flex-col overflow-hidden"}>
+          <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-2 pt-4">
+            <div className="min-w-0">
+              <h2 className="font-display text-[16px] font-bold tracking-[-.02em]">
                 Current ticket
               </h2>
-              <p className="mt-1 text-xs text-muted">
-                {cartLines.reduce((count, line) => count + line.quantity, 0)} {cartLines.reduce((count, line) => count + line.quantity, 0) === 1 ? "item" : "items"} · {payers.length} {payers.length === 1 ? "payer" : "payers"}
+              <p className="mt-0.5 text-[12px] text-[#8d939c]">
+                {ticketCount} {ticketCount === 1 ? "item" : "items"} · one bill
               </p>
             </div>
-            <span ref={ticketMarkRef} className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff0f7] text-[#d90c7d]">
-              <ShoppingBag size={17} />
+            <span ref={ticketMarkRef} className={`${androidTicket ? "hidden" : "grid"} h-9 w-9 place-items-center rounded-xl bg-[#ffe4f2] text-[#f2168d]`}>
+              <Receipt size={16} strokeWidth={2.1} />
             </span>
+            {androidTicket && (
+              <button type="button" onClick={() => setTicketOpen(false)} aria-label="Close ticket" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-canvas hover:text-ink">
+                <X size={18} />
+              </button>
+            )}
           </div>
-          <div className="p-4 md:min-h-0 md:flex-1 md:overflow-y-auto">
-            <div className="mb-4 border-b border-line pb-4">
-              <SelectField label="Table" value={selectedTable?.id ?? ""} onChange={(event) => {
-                if (event.target.value) navigate(`/tables/${event.target.value}`);
-              }}>
-                <option value="" disabled>Choose a table</option>
-                {tables.map((table) => <option key={table.id} value={table.id}>{table.tableNumber}</option>)}
-              </SelectField>
-            </div>
-            {selectedTable && <div className="mb-4 border-b border-line pb-3" ref={roomPickerRef}>
-              <label className="mb-2 block text-xs font-semibold text-ink">{t("Assign guest rooms to this table")}</label>
-              {activeStays.length ? <div className="relative">
-                <button type="button" aria-haspopup="listbox" aria-expanded={roomPickerOpen} disabled={savingRoomAssignments} onClick={() => setRoomPickerOpen((open) => !open)} className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-line bg-white px-3 py-2 text-left text-xs font-semibold text-ink hover:bg-canvas disabled:opacity-60">
-                  <span className="min-w-0 truncate">{assignedRoomStayIds.length ? `${assignedRoomStayIds.length} ${t("guest rooms assigned")}` : t("Select guest rooms")}</span>
-                  <ChevronDown size={15} className={`shrink-0 text-muted transition-transform ${roomPickerOpen ? "rotate-180" : ""}`} />
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
+            <label className="block text-[12px] font-semibold text-ink">
+              Table
+              <span className="relative mt-1.5 block">
+                <button ref={tableButtonRef} type="button" aria-haspopup="listbox" aria-expanded={tablePickerOpen} onClick={() => setTablePickerOpen((open) => !open)} className="flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-[#eadfe6] bg-white px-3 text-left text-[13px] font-medium text-ink outline-none focus:border-[#ed168c]">
+                  <span className="truncate">{selectedTable ? (/^table\b/i.test(selectedTable.tableNumber) ? selectedTable.tableNumber : `Table ${selectedTable.tableNumber}`) : "Choose a table"}</span>
+                  <ChevronDown size={16} className="shrink-0 text-[#9aa09a]" />
                 </button>
-                {roomPickerOpen && <div role="listbox" aria-multiselectable="true" aria-label={t("Assign guest rooms to this table")} className="absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
-                  {activeStays.map((stay) => <label key={stay.id} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-ink hover:bg-canvas">
-                    <input type="checkbox" checked={assignedRoomStayIds.includes(stay.id)} disabled={savingRoomAssignments} onChange={(event) => {
-                      const next = event.target.checked ? [...assignedRoomStayIds, stay.id] : assignedRoomStayIds.filter((id) => id !== stay.id);
-                      void assignRoomsToTable(next);
-                    }} />
-                    <span className="truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
-                    {assignedRoomStayIds.includes(stay.id) && <Check size={13} className="ml-auto shrink-0 text-olive" />}
-                  </label>)}
-                </div>}
-              </div> : <p className="rounded-xl border border-line bg-white px-3 py-2.5 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
-            </div>}
-            {selectedTable && activeTableOrders.length > 0 && <section className="mb-4 rounded-2xl border border-line bg-[#fbfcf9] p-4" aria-label={`Table ${selectedTable.tableNumber} open orders`}>
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
-                <div><h3 className="text-sm font-bold">{selectedTable.tableNumber} · Open tab</h3><p className="mt-1 text-[10px] text-muted">{selectedTable.capacity} seats · {activeTableOrders.length} active tickets</p></div>
-                <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-olive">{selectedTable.status}</span>
+              </span>
+            </label>
+            {tablePickerOpen && tableListBox && createPortal(<>
+              <div ref={tableListRef} role="listbox" aria-label="Choose a table" style={{ top: tableListBox.top, left: tableListBox.left, width: tableListBox.width }} className="fixed z-[90] max-h-64 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
+                {tables.map((table) => {
+                  const selected = table.id === selectedTable?.id;
+                  const label = /^table\b/i.test(table.tableNumber) ? table.tableNumber : `Table ${table.tableNumber}`;
+                  return <button key={table.id} type="button" role="option" aria-selected={selected} onClick={() => { setTablePickerOpen(false); if (!selected) navigate(`/tables/${table.id}`); }} className={`flex min-h-10 w-full items-center rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold ${selected ? "bg-[#fff1f8] text-[#d90c7d]" : "text-ink hover:bg-canvas"}`}>{label}</button>;
+                })}
+                {!tables.length && <p className="px-2.5 py-2 text-[11px] text-muted">No tables yet</p>}
               </div>
-              {activeTableOrders.length ? <div className="mt-3">
-                <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
-                {activeTableOrders.map((order) => <article key={order.id} className="rounded-xl border border-line bg-white p-3">
-                  <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="font-mono text-[10px] font-bold">#{order.id.slice(-6).toUpperCase()}</span><OrderBadge status={order.status} /></div><span className="text-[10px] text-muted">Ordered by {order.waiter?.name}</span></div>
-                  <ul className="mt-2 space-y-1 text-xs">{(order.items ?? []).map((line, index) => <li key={line.id ?? `${order.id}-${index}`}><span className="font-bold">{line.quantity}×</span> {line.menuItem?.name ?? "Item"}{line.addExtras ? <span className="text-muted"> · {line.addExtras}</span> : null}</li>)}</ul>
-                  {String(order.id).startsWith("local-") && <p className="mt-2 text-[10px] font-semibold text-amber-800">Saved on this device. The kitchen receives it when the connection returns.</p>}
-                  {order.servedBy && <p className="mt-2 text-[10px] font-semibold text-emerald-700">Collected / served by {order.servedBy.name}</p>}
-                  {order.status === "SERVED" && <button type="button" disabled={ticketActionId === order.id} onClick={() => void (async () => {
-                    setTicketActionId(order.id); setError("");
-                    try { await cookAction(order.id, "revert"); notify("Pickup undone. Ticket is ready again."); }
-                    catch (cause) { reportError(errorMessage(cause)); }
-                    finally { setTicketActionId(null); }
-                  })()} className="mt-3 h-9 w-full rounded-lg border border-line bg-white text-[11px] font-bold text-ink hover:bg-canvas disabled:opacity-50">Revert</button>}
-                </article>)}
-                </div>
-                <p className="mt-3 text-[10px] text-muted">Add another ticket below to continue this table’s order.</p>
-              </div> : <p className="mt-3 text-xs text-muted">No items have been ordered at this table yet. Start with the menu below.</p>}
-              {activeTableOrders.length > 0 && <div className="mt-3 border-t border-line pt-3">
-                <div className="flex items-center justify-between"><span className="text-xs font-semibold">Open table total</span><span className="font-display text-lg font-extrabold">{money(tableTotal)}</span></div>
-                <button onClick={() => setSettleOpen(true)} disabled={placing} className="mt-3 h-11 w-full rounded-xl bg-[#ed168c] text-xs font-bold text-white hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40">Pay</button>
+            </>, document.body)}
+            {selectedTable && <div className="relative z-20 mt-4 border-b border-[#f3e6ec] pb-4" ref={roomPickerRef}>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[12px] font-medium text-[#3c4248]">At this table</p>
+                <button ref={roomButtonRef} type="button" aria-haspopup="listbox" aria-expanded={roomPickerOpen} disabled={savingRoomAssignments} onClick={() => setRoomPickerOpen((open) => !open)} className="inline-flex shrink-0 items-center gap-1 text-[12px] font-semibold text-[#f2168d] disabled:opacity-60">
+                  Who&apos;s at the table
+                  <ArrowRight size={13} strokeWidth={2.4} />
+                </button>
+              </div>
+              {roomPayers.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {roomPayers.map((payer, index) => {
+                  const tone = ["bg-[#efe6fb] text-[#6a5a86]", "bg-[#fde7d8] text-[#c56b45]"][index % 2];
+                  return <span key={payer.id} className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${tone}`}>{payer.label}</span>;
+                })}
               </div>}
-            </section>}
-            <div className="my-4 h-px bg-line" />
+              {activeTableOrders.length > 0 && <div className="mt-3 space-y-2.5">
+                {activeTableOrders.flatMap((order) => order.items.map((line, index) => {
+                  const detail = [line.modifierSelections?.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · "), line.removeIngredients && `No ${line.removeIngredients}`, line.addExtras && line.addExtras, line.specialNotes].filter(Boolean).join(" · ");
+                  const amount = lineAmount(line);
+                  const rowKey = line.id ?? `${order.id}-${index}`;
+                  const canClear = Boolean(line.id && !line.id.startsWith("local-"));
+                  const row = <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-start gap-1.5">
+                        <p className="min-w-0 truncate text-[13px] font-bold leading-5"><span className="mr-1 text-[#d80c7c]">{line.quantity}×</span>{line.menuItem.name}</p>
+                        {canClear && <DishCommentButton flagged={Boolean(line.kitchenFlag)} label={line.menuItem.name} onClick={() => void toggleSentFlag(order.id, line.id, Boolean(line.kitchenFlag))} />}
+                      </div>
+                      {detail && <p className="mt-0.5 text-[11px] leading-4 text-[#8d939c]">{detail}</p>}
+                    </div>
+                    <span className="shrink-0 text-[13px] font-semibold tabular-nums">{money(amount)}</span>
+                  </div>;
+                  if (!canClear || !line.id) return <div key={rowKey}>{row}</div>;
+                  return <SwipeClearRow key={rowKey} rowKey={rowKey} open={openSwipe === rowKey} busy={clearingId === line.id} label={line.menuItem.name} onOpen={setOpenSwipe} onClear={() => void clearSentLine(order.id, line.id!)}>{row}</SwipeClearRow>;
+                }))}
+              </div>}
+              {roomPickerOpen && roomListBox && createPortal(<>
+                <div className="fixed inset-0 z-[80] bg-black/30" onPointerDown={() => setRoomPickerOpen(false)} />
+                <div ref={roomListRef} role="listbox" aria-multiselectable="true" aria-label={t("Assign guest rooms to this table")} style={{ top: roomListBox.top, left: roomListBox.left, width: roomListBox.width }} className="fixed z-[90] max-h-56 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
+                {activeStays.map((stay) => {
+                  const selected = assignedRoomStayIds.includes(stay.id);
+                  return <button key={stay.id} type="button" role="option" aria-selected={selected} disabled={savingRoomAssignments} onClick={() => {
+                    const next = selected ? assignedRoomStayIds.filter((id) => id !== stay.id) : [...assignedRoomStayIds, stay.id];
+                    void assignRoomsToTable(next);
+                  }} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-ink hover:bg-canvas disabled:opacity-60">
+                    <span className={`grid h-4 w-4 shrink-0 place-items-center rounded border ${selected ? "border-[#ed168c] bg-[#ed168c] text-white" : "border-[#d9c3cf]"}`}>{selected && <Check size={11} />}</span>
+                    <span className="min-w-0 truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
+                  </button>;
+                })}
+                {!activeStays.length && <p className="px-2.5 py-2 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
+              </div>
+              </>, document.body)}
+            </div>}
             {cartLines.length ? (
-              <div className="space-y-3 pr-1">
+              <div className="mt-4 space-y-3">
                 {cartLines.map((line) => {
                   const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
                   const modifierLines = selectedModifierLines(line.item, line.modifierSelections);
-                  return <article key={line.id} className="border-b border-line pb-3 last:border-0">
-                    <div className="flex items-start justify-between gap-2"><p className="min-w-0 truncate text-xs font-bold leading-5">{line.item.name}</p><button onClick={() => removeCartLine(line.id)} className="shrink-0 text-[#a4a89f] hover:text-rose-600" aria-label={`Remove ${line.item.name}`}><Trash2 size={14} /></button></div>
-                    <select aria-label={`Who ordered ${line.item.name}`} value={orderForChoices.some((payer) => payer.id === line.payerId) ? line.payerId : (orderForChoices[0]?.id ?? "walk-ins")} onChange={(event) => assignCartPayer(line.id, event.target.value)} className="mt-2 h-8 w-full rounded-lg border border-line bg-white px-2 text-[11px] font-semibold text-ink outline-none focus:border-[#ed168c]">{orderForChoices.map((payer) => <option key={payer.id} value={payer.id}>{payer.id === "walk-ins" ? "Walk-ins" : `${payer.label} · ${payer.name}`}</option>)}</select>
-                    <div className="mt-2 flex items-center justify-between gap-3"><span className="text-xs text-muted">{money(unitPrice * line.quantity)}</span><div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label={`Remove one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity - 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{line.quantity}</span><button type="button" aria-label={`Add one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity + 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button></div></div>
-                    {modifierLines.length > 0 && <div className="mt-2 space-y-1">{modifierLines.map((modifier) => <div key={modifier.id} className={`flex items-start justify-between gap-2 text-[10px] leading-4 text-muted ${modifier.depth ? "ml-3 border-l border-[#f3cade] pl-2" : ""}`}><span className="min-w-0">{modifier.name}{modifier.count > 1 ? ` ×${modifier.count}` : ""}</span>{!(modifier.nested && modifier.amount <= 0) && <span className="shrink-0">{modifier.amount > 0 ? `+${money(modifier.amount)}` : "Free"}</span>}</div>)}</div>}
-                    {line.specialNotes && <p className="mt-2 inline-block rounded-lg bg-amber-50 px-2 py-1 text-[10px] italic text-amber-800">“{line.specialNotes}”</p>}
-                    {(itemModifierGroups(line.item).length > 0 || line.specialNotes) && <button type="button" onClick={() => editCartLine(line)} className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-[#ed168c] hover:text-[#d80d7c]">Edit choices <ArrowRight size={12} /></button>}
+                  const detail = [modifierLines.map((modifier) => `${modifier.name}${modifier.count > 1 ? ` ×${modifier.count}` : ""}`).join(", "), line.specialNotes].filter(Boolean).join(" · ");
+                  const configured = itemModifierGroups(line.item).length > 0;
+                  return <article key={line.id} className="border-b border-[#f3e6ec] pb-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-start gap-1.5">
+                          <p className="min-w-0 truncate text-[13px] font-bold leading-5">{line.item.name}</p>
+                          <DishCommentButton flagged={Boolean(line.kitchenFlag)} label={line.item.name} onClick={() => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, kitchenFlag: !entry.kitchenFlag } : entry))} />
+                        </div>
+                        <p className="mt-0.5 text-[13px] font-semibold leading-5">{configured && line.quantity > 1 ? `${line.quantity} × ${money(unitPrice)}` : money(unitPrice * line.quantity)}</p>
+                      </div>
+                      {configured ? (
+                        <button type="button" onClick={() => removeCartLine(line.id)} className="mt-0.5 shrink-0 text-[#b7b3b8] hover:text-rose-600" aria-label={`Remove ${line.item.name}`}><Trash2 size={15} /></button>
+                      ) : (
+                        <div className="flex h-8 shrink-0 items-center rounded-full bg-[#f6f1f4] px-0.5 text-[#c9a3b6]">
+                          <button type="button" aria-label={`Remove one ${line.item.name}`} onClick={() => { if (line.quantity <= 1) removeCartLine(line.id); else updateCartQuantity(line.id, line.quantity - 1); }} className="grid h-7 w-7 place-items-center rounded-full hover:bg-white"><Minus size={13} /></button>
+                          <span className="w-4 text-center text-[12px] font-bold text-ink">{line.quantity}</span>
+                          <button type="button" aria-label={`Add one ${line.item.name}`} onClick={() => updateCartQuantity(line.id, line.quantity + 1)} className="grid h-7 w-7 place-items-center rounded-full hover:bg-white"><Plus size={13} /></button>
+                        </div>
+                      )}
+                    </div>
+                    {detail && <p className="mt-1 text-[11px] leading-4 text-[#8d939c]">{detail}</p>}
+                    {(configured || line.specialNotes) && <button type="button" onClick={() => editCartLine(line)} className="mt-1 text-[12px] font-semibold text-[#ed168c] hover:text-[#d80d7c]">Edit choices</button>}
                   </article>;
                 })}
               </div>
-            ) : (
-              <div className="py-9 text-center">
-                <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-canvas text-[#a0a69e]">
-                  <ShoppingBag size={20} />
-                </div>
-                <p className="mt-3 text-xs font-semibold">
-                  Your ticket is waiting
-                </p>
-                <p className="mt-1 text-[11px] text-muted">
-                  Add a dish from the menu to get started.
-                </p>
+            ) : activeTableOrders.length ? null : (
+              <div className="py-8 text-center">
+                <p className="text-xs font-semibold">Your ticket is waiting</p>
+                <p className="mt-1 text-[11px] text-muted">Add a dish from the menu to get started.</p>
               </div>
             )}
-            <label className="mt-4 block border-t border-line pt-4 text-xs font-semibold text-ink">
+            <label className="mt-4 block text-[12px] font-semibold text-ink">
               Note for kitchen <span className="font-normal text-muted">(optional)</span>
               <textarea
                 value={orderKitchenNote}
                 onChange={(event) => setOrderKitchenNote(event.target.value)}
                 placeholder="Add a note for this ticket"
                 rows={2}
-                className="mt-2 w-full resize-y rounded-xl border border-line bg-white px-3 py-2.5 text-xs font-normal text-ink outline-none transition placeholder:text-muted focus:border-[#ed168c]"
+                className="mt-1.5 w-full resize-y rounded-xl border border-[#eadfe6] bg-white px-3 py-2 text-xs font-normal text-ink outline-none transition placeholder:text-muted focus:border-[#ed168c]"
               />
             </label>
             </div>
-          <div className="shrink-0 border-t border-line bg-white px-4 pb-3 pt-3">
-              <div className="flex items-center justify-between">
-                <span className="font-display text-sm font-bold">Total</span>
-                <span className="font-display text-lg font-extrabold">
-                  {money(total)}
-                </span>
+          <div className="shrink-0 bg-white px-4 pb-[max(0.85rem,env(safe-area-inset-bottom))] pt-1">
+              <div className="flex items-center justify-between text-[13px] text-ink">
+                <span>Subtotal</span>
+                <span className="font-semibold">{money(total)}</span>
+              </div>
+              <div className="mt-1.5 flex items-center justify-between">
+                <span className="text-[15px] font-bold">Total</span>
+                <span className="text-[15px] font-extrabold">{money(total)}</span>
               </div>
               <button
-                disabled={
-                  placing || !cartLines.length || !selectedTable
-                }
+                disabled={placing || !selectedTable || !cartLines.length}
                 onClick={() => void placeOrder()}
-                className="focus-ring mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#ed168c] text-sm font-bold text-white transition hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40"
+                className="focus-ring mt-3 flex h-11 w-full items-center justify-center rounded-xl border border-[#eadfe6] bg-white px-3 text-center text-[13px] font-bold text-ink transition hover:bg-[#fff8fb] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {placing ? (serveAtTable ? "Saving ticket…" : "Sending to kitchen…") : serveAtTable ? "Pay" : "Send new items to kitchen"}
-                <ArrowRight size={16} />
+                {placing ? "Sending…" : "Send"}
               </button>
-              <p className="mt-3 text-center text-[10px] text-muted">
-                {serveAtTable ? "Staff serve these at the table. They stay on the ticket and receipt." : cartLines.some((line) => line.prepStation === "BAR") ? "Only kitchen dishes are sent. Anything served straight away stays on the ticket." : "The kitchen sees new tickets instantly."}
+              <button
+                disabled={placing || !selectedTable || !tableBill}
+                onClick={() => setSettleOpen(true)}
+                className="focus-ring mt-2 flex h-11 w-full items-center justify-center rounded-xl bg-[#ed168c] px-3 text-center text-[13px] font-bold text-white transition hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Settle table · {money(tableBill?.total ?? total)}
+              </button>
+              <p className="mt-2.5 text-center text-[10px] leading-4 text-[#8d939c]">
+                Settle it all on one bill, or split it so each person pays their part or adds it to their room.
               </p>
             </div>
         </Panel>
-      </div>
     </div>
     {configuringItem && <div className="fixed inset-0 z-[9999] flex justify-end bg-black/40" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemEditor(); }}>
       <aside role="dialog" aria-modal="true" aria-label={`Customize ${configuringItem.name}`} className="flex h-dvh max-h-dvh w-full min-h-0 max-w-full flex-col border-l border-line bg-white shadow-float sm:max-w-[700px]">
@@ -858,8 +1144,21 @@ export function NewOrderPage() {
         </footer>
       </aside>
     </div>}
-    {settleOpen && selectedTable && <div className="fixed inset-0 z-[90] flex items-center justify-center bg-ink/40 p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettleOpen(false); }}><section role="dialog" aria-modal="true" aria-label={`Settle ${selectedTable.tableNumber}`} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-float"><header className="flex items-start gap-4 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="font-display text-lg font-bold">Settle {selectedTable.tableNumber}</h2><p className="mt-1 text-[11px] text-muted">Each payer settles separately. Room guests can add their bill to the room tab or pay now; walk-ins pay now.</p></div><button type="button" onClick={() => setSettleOpen(false)} aria-label="Close settlement" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{orderPayerGroups.map((group, index) => { const stay = activeStays.find((entry) => entry.id === group.roomStayId); const cashOnly = Boolean(stay?.cashOnly || selectedTable.assignedRoomStays?.find((entry) => entry.id === group.roomStayId)?.cashOnly); const chosen = settlementMethods[group.id] ?? (group.roomStayId && !cashOnly ? "ROOM_CHECKOUT" : "CASH"); const method = cashOnly && chosen === "ROOM_CHECKOUT" ? "CASH" : chosen; const paid = settledPayers.find((entry) => entry.id === group.id && group.orders.every((order) => entry.orderIds.includes(order.id) && (order.paymentStatus === "PAID" || order.paymentStatus === "ROOM_FOLIO"))); return <article key={group.id} className="self-start rounded-xl border border-line bg-white p-3.5"><header className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-2"><span className={`shrink-0 rounded-full px-2 py-1 text-[8px] font-bold ${group.roomStayId ? index % 2 ? "bg-[#fff0e9] text-[#a64728]" : "bg-[#eef0ff] text-[#5866a0]" : "bg-[#f4f3f1] text-[#726b67]"}`}>{group.label}</span><div className="min-w-0"><h3 className="truncate text-xs font-bold">{group.name}</h3><p className="text-[9px] text-muted">#{group.id.slice(-6).toUpperCase()} · {group.orders[0]?.items.length ?? 0} {group.orders[0]?.items.length === 1 ? "item" : "items"}{stay ? ` · Room ${stay.room.roomNumber}` : !group.roomStayId ? ` · ${walkInPartyCount} people · pay now` : ""}</p></div></div><span className="shrink-0 text-xs font-bold">{money(group.total)}</span></header><div className="mt-3 space-y-1.5 border-b border-line pb-3">{group.orders.flatMap((order) => order.items.map((line) => <div key={`${order.id}-${line.id}`} className="flex justify-between gap-2 text-[9px] text-muted"><span>{line.quantity} × {line.menuItem.name}</span><span>{money(Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * line.quantity))}</span></div>))}</div>{paid ? <div className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{paid.note}</div> : <><p className="mt-3 text-[9px] text-muted">{group.roomStayId && !cashOnly ? "How are they paying?" : "Payment method"}</p>{cashOnly && <p className="mt-1 text-[9px] font-semibold text-[#a64728]">Cash only. Pay now.</p>}{group.roomStayId && !cashOnly && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["ROOM_CHECKOUT", "Add to room tab"], ["CASH", "Pay now"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT")} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2.5 py-1.5 text-[9px] font-semibold ${(method === "ROOM_CHECKOUT") === (value === "ROOM_CHECKOUT") ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}{(method !== "ROOM_CHECKOUT" || !group.roomStayId) && <div className="mt-1.5 inline-flex rounded-lg bg-[#fbf4f8] p-1">{([["CASH", "Cash"], ["CARD", "Card"], ["PROMPTPAY", "PromptPay QR"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={method === value} onClick={() => setSettlementMethods((current) => ({ ...current, [group.id]: value }))} className={`rounded-md px-2 py-1.5 text-[9px] font-semibold ${method === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}</div>}<button type="button" disabled={placing} onClick={() => void settlePayer(group, method)} className="mt-2.5 h-9 w-full rounded-lg bg-[#ed168c] px-2 text-[10px] font-bold text-white disabled:opacity-50">{method === "ROOM_CHECKOUT" ? `Add ${money(group.total)} to room tab` : `Take ${money(group.total)} ${method === "PROMPTPAY" ? "PromptPay" : method.toLowerCase()}`}</button></>}</article>; })}{settledPayers.filter((entry) => !orderPayerGroups.some((group) => group.id === entry.id)).map((entry) => <article key={entry.id} className="self-start rounded-xl border border-emerald-200 bg-white p-3.5"><div className="flex justify-between text-xs font-bold"><span>{entry.label}</span><span>{money(entry.total)}</span></div><p className="mt-3 rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] font-semibold text-emerald-800"><Check size={13} className="mr-1 inline" />{entry.note}</p></article>)}</div>{error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}</div><footer className="flex items-end justify-between gap-4 border-t border-line px-5 py-3"><div><p className="text-[10px] text-muted">Table total</p><p className="font-display text-base font-extrabold">{money(orderPayerGroups.reduce((sum, group) => sum + group.total, 0) + settledPayers.filter((payer) => !orderPayerGroups.some((group) => group.id === payer.id)).reduce((sum, payer) => sum + payer.total, 0))}</p></div><p className="text-right text-[9px] text-muted">The table clears once everyone has settled.</p></footer></section></div>}
-    {signaturePayerId && signatureGroup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink/45 p-4 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setSignaturePayerId(null); }}><section role="dialog" aria-modal="true" aria-label={`Sign for ${signatureGroup.name}`} className="w-full max-w-lg rounded-2xl border border-line bg-white p-5 shadow-float"><header className="flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-bold">Sign for Room {activeStays.find((stay) => stay.id === signatureGroup.roomStayId)?.room.roomNumber}</h2><p className="mt-1 text-[11px] text-muted">{signatureName}, please sign to add {money(signatureGroup.total)} to the room’s tab. You’ll pay at checkout.</p></div><button type="button" onClick={() => setSignaturePayerId(null)} aria-label="Close signature" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header><div className="mt-4 flex justify-between rounded-lg border border-line px-3 py-2 text-[10px] text-muted"><span>{signatureGroup.orders.map((order) => `${order.items.reduce((sum, line) => sum + line.quantity, 0)} × ${order.items.map((line) => line.menuItem.name).join(", ")}`).join(" · ")} · {selectedTable?.tableNumber}</span><span className="font-semibold">{money(signatureGroup.total)}</span></div><label className="mt-4 block text-[10px] font-semibold text-muted">Guest signing<input value={signatureName} onChange={(event) => setSignatureName(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-line px-3 text-xs text-ink outline-none focus:border-[#ed168c]" /></label><canvas ref={signatureCanvasRef} width={900} height={220} onPointerDown={startSignature} onPointerMove={drawSignature} onPointerUp={() => setSignatureDrawing(false)} onPointerCancel={() => setSignatureDrawing(false)} className="mt-3 h-40 w-full touch-none rounded-lg border border-line bg-[#fffafb]" aria-label="Sign here" /><p className="mt-1 text-[9px] text-muted">Sign above</p><div className="mt-4 flex gap-2"><button type="button" onClick={() => { const canvas = signatureCanvasRef.current; canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height); setSignatureData(""); }} className="h-10 flex-1 rounded-lg border border-line text-xs font-bold">Clear</button><button type="button" disabled={placing || !signatureName.trim() || !signatureData} onClick={() => void saveSignature()} className="h-10 flex-1 rounded-lg bg-[#ed168c] text-xs font-bold text-white disabled:opacity-40">{placing ? "Saving…" : "Confirm and add to tab"}</button></div></section></div>}
+    {settleOpen && selectedTable && tableBill && <SettleTableDialog
+      tableId={selectedTable.id}
+      tableNumber={selectedTable.tableNumber}
+      orders={tableBill.orders}
+      stays={activeStays}
+      assignedStayIds={assignedRoomStayIds}
+      cashierName={currentUser?.name ?? "Restaurant staff"}
+      onClose={() => setSettleOpen(false)}
+      onChanged={async () => {
+        const { data } = await api.get<DiningTable[]>("/tables");
+        setTables(data);
+        await fetchOrders();
+      }}
+      onReceipt={(next) => setReceipt(next)}
+    />}
     {receipt && <ReceiptPreview receipt={receipt} restaurantName={restaurantName} restaurantLogoUrl={restaurantLogoUrl} onClose={() => setReceipt(null)} />}
     {plusJumps.map((jump) => <PlusJumpBadge key={jump.id} jump={jump} onDone={clearPlusJump} />)}
     </>

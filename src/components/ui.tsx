@@ -1,15 +1,9 @@
 import { X } from "lucide-react";
-import type {
-  ElementType,
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-} from "react";
+import { useEffect, useRef, type ElementType, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import type { OrderStatus, TableStatus } from "../lib/types";
 import { createPortal } from "react-dom";
 
 export function PageHeader({
-  eyebrow,
   title,
   description,
   action,
@@ -22,11 +16,6 @@ export function PageHeader({
   return (
     <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
       <div>
-        {eyebrow && (
-          <p className="mb-3 inline-flex items-center rounded-full border border-olive/10 bg-olive-soft px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.14em] text-olive">
-            {eyebrow}
-          </p>
-        )}
         <h1 className="font-display text-[30px] font-extrabold leading-tight tracking-[-.05em] text-ink sm:text-[36px]">
           {title}
         </h1>
@@ -116,27 +105,61 @@ export function Modal({
   title,
   onClose,
   children,
+  footer,
   wide = false,
   extraWide = false,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  footer?: ReactNode;
   wide?: boolean;
   extraWide?: boolean;
 }) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const { style } = document.body;
+    const scrollY = window.scrollY;
+    const previous = { overflow: style.overflow, position: style.position, top: style.top, left: style.left, right: style.right, width: style.width };
+    style.overflow = "hidden";
+    style.position = "fixed";
+    style.top = `-${scrollY}px`;
+    style.left = "0";
+    style.right = "0";
+    style.width = "100%";
+    const overlay = overlayRef.current;
+    const onMove = (event: TouchEvent) => {
+      const target = event.target;
+      const scroller = target instanceof Element ? target.closest("[data-modal-scroll]") : null;
+      if (scroller && overlay?.contains(scroller)) return;
+      event.preventDefault();
+    };
+    overlay?.addEventListener("touchmove", onMove, { passive: false });
+    return () => {
+      style.overflow = previous.overflow;
+      style.position = previous.position;
+      style.top = previous.top;
+      style.left = previous.left;
+      style.right = previous.right;
+      style.width = previous.width;
+      window.scrollTo(0, scrollY);
+      overlay?.removeEventListener("touchmove", onMove);
+    };
+  }, []);
   const modal = (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-ink/35 p-4 backdrop-blur-[2px] sm:p-5"
+      ref={overlayRef}
+      className="fixed inset-0 z-[9999] flex items-center justify-center overflow-hidden overscroll-none bg-ink/35 p-4 backdrop-blur-[2px] sm:p-5"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
       <div
-        className={`max-h-[min(94vh,1000px)] w-full overflow-y-auto rounded-[24px] border border-line bg-white p-5 shadow-float sm:p-7 ${extraWide ? "max-w-5xl" : wide ? "max-w-2xl" : "max-w-lg"
-          }`}
+        role="dialog"
+        aria-modal="true"
+        className={`flex max-h-[min(94dvh,1000px)] w-full flex-col overflow-hidden rounded-[24px] border border-line bg-white shadow-float ${extraWide ? "max-w-5xl" : wide ? "max-w-2xl" : "max-w-lg"}`}
       >
-        <div className="mb-6 flex items-center justify-between">
+        <div className="flex shrink-0 items-center justify-between px-5 pb-6 pt-5 sm:px-7 sm:pt-7">
           <h2 className="font-display text-xl font-bold tracking-tight">
             {title}
           </h2>
@@ -151,7 +174,10 @@ export function Modal({
           </button>
         </div>
 
-        {children}
+        <div data-modal-scroll className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-5 pb-5 sm:px-7 sm:pb-7" style={{ WebkitOverflowScrolling: "touch" }}>
+          {children}
+        </div>
+        {footer && <div className="shrink-0 border-t border-line bg-white px-5 py-4 sm:px-7">{footer}</div>}
       </div>
     </div>
   );

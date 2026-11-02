@@ -40,11 +40,16 @@ export function OverviewPage() {
   const user = useAuthStore((state) => state.user)!;
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [shiftCount, setShiftCount] = useState("—");
+  const [roomIncome, setRoomIncome] = useState(0);
   useEffect(() => {
     void fetchOrders().catch(() => undefined);
     void api
       .get<DiningTable[]>("/tables")
       .then(({ data }) => setTables(data))
+      .catch(() => undefined);
+    void api
+      .get<{ roomIncome: number }>("/analytics/today")
+      .then(({ data }) => setRoomIncome(Number(data.roomIncome) || 0))
       .catch(() => undefined);
     void api
       .get<EmployeeShift[]>(
@@ -70,7 +75,7 @@ export function OverviewPage() {
   );
   const revenue = todayOrders
     .filter((order) => order.status !== "CANCELLED")
-    .reduce((sum, order) => sum + Number(order.totalAmount), 0);
+    .reduce((sum, order) => sum + Number(order.totalAmount), 0) + roomIncome;
   const pending = todayOrders.filter((order) =>
     ["PENDING", "PREPARING"].includes(order.status),
   );

@@ -7,6 +7,7 @@ import { initials, type RestaurantIdentity, type User } from "../lib/types";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { translate } from "../lib/translations";
+import { mediaSrc } from "../lib/media";
 
 export function AccountPage() {
   const user = useAuthStore((state) => state.user)!;
@@ -126,7 +127,7 @@ export function AccountPage() {
           <form onSubmit={(event) => void saveRestaurantIdentity(event)} className="grid gap-5 sm:grid-cols-[1fr_auto] sm:items-end">
             <Field label="Restaurant name" required maxLength={80} value={restaurantName} onChange={(event) => setRestaurantName(event.target.value)} />
             <div className="flex items-center gap-3 sm:min-w-64">
-              <div className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl border border-line bg-canvas text-olive">{restaurantLogoPreview ? <img src={restaurantLogoPreview} alt="Restaurant logo preview" className="h-full w-full object-contain" /> : <Utensils size={22} />}</div>
+              <div className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl border border-line bg-canvas text-olive">{restaurantLogoPreview ? <img src={mediaSrc(restaurantLogoPreview)} alt="Restaurant logo preview" className="h-full w-full object-contain" /> : <Utensils size={22} />}</div>
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-line bg-white px-3 py-2.5 text-xs font-bold hover:bg-canvas"><Camera size={14} /> Upload logo<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; if (file) { setRestaurantLogoFile(file); setRestaurantLogoPreview(URL.createObjectURL(file)); } }} /></label>
               {restaurantLogoPreview && <button type="button" onClick={() => { setRestaurantLogoFile(null); setRestaurantLogoPreview(""); }} className="text-xs font-semibold text-rose-600">Remove</button>}
             </div>
@@ -138,7 +139,7 @@ export function AccountPage() {
           <form onSubmit={(event) => void saveProfile(event)} className="space-y-4">
             <div className="flex items-center gap-4">
               <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-full bg-citrus text-lg font-bold text-olive">
-                {preview ? <img src={preview} alt="Profile" className="h-full w-full object-cover" /> : initials(user.name)}
+                {preview ? <img src={mediaSrc(preview)} alt="Profile" className="h-full w-full object-cover" /> : initials(user.name)}
               </div>
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-bold hover:bg-canvas"><Camera size={14} /> Change photo<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; if (file) { setImage(file); setPreview(URL.createObjectURL(file)); } }} /></label>
             </div>

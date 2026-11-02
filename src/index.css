@@ -15,7 +15,8 @@
 }
 
 * { box-sizing: border-box; }
-body { min-width: 320px; min-height: 100vh; margin: 0; }
+html, body, #root { height: 100%; }
+body { min-width: 320px; min-height: 100dvh; margin: 0; overscroll-behavior: none; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 ::selection { background: #d7ee9d; color: #20251f; }
@@ -67,21 +68,38 @@ html.dark .bg-\[\#f8edf2\] { background-color: #45212b !important; }
 .page-enter { animation: page-enter 320ms cubic-bezier(.2,.75,.25,1) both; }
 @keyframes page-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
 
+@keyframes comment-glow {
+  0%, 100% { opacity: 0.28; }
+  50% { opacity: 1; }
+}
+.comment-glow {
+  color: #ffe14a;
+  animation: comment-glow 1.4s ease-in-out infinite;
+  filter: drop-shadow(0 0 4px #fff3a3) drop-shadow(0 0 12px #f5c400);
+}
 .scrollbar-hide { scrollbar-width: none; }
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 
 .focus-ring:focus-visible { outline: 3px solid rgba(64,83,68,.28); outline-offset: 2px; }
 
+.receipt-printer-strong,
+.receipt-printer-strong * {
+  color: #000 !important;
+  font-weight: 700 !important;
+  -webkit-font-smoothing: none !important;
+  text-shadow: 0.5px 0 0 #000, -0.5px 0 0 #000, 0 0.5px 0 #000, 0 -0.5px 0 #000 !important;
+}
+
 @media print {
-  @page { size: auto; margin: 0; }
+  @page { size: auto; margin: 6mm; }
   html { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-  body.printing-receipt { position: fixed !important; inset: 0 !important; width: 100% !important; height: 100% !important; overflow: hidden !important; }
-  body.printing-receipt #root { position: fixed !important; inset: 0 !important; width: 100% !important; height: 100% !important; overflow: hidden !important; }
-  body * { visibility: hidden !important; }
+  html, body.printing-receipt, body.printing-receipt #root, body.printing-receipt #root > div { position: static !important; height: auto !important; min-height: 0 !important; overflow: visible !important; background: #fff !important; }
+  body.printing-receipt * { visibility: hidden !important; }
   .receipt-print-root, .receipt-print-root * { visibility: visible !important; }
-  .receipt-print-root { position: fixed !important; inset: 0 !important; display: block !important; width: 100% !important; height: 100% !important; overflow: hidden !important; padding: 0 !important; background: #fff !important; }
-  .receipt-print-root > div { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; min-height: 0 !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; }
-  .receipt-print-root .receipt-paper { width: 90mm !important; max-width: 90mm !important; margin: 5mm auto 0 !important; padding: 4mm !important; overflow: visible !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; font-size: 9pt !important; line-height: 1.25 !important; break-inside: avoid !important; page-break-inside: avoid !important; }
+  .receipt-print-root { position: absolute !important; inset: auto !important; top: 0 !important; left: 0 !important; display: block !important; width: 100% !important; height: auto !important; max-height: none !important; overflow: visible !important; padding: 0 !important; background: #fff !important; }
+  .receipt-print-root > div,
+  .receipt-print-root .receipt-dialog-shell { position: static !important; inset: auto !important; display: block !important; width: auto !important; height: auto !important; min-height: 0 !important; max-height: none !important; max-width: none !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; transform: none !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; }
+  .receipt-print-root .receipt-paper { position: static !important; width: 90mm !important; max-width: 90mm !important; height: auto !important; margin: 0 auto !important; padding: 4mm !important; overflow: visible !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; zoom: 1 !important; font-size: 9pt !important; line-height: 1.25 !important; break-inside: auto !important; page-break-inside: auto !important; }
   .receipt-print-root .receipt-paper header { margin-bottom: 3mm !important; }
   .receipt-print-root .receipt-paper .receipt-logo { height: 10mm !important; margin-bottom: 1mm !important; padding: 1mm !important; }
   .receipt-print-root .receipt-paper .receipt-item { margin-bottom: 2mm !important; break-inside: avoid !important; page-break-inside: avoid !important; }

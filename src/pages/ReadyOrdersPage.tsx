@@ -3,7 +3,7 @@ import { BellRing, Check, Clock3, PackageCheck, Utensils } from "lucide-react";
 import { EmptyState, PageHeader, Panel } from "../components/ui";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
-import { orderLocation } from "../lib/types";
+import { orderCode, orderLocation } from "../lib/types";
 import { errorMessage } from "../lib/api";
 import { money } from "../lib/types";
 import { formatOrderDuration } from "../lib/orderTiming";
@@ -89,7 +89,7 @@ export function ReadyOrdersPage() {
                     {orderLocation(order)}
                   </p>
                   <p className="mt-1 font-mono text-[10px] text-muted">
-                    #{order.id.slice(-6).toUpperCase()}
+                    #{orderCode(order)}
                   </p>
                 </div>
                 <span className="grid h-10 w-10 place-items-center rounded-xl bg-white text-olive">

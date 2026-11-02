@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Move, Pencil, Plus, RefreshCw, Trash2, Users, Utensils, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Check, Move, MoveDiagonal2, Pencil, Plus, RefreshCw, RotateCw, Trash2, Utensils, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Field, Modal, PageHeader } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 import type { DiningTable, FloorSection, TableShape, TableStatus } from "../lib/types";
@@ -14,32 +14,62 @@ const ROW_HEIGHT = 72;
 const GRID_GAP = 12;
 const shapeLabels: Record<TableShape, string> = { ROUND: "Round", SQUARE: "Square", RECTANGLE: "Rectangle", OVAL: "Oval", BOOTH: "Booth", BAR: "Bar" };
 const statuses: TableStatus[] = ["AVAILABLE", "OCCUPIED", "RESERVED"];
-const moveActions = [
-  { name: "left", Icon: ArrowLeft, dx: -2, dy: 0 },
-  { name: "right", Icon: ArrowRight, dx: 2, dy: 0 },
-  { name: "up", Icon: ArrowUp, dx: 0, dy: -2 },
-  { name: "down", Icon: ArrowDown, dx: 0, dy: 2 },
-];
+function cellsOverlap(a: DiningTable, b: DiningTable) {
+  return a.id !== b.id && a.positionX < b.positionX + b.width && b.positionX < a.positionX + a.width && a.positionY < b.positionY + b.height && b.positionY < a.positionY + a.height;
+}
+function stackZ(table: DiningTable, tables: DiningTable[]) {
+  const covered = tables.filter((other) => cellsOverlap(table, other));
+  if (!covered.length) return undefined;
+  return 40 + covered.filter((other) => (other.createdAt ?? "") <= (table.createdAt ?? "")).length;
+}
+function placeOnFloor(tables: DiningTable[], width: number, height: number, rows: number) {
+  const occupied = new Set<string>();
+  tables.forEach((table) => {
+    for (let x = table.positionX; x < table.positionX + table.width; x += 1) for (let y = table.positionY; y < table.positionY + table.height; y += 1) occupied.add(`${x}:${y}`);
+  });
+  const fits = (x: number, y: number) => Array.from({ length: width }, (_, offsetX) => Array.from({ length: height }, (_, offsetY) => !occupied.has(`${x + offsetX}:${y + offsetY}`))).flat().every(Boolean);
+  for (let y = 0; y <= Math.max(0, rows - height); y += 1) for (let x = 0; x <= GRID_COLUMNS - width; x += 1) if (fits(x, y)) return { x, y };
+  const visible = tables.slice().sort((a, b) => a.positionY - b.positionY || a.positionX - b.positionX)[0];
+  return { x: Math.max(0, Math.min(visible?.positionX ?? 0, GRID_COLUMNS - width)), y: Math.max(0, visible?.positionY ?? 0) };
+}
 function TableShapeSurface({ shape }: { shape: TableShape }) {
   if (shape === "BOOTH") return <div className="pointer-events-none absolute inset-x-[18%] bottom-1 h-2 rounded-full bg-[#f3d8e6]" />;
   if (shape === "BAR") return <div className="pointer-events-none absolute inset-x-3 top-0 h-2 rounded-t-full bg-[#edc6da]" />;
   return null;
 }
+function TableShapeTools({ shape, onShape, onRotate, label }: { shape: TableShape; onShape: (shape: TableShape) => void; onRotate: () => void; label: string }) {
+  const button = (active: boolean) => `grid h-7 w-7 place-items-center rounded-md border ${active ? "border-[#f71591] bg-[#fff0f7] text-[#d80c7c]" : "border-[#f3d9e7] bg-white text-[#8c7c85]"}`;
+  return <div className="flex items-center gap-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+    <button type="button" aria-label={`${label} round`} aria-pressed={shape === "ROUND"} onClick={() => onShape("ROUND")} className={button(shape === "ROUND")}><span className="block h-3.5 w-3.5 rounded-full border-2 border-current" /></button>
+    <button type="button" aria-label={`${label} square`} aria-pressed={shape === "SQUARE"} onClick={() => onShape("SQUARE")} className={button(shape === "SQUARE")}><span className="block h-3.5 w-3.5 rounded-[2px] border-2 border-current" /></button>
+    <button type="button" aria-label={`${label} rotate`} title="Rotate" onClick={onRotate} className="grid h-7 w-7 place-items-center rounded-md text-[#d80c7c] hover:bg-[#fff0f7]"><RotateCw size={13} /></button>
+  </div>;
+}
 
-function SectionFloorPreview({ name, tables }: { name: string; tables: DiningTable[] }) {
+function SectionFloorPreview({ tables, billsFor, label }: { tables: DiningTable[]; billsFor: (id: string) => number; label: (text: string) => string }) {
   const rows = Math.max(6, ...tables.map((table) => table.positionY + table.height + 1));
   return <div className="pointer-events-none absolute inset-y-0 w-full overflow-hidden bg-[#fff8fc]">
     <div className="pointer-events-none absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px" }} />
-    <p className="relative px-5 pt-4 text-xs font-bold text-[#8c7c85]">{name}</p>
     {tables.length ? <div className="relative grid gap-3 p-5" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, ${ROW_HEIGHT}px)` }}>
       {tables.map((table) => {
-        const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "SQUARE" ? "rounded-[27px]" : "rounded-2xl";
-        return <div key={table.id} className={`flex min-w-0 flex-col justify-between border border-[#f0d5e3] bg-white p-3 shadow-sm ${shapeClass}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
-          <span className="text-[10px] font-bold uppercase text-[#d80c7c]">{shapeLabels[table.shape]}</span>
-          <span className="truncate font-display text-sm font-extrabold text-ink">{table.tableNumber}</span>
+        const bills = billsFor(table.id);
+        const status: TableStatus = bills > 0 ? "OCCUPIED" : table.status;
+        const shapeClass = table.shape === "ROUND" || table.shape === "OVAL" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-md" : "rounded-2xl";
+        const surface = status === "AVAILABLE" ? "border-emerald-200" : status === "OCCUPIED" ? "border-rose-200" : "border-amber-200";
+        const tone = status === "AVAILABLE" ? "bg-emerald-50 text-emerald-700" : status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700";
+        const dot = status === "AVAILABLE" ? "bg-emerald-500" : status === "OCCUPIED" ? "bg-rose-500" : "bg-amber-500";
+        return <div key={table.id} className={`flex min-w-0 flex-col items-center justify-center gap-2 border bg-white p-3 text-center shadow-sm ${surface} ${shapeClass}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
+          <div className="flex items-center justify-center gap-2">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/90 text-[#e41483] shadow-sm"><Utensils size={15} /></span>
+            <span className={`inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[9px] font-extrabold uppercase tracking-wide ${tone}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />{label(status.toLowerCase())}</span>
+          </div>
+          <div className="w-full min-w-0">
+            <p className="truncate text-base font-extrabold leading-5 text-ink">{table.tableNumber}</p>
+            <p className="mt-1 text-xs text-muted">{bills} {label(bills === 1 ? "Bill" : "Bills")}</p>
+          </div>
         </div>;
       })}
-    </div> : <p className="relative px-5 pt-6 text-sm text-[#8c7c85]">No tables in this section yet.</p>}
+    </div> : null}
   </div>;
 }
 
@@ -86,7 +116,6 @@ export function TablesPage() {
   const [modal, setModal] = useState(false);
   const [editingTable, setEditingTable] = useState<DiningTable | null>(null);
   const [number, setNumber] = useState("");
-  const [capacity, setCapacity] = useState("2");
   const [newShape, setNewShape] = useState<TableShape>("ROUND");
   const [draggedId, setDraggedId] = useState("");
   const [mobileZoom, setMobileZoom] = useState(0.55);
@@ -107,6 +136,9 @@ export function TablesPage() {
   const [sectionPull, setSectionPull] = useState(0);
   const [sectionGrabbing, setSectionGrabbing] = useState(false);
   const [sectionGlide, setSectionGlide] = useState(true);
+  const sectionSlideTimer = useRef<number | null>(null);
+  const pendingSlideRef = useRef<1 | -1 | null>(null);
+  const settleSectionSlideRef = useRef<() => void>(() => {});
   const suppressTableClick = useRef(false);
   const [error, setError] = useState("");
   const admin = useAuthStore((state) => state.user?.role === "ADMIN");
@@ -215,6 +247,9 @@ export function TablesPage() {
     void load();
     void fetchOrders().catch(() => undefined);
   }, [load, fetchOrders]);
+  useEffect(() => () => {
+    if (sectionSlideTimer.current != null) window.clearTimeout(sectionSlideTimer.current);
+  }, []);
 
   const displayTables = useMemo(() => editing ? draft : tables, [editing, draft, tables]);
   const visibleTables = useMemo(() => displayTables.filter((table) => !activeSectionId || table.sectionId === activeSectionId), [displayTables, activeSectionId]);
@@ -257,7 +292,21 @@ export function TablesPage() {
     if (next) setActiveSectionId(next.id);
     else if (direction > 0 && editing) openSectionModal();
   };
-  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0)`, transition: sectionGrabbing || !sectionGlide ? "none" : "transform 320ms ease-out" };
+  const sectionPullStyle = { transform: `translate3d(${sectionPull}px, 0, 0)`, transition: sectionGrabbing || !sectionGlide ? "none" : "transform 460ms cubic-bezier(0.22, 1, 0.36, 1)" };
+  const settleSectionSlide = () => {
+    if (sectionSlideTimer.current != null) {
+      window.clearTimeout(sectionSlideTimer.current);
+      sectionSlideTimer.current = null;
+    }
+    const direction = pendingSlideRef.current;
+    if (!direction) return;
+    pendingSlideRef.current = null;
+    setSectionGlide(false);
+    setSectionPull(0);
+    showSection(direction);
+    requestAnimationFrame(() => setSectionGlide(true));
+  };
+  settleSectionSlideRef.current = settleSectionSlide;
   const claimSectionSwipe = (dx: number, dy: number) => {
     const start = sectionSwipeRef.current;
     if (!start || start.abandoned) return false;
@@ -287,6 +336,7 @@ export function TablesPage() {
     if ((event.target as HTMLElement).closest("button,select,input,textarea")) return;
     if (editing && (event.target as HTMLElement).closest("article")) return;
     if (!editing && sections.length < 2) return;
+    settleSectionSlideRef.current();
     detachSwipeWindow();
     sectionSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, locked: false, abandoned: false, width: event.currentTarget.clientWidth || 1 };
     const asSwipe = (native: globalThis.PointerEvent) => native as unknown as PointerEvent<HTMLElement>;
@@ -319,17 +369,30 @@ export function TablesPage() {
     if (!start || start.pointerId !== event.pointerId) return;
     sectionSwipeRef.current = null;
     setSectionGrabbing(false);
-    if (!start.locked) { setSectionPull(0); return; }
+    const glidePull = (next: number) => requestAnimationFrame(() => { if (!sectionSwipeRef.current) setSectionPull(next); });
+    if (!start.locked) { glidePull(0); return; }
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
     const width = start.width || 320;
-    if (Math.abs(dx) < Math.min(72, width * 0.12) || Math.abs(dx) < Math.abs(dy) * 0.65) { setSectionPull(0); return; }
+    if (Math.abs(dx) < Math.min(72, width * 0.12) || Math.abs(dx) < Math.abs(dy) * 0.65) { glidePull(0); return; }
+    const direction: 1 | -1 = dx < 0 ? 1 : -1;
+    const index = sections.findIndex((section) => section.id === activeSectionId);
+    const canMove = direction < 0 ? index > 0 : index >= 0 && index < sections.length - 1;
+    if (!canMove) {
+      glidePull(0);
+      if (direction > 0 && editing) openSectionModal();
+      return;
+    }
     suppressTableClick.current = true;
-    window.setTimeout(() => { suppressTableClick.current = false; }, 450);
-    setSectionGlide(false);
-    setSectionPull(0);
-    showSection(dx < 0 ? 1 : -1);
-    requestAnimationFrame(() => setSectionGlide(true));
+    window.setTimeout(() => { suppressTableClick.current = false; }, 700);
+    setSectionGlide(true);
+    requestAnimationFrame(() => {
+      if (sectionSwipeRef.current) return;
+      pendingSlideRef.current = direction;
+      setSectionPull(direction < 0 ? width : -width);
+      if (sectionSlideTimer.current != null) window.clearTimeout(sectionSlideTimer.current);
+      sectionSlideTimer.current = window.setTimeout(() => settleSectionSlideRef.current(), 460);
+    });
   };
   moveSectionSwipeRef.current = moveSectionSwipe;
   endSectionSwipeRef.current = endSectionSwipe;
@@ -340,7 +403,7 @@ export function TablesPage() {
     detachSwipeWindow();
     sectionSwipeRef.current = null;
     setSectionGrabbing(false);
-    setSectionPull(0);
+    requestAnimationFrame(() => { if (!sectionSwipeRef.current) setSectionPull(0); });
   };
   const createSection = async (event: FormEvent) => {
     event.preventDefault();
@@ -383,14 +446,17 @@ export function TablesPage() {
     } catch (cause) { setError(errorMessage(cause)); }
   };
 
-  const updateShape = (id: string, shape: TableShape) => setDraft((current) => current.map((table) => table.id === id ? { ...table, shape, width: shape === "BAR" ? Math.min(GRID_COLUMNS - table.positionX, Math.max(4, table.width)) : table.width, height: table.height } : table));
-  const moveTable = (id: string, dx: number, dy: number) => setDraft((current) => current.map((table) => {
+  const updateShape = (id: string, shape: TableShape) => setDraft((current) => current.map((table) => table.id === id ? { ...table, shape } : table));
+  const rotateTable = (id: string) => setDraft((current) => current.map((table) => {
     if (table.id !== id) return table;
-    const positionX = Math.max(0, Math.min(GRID_COLUMNS - table.width, table.positionX + dx));
-    const positionY = Math.max(0, table.positionY + dy);
-    return { ...table, positionX, positionY };
+    if (table.width === table.height) {
+      const width = Math.min(GRID_COLUMNS - table.positionX, table.width + 2);
+      return width > table.width ? { ...table, width } : { ...table, height: table.height + 2 };
+    }
+    const width = Math.min(GRID_COLUMNS, table.height);
+    const positionX = Math.max(0, Math.min(GRID_COLUMNS - width, table.positionX));
+    return { ...table, width, height: table.width, positionX };
   }));
-
   const beginPointerEdit = (event: PointerEvent<HTMLElement>, table: DiningTable, mode: "move" | "resize") => {
     const floor = event.currentTarget.closest<HTMLElement>("[data-floor-grid]");
     if (!editing || !floor) return;
@@ -448,7 +514,7 @@ export function TablesPage() {
       if (!tableLabel) throw new Error('Enter a table name or number.');
       if (tableLabel.length > 40) throw new Error('Table labels can be up to 40 characters.');
       if (/[\u0000-\u001f\u007f]/u.test(tableLabel)) throw new Error('Table labels cannot contain control characters.');
-      const payload: { tableNumber: string; capacity: number; shape: TableShape; positionX?: number; positionY?: number } = { tableNumber: tableLabel, capacity: Number(capacity), shape: newShape };
+      const payload: { tableNumber: string; capacity: number; shape: TableShape; positionX?: number; positionY?: number } = { tableNumber: tableLabel, capacity: editingTable?.capacity ?? 2, shape: newShape };
       if (editingTable) {
         const { data } = await api.patch<DiningTable>(`/tables/${editingTable.id}`, payload);
         setTables((current) => current.map((table) => table.id === data.id ? { ...table, ...data } : table));
@@ -458,29 +524,9 @@ export function TablesPage() {
         if (editing) {
           const width = newShape === "BAR" ? 4 : 2;
           const height = 2;
-          const occupied = new Set<string>();
-          for (const table of draft.filter((item) => item.sectionId === activeSectionId)) {
-            for (let x = table.positionX; x < table.positionX + table.width; x += 1) {
-              for (let y = table.positionY; y < table.positionY + table.height; y += 1) {
-                occupied.add(`${x}:${y}`);
-              }
-            }
-          }
-          let freePosition: { x: number; y: number } | undefined;
-          for (let y = 0; freePosition === undefined && y < rowCount + 100; y += 1) {
-            for (let x = 0; x <= 7; x += 1) {
-              const fits = Array.from({ length: width }, (_, offsetX) =>
-                Array.from({ length: height }, (_, offsetY) => !occupied.has(`${x + offsetX}:${y + offsetY}`)),
-              ).flat().every(Boolean);
-              if (fits) {
-                freePosition = { x, y };
-                break;
-              }
-            }
-          }
-          if (!freePosition) throw new Error("No open floor space remains for another table.");
-          payload.positionX = freePosition.x;
-          payload.positionY = freePosition.y;
+          const spot = placeOnFloor(draft.filter((item) => item.sectionId === activeSectionId), width, height, rowCount);
+          payload.positionX = spot.x;
+          payload.positionY = spot.y;
         }
         const { data } = await api.post<DiningTable>("/tables", { ...payload, status: "AVAILABLE", ...(activeSectionId ? { sectionId: activeSectionId } : {}) });
         setTables((current) => [...current, data]);
@@ -490,7 +536,6 @@ export function TablesPage() {
       setModal(false);
       setEditingTable(null);
       setNumber("");
-      setCapacity("2");
       setNewShape("ROUND");
       if (editing) setLoading(false);
       else await load();
@@ -500,7 +545,6 @@ export function TablesPage() {
   const openCreate = () => {
     setEditingTable(null);
     setNumber("");
-    setCapacity("2");
     setNewShape("ROUND");
     setError("");
     setModal(true);
@@ -509,14 +553,13 @@ export function TablesPage() {
   const openEdit = (table: DiningTable) => {
     setEditingTable(table);
     setNumber(String(table.tableNumber));
-    setCapacity(String(table.capacity));
     setNewShape(table.shape);
     setError("");
     setModal(true);
   };
 
   const deleteTable = async (table: DiningTable) => {
-    if (!window.confirm(`${t("Delete table")} ${table.tableNumber}? ${t("Tables with order history cannot be deleted.")}`)) return;
+    if (!window.confirm(`${t("Delete table")} ${table.tableNumber}? ${t("Past orders will still show this table.")}`)) return;
     setError("");
     try {
       await api.delete(`/tables/${table.id}`);
@@ -526,6 +569,15 @@ export function TablesPage() {
     } catch (cause) { setError(errorMessage(cause)); }
   };
 
+  const showSectionIndicator = editing || sections.length > 1;
+  const showAddTable = admin && editing;
+  const floorDock = (showSectionIndicator || showAddTable) ? <div onPointerDown={(event) => event.stopPropagation()} className="absolute inset-x-0 bottom-0 z-30 flex flex-col items-center gap-2 border-t border-[#f1dce7] bg-white/95 px-4 pb-3 pt-2">
+    {showSectionIndicator && <div className="flex flex-col items-center gap-2 py-1">
+      <p className="text-[10px] font-bold text-[#8c7c85]">{sections.find((section) => section.id === activeSectionId)?.name}</p>
+      <div className="flex items-center gap-2">{sections.map((section) => <button key={section.id} type="button" aria-label={section.name} aria-current={section.id === activeSectionId} onClick={() => setActiveSectionId(section.id)} className={`h-2.5 w-2.5 rounded-full ${section.id === activeSectionId ? "bg-[#f71591]" : "border border-[#f7b5d4] bg-white"}`} />)}{editing && <button type="button" aria-label="Add a floor section" onClick={openSectionModal} className="h-2.5 w-2.5 rounded-full border border-[#f7b5d4] bg-white" />}</div>
+    </div>}
+    {showAddTable && <button onClick={openCreate} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#f71591] text-sm font-bold text-white hover:bg-[#dc0d7e]"><Plus size={18} /> {t("Add table")}</button>}
+  </div> : null;
   return <div className="page-enter min-h-full w-full">
     <PageHeader
       title={t("Tables")}
@@ -542,14 +594,14 @@ export function TablesPage() {
     <div className="mb-4 flex flex-wrap items-center gap-2">
         <span className="mr-1 text-xs font-bold text-ink">{tables.length} {t("tables")}</span>
       {statuses.map((status) => <span key={status} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] font-bold ${status === "AVAILABLE" ? "bg-emerald-50 text-emerald-700" : status === "OCCUPIED" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}><span className={`h-1.5 w-1.5 rounded-full ${status === "AVAILABLE" ? "bg-emerald-500" : status === "OCCUPIED" ? "bg-rose-500" : "bg-amber-500"}`} />{counts[status]} {t(status.toLowerCase())}</span>)}
-      {editing && <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold text-[#d80c7c]"><Move size={13} /> {t("Drag tables or use the arrow controls. Choose a shape, then save.")}</span>}
+      {editing && <span className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold text-[#d80c7c]"><Move size={13} /> {t("Drag tables to move them. Choose round or square, rotate, then save.")}</span>}
     </div>
 
     <div ref={mobileViewportRef} onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative mb-4 overflow-hidden rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:hidden ${(editing || sections.length > 1) ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`} style={{ touchAction: editing || sections.length > 1 ? "manipulation" : "auto" }}>
       {editing && <SectionCreatePeek pull={sectionPull} />}
-      <div className="relative z-10 bg-[#fff8fc]" style={sectionPullStyle}>
-      {previousSection && <div className="absolute inset-y-0 w-full" style={{ left: "-100%" }}><SectionFloorPreview name={previousSection.name} tables={displayTables.filter((table) => table.sectionId === previousSection.id)} /></div>}
-      {nextSection && <div className="absolute inset-y-0 w-full" style={{ left: "100%" }}><SectionFloorPreview name={nextSection.name} tables={displayTables.filter((table) => table.sectionId === nextSection.id)} /></div>}
+      <div className={`relative z-10 bg-[#fff8fc] ${showAddTable ? "pb-36" : showSectionIndicator ? "pb-16" : ""}`} style={sectionPullStyle}>
+      {previousSection && <div className="absolute inset-y-0 w-full" style={{ left: "-100%" }}><SectionFloorPreview tables={displayTables.filter((table) => table.sectionId === previousSection.id)} billsFor={tableBills} label={t} /></div>}
+      {nextSection && <div className="absolute inset-y-0 w-full" style={{ left: "100%" }}><SectionFloorPreview tables={displayTables.filter((table) => table.sectionId === nextSection.id)} billsFor={tableBills} label={t} /></div>}
       {!loading && visibleTables.length > 0 && <div className="flex items-center justify-end gap-1.5 border-b border-[#f1dce7] bg-white/90 px-3 py-2">
         <span className="mr-auto text-[10px] font-semibold text-[#8c7c85]">{t("Floor plan")}</span>
         <button type="button" onClick={() => setMobileZoom((zoom) => Math.max(0.35, Math.round((zoom - 0.1) * 10) / 10))} aria-label={t("Zoom out floor plan")} className="grid h-8 w-8 place-items-center rounded-lg border border-[#f1dce7] text-[#5c4652]"><ZoomOut size={15} /></button>
@@ -561,41 +613,40 @@ export function TablesPage() {
         {visibleTables.map((table) => {
           const bills = tableBills(table.id);
           const status = tableStatus(table);
-          const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
+          const shapeClass = table.shape === "ROUND" || table.shape === "OVAL" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-md" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
           const statusSurface = tableSurface(status);
           const orderSummary = tableOrderSummary(table.id);
-          return <article key={table.id} onPointerMove={movePointerEdit} onPointerUp={endPointerEdit} onPointerCancel={endPointerEdit} onClick={(event) => { if ((event.target as HTMLElement).closest("select,button")) return; openTable(table.id); }} aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`} className={`relative flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border p-5 shadow-[0_5px_16px_rgba(74,35,56,.06)] ${statusSurface} ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91]" : "cursor-pointer"} ${draggedId === table.id ? "opacity-70" : ""}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}>
+          return <article key={table.id} onPointerMove={movePointerEdit} onPointerUp={endPointerEdit} onPointerCancel={endPointerEdit} onClick={(event) => { if ((event.target as HTMLElement).closest("select,button")) return; openTable(table.id); }} aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`} className={`relative flex h-full w-full min-w-0 flex-col items-center justify-center gap-2 text-center ${editing ? "overflow-visible" : "overflow-hidden"} border p-5 shadow-[0_5px_16px_rgba(74,35,56,.06)] ${statusSurface} ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91]" : "cursor-pointer"} ${draggedId === table.id ? "shadow-[0_12px_28px_rgba(74,35,56,.16)]" : ""}`} style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}`, zIndex: draggedId === table.id ? 50 : stackZ(table, visibleTables) }}>
             {editing && <button type="button" aria-label={`Move table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "move")} className="absolute inset-0 z-10 cursor-move touch-none" />}
-            <div className={`relative z-20 flex min-w-0 items-center gap-1 ${table.shape === "ROUND" || table.shape === "OVAL" ? "flex-col justify-center" : "justify-between"}`}>
+            <div className="relative z-20 flex items-center justify-center gap-2">
               <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/90 text-[#e41483] shadow-sm dark:border-slate-600"><Utensils size={15} /></span>
               <TableStatusButton status={status} label={t(status.toLowerCase())} disabled={bills > 0} onClick={() => void updateStatus(table)} />
             </div>
-            <div className={`pointer-events-none relative z-[5] min-w-0 ${table.shape === "ROUND" || table.shape === "OVAL" ? "w-full text-center" : ""}`}><p className="truncate text-base font-extrabold leading-5 text-ink">{table.tableNumber}</p><p className="mt-1 truncate text-xs leading-4 text-muted">{table.capacity} {t("seats")} · {bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
+            <div className="pointer-events-none relative z-20 w-full min-w-0 text-center"><p className="truncate text-base font-extrabold leading-5 text-ink">{table.tableNumber}</p><p className="mt-1 truncate text-xs leading-4 text-muted">{bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
               {orderSummary.items.length > 0 && <div className="mt-1 space-y-0.5"><p className="truncate text-[9px] font-bold text-ink">{t("Current order")}</p>{orderSummary.items.slice(0, 2).map((item) => <p key={item} className="truncate text-[9px] leading-3 text-muted">{item}</p>)}{orderSummary.items.length > 2 && <p className="truncate text-[9px] text-muted">+{orderSummary.items.length - 2} {t("more items")}</p>}</div>}
               {orderSummary.rooms.length > 0 && <p className="mt-1 truncate text-[9px] font-semibold text-[#a20b62] dark:text-pink-300">{t("Guest rooms")}: {orderSummary.rooms.join(", ")}</p>}
             </div>
-            {editing && <select value={table.shape} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => updateShape(table.id, event.target.value as TableShape)} aria-label={`${t("Shape for table")} ${table.tableNumber}`} className="relative z-20 w-full rounded-md border border-[#f3d9e7] bg-white px-1 py-0.5 text-[8px] font-bold text-[#5c4652] outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar")}</option></select>}
+            {editing && <div className="relative z-20"><TableShapeTools shape={table.shape} label={`${t("Table")} ${table.tableNumber}`} onShape={(shape) => updateShape(table.id, shape)} onRotate={() => rotateTable(table.id)} /></div>}
             {editing && admin && <div className="relative z-20 flex gap-1" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => openEdit(table)} className="flex flex-1 items-center justify-center gap-1 rounded-md border border-[#f3d9e7] bg-white px-1 py-1 text-[8px] font-bold text-[#d80c7c]"><Pencil size={10} /> {t("Edit")}</button><button type="button" onClick={() => void deleteTable(table)} className="flex items-center justify-center gap-1 rounded-md border border-rose-100 bg-white px-2 py-1 text-[8px] font-bold text-rose-600"><Trash2 size={10} /> {t("Delete")}</button></div>}
-            {editing && <button type="button" aria-label={`Resize table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "resize")} className="absolute -bottom-2 -right-2 z-30 grid h-7 w-7 cursor-nwse-resize touch-none place-items-center rounded-full border-2 border-white bg-[#f71591] text-xs leading-none text-white shadow-md">↘</button>}
+            {editing && <button type="button" aria-label={`Resize table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "resize")} className="absolute -bottom-2 -right-2 z-30 grid h-7 w-7 cursor-nwse-resize touch-none place-items-center rounded-full border-2 border-white bg-[#f71591] text-white shadow-md"><MoveDiagonal2 size={13} /></button>}
           </article>;
         })}
       </div></div></div> : <div className="min-h-[calc(100vh-260px)]" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "26px 26px" }} />}
-      {admin && editing && <button onClick={openCreate} className="flex min-h-12 w-full items-center justify-center gap-2 border-t border-[#f1dce7] bg-white text-sm font-bold text-[#d80c7c]"><Plus size={18} /> {t("Add table")}</button>}
-      {(editing || sections.length > 1) && <div className="absolute inset-x-0 bottom-0 z-20 flex flex-col items-center gap-2 bg-white/95 py-3"><p className="text-[10px] font-bold text-[#8c7c85]">{sections.find((section) => section.id === activeSectionId)?.name}</p><div className="flex items-center gap-2">{sections.map((section) => <button key={section.id} type="button" aria-label={section.name} aria-current={section.id === activeSectionId} onClick={() => setActiveSectionId(section.id)} className={`h-2 w-2 rounded-full ${section.id === activeSectionId ? "bg-[#f71591]" : "border border-[#f7b5d4] bg-white"}`} />)}{editing && <button type="button" aria-label="Add a floor section" onClick={openSectionModal} className="h-2 w-2 rounded-full border border-[#f7b5d4] bg-white" />}</div></div>}
       </div>
+      {floorDock}
     </div>
 
     <div ref={desktopFloorRef} onPointerDown={beginSectionSwipe} onPointerMove={moveSectionSwipe} onPointerUp={endSectionSwipe} onPointerCancel={cancelSectionSwipe} className={`relative hidden w-full rounded-[24px] border border-[#f1dce7] bg-[#fff8fc] shadow-card lg:block ${editing || sections.length > 1 ? "overflow-hidden" : "overflow-x-auto overscroll-x-contain"} ${(editing || sections.length > 1) ? (sectionGrabbing ? "cursor-grabbing" : "cursor-grab") : ""}`} style={{ touchAction: editing || sections.length > 1 ? "pan-y" : "auto" }}>
       {editing && <SectionCreatePeek pull={sectionPull} />}
-      <div className="relative z-10 min-h-[calc(100vh-190px)] w-full min-w-[860px] bg-[#fff8fc] p-4 sm:p-5" style={sectionPullStyle}>
-        {previousSection && <div className="absolute inset-y-0 w-full" style={{ left: "-100%" }}><SectionFloorPreview name={previousSection.name} tables={displayTables.filter((table) => table.sectionId === previousSection.id)} /></div>}
-        {nextSection && <div className="absolute inset-y-0 w-full" style={{ left: "100%" }}><SectionFloorPreview name={nextSection.name} tables={displayTables.filter((table) => table.sectionId === nextSection.id)} /></div>}
+      <div className={`relative z-10 min-h-[calc(100vh-190px)] w-full min-w-[860px] bg-[#fff8fc] p-4 sm:p-5 ${showAddTable ? "pb-36" : showSectionIndicator ? "pb-16" : ""}`} style={sectionPullStyle}>
+        {previousSection && <div className="absolute inset-y-0 w-full" style={{ left: "-100%" }}><SectionFloorPreview tables={displayTables.filter((table) => table.sectionId === previousSection.id)} billsFor={tableBills} label={t} /></div>}
+        {nextSection && <div className="absolute inset-y-0 w-full" style={{ left: "100%" }}><SectionFloorPreview tables={displayTables.filter((table) => table.sectionId === nextSection.id)} billsFor={tableBills} label={t} /></div>}
         <div className="pointer-events-none absolute inset-0 opacity-70" style={{ backgroundImage: "linear-gradient(#f7e8ef 1px, transparent 1px), linear-gradient(90deg, #f7e8ef 1px, transparent 1px)", backgroundSize: "74px 74px" }} />
         {loading ? <div className="relative grid grid-cols-4 gap-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-28 animate-pulse rounded-2xl border border-[#f4e4ec] bg-white/70" />)}</div> : visibleTables.length ? <div ref={floorRef} data-floor-grid data-mobile-floor="false" className="relative grid min-h-[calc(100vh-245px)] w-full touch-pan-y grid-cols-12 auto-rows-[72px] gap-3" style={{ gridTemplateColumns: `repeat(${GRID_COLUMNS}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rowCount}, ${ROW_HEIGHT}px)` }}>
           {visibleTables.map((table) => {
             const bills = tableBills(table.id);
             const status = tableStatus(table);
-            const shapeClass = table.shape === "ROUND" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-[27px]" : table.shape === "OVAL" ? "rounded-[999px]" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
+            const shapeClass = table.shape === "ROUND" || table.shape === "OVAL" ? "rounded-full" : table.shape === "SQUARE" ? "rounded-md" : table.shape === "BOOTH" ? "rounded-[20px]" : table.shape === "BAR" ? "rounded-xl" : "rounded-2xl";
             const statusSurface = tableSurface(status);
             const orderSummary = tableOrderSummary(table.id);
             return <article
@@ -608,42 +659,37 @@ export function TablesPage() {
               role={editing ? undefined : "button"}
               tabIndex={editing ? undefined : 0}
               aria-label={`${t(shapeLabels[table.shape])} ${t("Table")} ${table.tableNumber}, ${t(status.toLowerCase())}, ${bills} ${t("Bills")}`}
-              className={`group relative col-span-2 row-span-2 place-self-stretch flex h-full w-full min-w-0 flex-col justify-between ${editing ? "z-20 overflow-visible" : "overflow-hidden"} border p-3 text-left shadow-[0_5px_16px_rgba(74,35,56,.06)] transition duration-150 ${statusSurface} ${shapeClass} ${["ROUND", "OVAL"].includes(table.shape) && !editing ? "items-center text-center" : ""} ${editing ? "border-2 border-dashed border-[#fa0b91] hover:shadow-[0_8px_22px_rgba(236,17,135,.12)]" : "cursor-pointer hover:-translate-y-0.5 hover:shadow-[0_10px_25px_rgba(74,35,56,.10)]"} ${draggedId === table.id ? "opacity-70" : ""}`}
-              style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}` }}
+              className={`group relative col-span-2 row-span-2 place-self-stretch flex h-full w-full min-w-0 flex-col items-center justify-center gap-1 text-center ${editing ? "overflow-visible" : "overflow-hidden"} border p-3 shadow-[0_5px_16px_rgba(74,35,56,.06)] transition duration-150 ${statusSurface} ${shapeClass} ${editing ? "border-2 border-dashed border-[#fa0b91] hover:shadow-[0_8px_22px_rgba(236,17,135,.12)]" : "cursor-pointer hover:-translate-y-0.5 hover:shadow-[0_10px_25px_rgba(74,35,56,.10)]"} ${draggedId === table.id ? "shadow-[0_12px_28px_rgba(74,35,56,.16)]" : ""}`}
+              style={{ gridColumn: `${table.positionX + 1} / span ${table.width}`, gridRow: `${table.positionY + 1} / span ${table.height}`, zIndex: draggedId === table.id ? 50 : stackZ(table, visibleTables) }}
             >
               {editing && <button type="button" aria-label={`Move table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "move")} className="absolute inset-0 z-[5] cursor-move touch-none" title="Drag to move" />}
               <TableShapeSurface shape={table.shape} />
-              <div className={`pointer-events-none relative z-10 flex w-full items-center justify-between gap-1 ${table.shape === "ROUND" || table.shape === "OVAL" ? "flex-col justify-center" : ""}`}>
+              <div className="pointer-events-none relative z-10 flex items-center justify-center gap-2">
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-line bg-white/90 text-[#e41483] shadow-sm dark:border-slate-600"><Utensils size={15} /></span>
-                {editing
-                  ? <span className="grid h-7 w-7 place-items-center rounded-full bg-white/80 text-[#d80c7c]"><Move size={13} /></span>
-                  : <TableStatusButton status={status} label={t(status.toLowerCase())} disabled={bills > 0} onClick={() => void updateStatus(table)} />}
+                <TableStatusButton status={status} label={t(status.toLowerCase())} disabled={bills > 0} onClick={() => void updateStatus(table)} />
               </div>
-              <div className={`pointer-events-none relative z-10 min-w-0 ${["ROUND", "OVAL"].includes(table.shape) ? "mt-1 w-full text-center" : "mt-auto"}`}>
+              <div className="pointer-events-none relative z-10 w-full min-w-0 text-center">
                 <p className="truncate font-display text-[15px] font-extrabold leading-5 tracking-tight text-ink">{table.tableNumber}</p>
-                <p className={`mt-1 flex items-center gap-1 text-[10px] font-medium text-muted ${["ROUND", "OVAL"].includes(table.shape) ? "justify-center" : ""}`}><Users size={11} /> {table.capacity} {t("seats")} <span className="text-muted">·</span> {bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
-                {orderSummary.items.length > 0 && <div className="mt-1 w-full text-left"><p className="truncate text-[9px] font-bold text-ink">{t("Current order")}</p>{orderSummary.items.slice(0, 2).map((item) => <p key={item} className="truncate text-[9px] leading-3 text-muted">{item}</p>)}{orderSummary.items.length > 2 && <p className="truncate text-[9px] text-muted">+{orderSummary.items.length - 2} {t("more items")}</p>}</div>}
-                {orderSummary.rooms.length > 0 && <p className="mt-1 w-full truncate text-left text-[9px] font-semibold text-[#a20b62] dark:text-pink-300">{t("Guest rooms")}: {orderSummary.rooms.join(", ")}</p>}
+                <p className="mt-1 text-[10px] font-medium text-muted">{bills} {t(bills === 1 ? "Bill" : "Bills")}</p>
+                {orderSummary.items.length > 0 && <div className="mt-1 w-full"><p className="truncate text-[9px] font-bold text-ink">{t("Current order")}</p>{orderSummary.items.slice(0, 2).map((item) => <p key={item} className="truncate text-[9px] leading-3 text-muted">{item}</p>)}{orderSummary.items.length > 2 && <p className="truncate text-[9px] text-muted">+{orderSummary.items.length - 2} {t("more items")}</p>}</div>}
+                {orderSummary.rooms.length > 0 && <p className="mt-1 w-full truncate text-[9px] font-semibold text-[#a20b62] dark:text-pink-300">{t("Guest rooms")}: {orderSummary.rooms.join(", ")}</p>}
               </div>
               {editing && <div className="pointer-events-auto relative z-10 mt-2 flex items-center justify-between gap-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-                <select value={table.shape} onChange={(event) => updateShape(table.id, event.target.value as TableShape)} aria-label={`${t("Shape for table")} ${table.tableNumber}`} className="min-w-0 flex-1 rounded-lg border border-[#f3d9e7] bg-white px-2 py-1.5 text-[9px] font-bold text-[#5c4652] outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar")}</option></select>
-                <div className="flex gap-0.5">{moveActions.map(({ name, Icon, dx, dy }) => <button key={name} type="button" aria-label={`${name} ${t("Table")} ${table.tableNumber}`} onClick={() => moveTable(table.id, dx, dy)} className="grid h-7 w-7 place-items-center rounded-md text-[#d80c7c] hover:bg-[#fff0f7]"><Icon size={13} /></button>)}
-                  {admin && <><button type="button" aria-label={`${t("Edit")} ${t("Table")} ${table.tableNumber}`} onClick={() => openEdit(table)} className="grid h-7 w-7 place-items-center rounded-md text-[#d80c7c] hover:bg-[#fff0f7]" title={t("Edit table details")}><Pencil size={13} /></button><button type="button" aria-label={`${t("Delete")} ${t("Table")} ${table.tableNumber}`} onClick={() => void deleteTable(table)} className="grid h-7 w-7 place-items-center rounded-md text-rose-600 hover:bg-rose-50" title={t("Delete table")}><Trash2 size={13} /></button></>}</div>
+                <TableShapeTools shape={table.shape} label={`${t("Table")} ${table.tableNumber}`} onShape={(shape) => updateShape(table.id, shape)} onRotate={() => rotateTable(table.id)} />
+                {admin && <div className="flex gap-0.5"><button type="button" aria-label={`${t("Edit")} ${t("Table")} ${table.tableNumber}`} onClick={() => openEdit(table)} className="grid h-7 w-7 place-items-center rounded-md text-[#d80c7c] hover:bg-[#fff0f7]" title={t("Edit table details")}><Pencil size={13} /></button><button type="button" aria-label={`${t("Delete")} ${t("Table")} ${table.tableNumber}`} onClick={() => void deleteTable(table)} className="grid h-7 w-7 place-items-center rounded-md text-rose-600 hover:bg-rose-50" title={t("Delete table")}><Trash2 size={13} /></button></div>}
               </div>}
-              {editing && <button type="button" aria-label={`Resize table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "resize")} className="absolute -bottom-3 -right-3 z-30 grid h-8 w-8 cursor-nwse-resize touch-none place-items-center rounded-full border-2 border-white bg-[#f71591] text-white shadow-md" title="Drag to resize"><span className="text-xs leading-none">↘</span></button>}
+              {editing && <button type="button" aria-label={`Resize table ${table.tableNumber}`} onPointerDown={(event) => beginPointerEdit(event, table, "resize")} className="absolute -bottom-3 -right-3 z-30 grid h-8 w-8 cursor-nwse-resize touch-none place-items-center rounded-full border-2 border-white bg-[#f71591] text-white shadow-md" title="Drag to resize"><MoveDiagonal2 size={15} /></button>}
             </article>;
           })}
         </div> : <div className="relative min-h-[480px]" />}
-        {admin && editing && <button onClick={openCreate} className="relative z-10 mx-auto mt-7 flex h-12 items-center justify-center gap-2 rounded-full bg-[#f71591] px-5 text-white shadow-[0_8px_20px_rgba(247,21,145,.24)] transition hover:scale-105 hover:bg-[#dc0d7e]" aria-label={t("Add table")}><Plus size={20} /><span className="text-xs font-bold">{t("Add table")}</span></button>}
-        {(editing || sections.length > 1) && <div className="absolute inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2"><p className="text-[10px] font-bold text-[#8c7c85]">{sections.find((section) => section.id === activeSectionId)?.name}</p><div className="flex items-center gap-2">{sections.map((section) => <button key={section.id} type="button" aria-label={section.name} aria-current={section.id === activeSectionId} onClick={() => setActiveSectionId(section.id)} className={`h-2 w-2 rounded-full ${section.id === activeSectionId ? "bg-[#f71591]" : "border border-[#f7b5d4] bg-white"}`} />)}{editing && <button type="button" aria-label="Add a floor section" onClick={openSectionModal} className="h-2 w-2 rounded-full border border-[#f7b5d4] bg-white" />}</div></div>}
       </div>
+      {floorDock}
     </div>
 
     {sectionModal && <Modal title="Name this section" onClose={() => setSectionModal(false)}><form onSubmit={(event) => void createSection(event)} className="space-y-4"><Field label="Section name" type="text" maxLength={40} required value={sectionName} onChange={(event) => setSectionName(event.target.value)} placeholder="Patio, Bar, Upstairs" autoComplete="off" /><button className="h-11 w-full rounded-xl bg-[#f71591] text-sm font-bold text-white hover:bg-[#dc0d7e]">Create section</button></form></Modal>}
     {modal && <Modal title={t(editingTable ? "Edit table" : "Add a table")} onClose={() => { setModal(false); setEditingTable(null); }}><form onSubmit={(event) => void create(event)} className="space-y-4">
       <Field label={t("Table name or number")} type="text" maxLength={40} required value={number} onChange={(event) => setNumber(event.target.value)} placeholder="e.g. 12, Patio A, VIP-1" autoComplete="off" />
-      <Field label={t("Seat capacity")} type="number" min="1" required value={capacity} onChange={(event) => setCapacity(event.target.value)} />
-      <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">{t("Table shape")}</span><select value={newShape} onChange={(event) => setNewShape(event.target.value as TableShape)} className="focus-ring w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm text-ink outline-none"><option value="ROUND">{t("Round")}</option><option value="SQUARE">{t("Square")}</option><option value="RECTANGLE">{t("Rectangle")}</option><option value="OVAL">{t("Oval")}</option><option value="BOOTH">{t("Booth")}</option><option value="BAR">{t("Bar counter")}</option></select></label>
+      <div><span className="mb-1.5 block text-xs font-semibold text-ink">{t("Table shape")}</span><div className="grid grid-cols-2 gap-2"><button type="button" aria-pressed={newShape === "ROUND"} onClick={() => setNewShape("ROUND")} className={`flex h-11 items-center justify-center gap-2 rounded-xl border text-sm font-bold ${newShape === "ROUND" ? "border-[#f71591] bg-[#fff0f7] text-[#d80c7c]" : "border-line bg-white text-ink"}`}><span className="h-4 w-4 rounded-full border-2 border-current" />{t("Round")}</button><button type="button" aria-pressed={newShape === "SQUARE"} onClick={() => setNewShape("SQUARE")} className={`flex h-11 items-center justify-center gap-2 rounded-xl border text-sm font-bold ${newShape === "SQUARE" ? "border-[#f71591] bg-[#fff0f7] text-[#d80c7c]" : "border-line bg-white text-ink"}`}><span className="h-4 w-4 rounded-[3px] border-2 border-current" />{t("Square")}</button></div></div>
       <button className="mt-2 h-11 w-full rounded-xl bg-[#f71591] text-sm font-bold text-white hover:bg-[#dc0d7e]">{t(editingTable ? "Save changes" : "Add to floor")}</button>
     </form></Modal>}
   </div>;

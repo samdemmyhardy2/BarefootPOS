@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api } from "../lib/api";
 import { listOutbox, postOnce } from "../lib/outbox";
-import type { Order, OrderPaymentMethod, OrderStatus } from "../lib/types";
+import type { MenuItem, Order, OrderPaymentMethod, OrderStatus } from "../lib/types";
 
 const ORDERS_KEY = "restaurant-orders-cache";
 function readCachedOrders(): Order[] {
@@ -14,6 +14,52 @@ function readCachedOrders(): Order[] {
 }
 function writeCachedOrders(orders: Order[]) {
   try { localStorage.setItem(ORDERS_KEY, JSON.stringify(orders)); } catch { /* The ticket is still held in memory for this visit. */ }
+}
+function deskMenu() {
+  const map = new Map<string, MenuItem>();
+  try {
+    const parsed = JSON.parse(localStorage.getItem("restaurant-order-desk") ?? "null") as { categories?: { name: string; items?: MenuItem[] }[] } | null;
+    for (const category of parsed?.categories ?? []) {
+      for (const item of category.items ?? []) map.set(item.id, { ...item, category: item.category ?? { id: item.categoryId, name: category.name } });
+    }
+  } catch { /* Dish names fall back until the menu cache is available. */ }
+  return map;
+}
+function blankDish(id: string): MenuItem {
+  return { id, name: "Saved dish", price: 0, allergens: [], allergensMy: [], allergensTh: [], dietaryInfo: [], dietaryInfoMy: [], dietaryInfoTh: [], availableExtras: [], availableExtrasMy: [], availableExtrasTh: [], position: 0, categoryId: "" };
+}
+function heldOrders(): Order[] {
+  const menu = deskMenu();
+  return listOutbox().filter((item) => item.status === "pending" && item.scope === "order.create").map((item) => {
+    const lines = Array.isArray(item.body.items) ? item.body.items as { menuItemId?: string; quantity?: number; specialNotes?: string }[] : [];
+    const orderLines = lines.map((line, index) => {
+      const menuItem = (line.menuItemId && menu.get(line.menuItemId)) || blankDish(line.menuItemId || `held-${index}`);
+      const quantity = Number(line.quantity) || 1;
+      const unitPrice = Number(menuItem.price) || 0;
+      return { id: `local-line-${item.id}-${index}`, menuItemId: menuItem.id, quantity, unitPrice, subtotal: unitPrice * quantity, specialNotes: line.specialNotes ?? null, modifierSelections: [], menuItem };
+    });
+    return {
+      id: `local-${item.id}`,
+      tableId: typeof item.body.tableId === "string" ? item.body.tableId : null,
+      roomStayId: null,
+      paymentMethod: "CASH",
+      paymentStatus: "UNPAID",
+      waiterId: "local",
+      waiter: { id: "local", name: "This device" },
+      status: "PENDING",
+      totalAmount: orderLines.reduce((sum, line) => sum + Number(line.subtotal), 0),
+      items: orderLines,
+      createdAt: item.createdAt,
+      updatedAt: item.createdAt,
+    } satisfies Order;
+  });
+}
+function mergeHeldOrders(orders: Order[]) {
+  const held = heldOrders();
+  const heldIds = new Set(held.map((order) => order.id));
+  const kept = orders.filter((order) => !String(order.id).startsWith("local-") || heldIds.has(order.id));
+  const seen = new Set(kept.map((order) => order.id));
+  return [...held.filter((order) => !seen.has(order.id)), ...kept];
 }
 import { useAuthStore } from "./authStore";
 import { useUiStore } from "./uiStore";
@@ -39,6 +85,7 @@ interface OrderState {
       selectedAllergens?: string[];
       modifierSelections?: { groupId: string; optionIds: string[] }[];
       specialNotes?: string;
+      kitchenFlag?: boolean;
     }>,
   ) => Promise<Order>;
   changeStatus: (id: string, status: OrderStatus) => Promise<void>;
@@ -60,44 +107,78 @@ function eventSourceUrl(token: string) {
   return url.toString();
 }
 
-async function playOrderTone(kind: "new" | "ready") {
+let alertContext: AudioContext | null = null;
+let alertEnabled = false;
+const alertWatchers = new Set<() => void>();
+
+function alertAudio() {
+  const AudioContextConstructor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextConstructor) return null;
+  alertContext ??= new AudioContextConstructor();
+  return alertContext;
+}
+
+function markAlerts(enabled: boolean) {
+  if (alertEnabled === enabled) return;
+  alertEnabled = enabled;
+  alertWatchers.forEach((listener) => listener());
+}
+
+export function orderAlertsEnabled() {
+  return alertEnabled && alertAudio()?.state === "running";
+}
+
+export function watchOrderAlerts(listener: () => void) {
+  alertWatchers.add(listener);
+  return () => { alertWatchers.delete(listener); };
+}
+
+/** iPad will not play a later alert until the screen has been tapped once. */
+export async function enableOrderAlerts() {
+  const context = alertAudio();
+  if (!context) return false;
+  if (context.state === "suspended") await context.resume().catch(() => undefined);
+  const running = context.state === "running";
+  markAlerts(running);
+  return running;
+}
+
+if (typeof window !== "undefined") {
+  const prime = () => { void enableOrderAlerts(); };
+  window.addEventListener("pointerdown", prime, { passive: true });
+  window.addEventListener("touchend", prime, { passive: true });
+  window.addEventListener("keydown", prime);
+}
+
+export async function playOrderAlert(kind: "new" | "ready") {
   try {
-    const AudioContextConstructor = window.AudioContext;
-    if (!AudioContextConstructor) return;
-    const context = new AudioContextConstructor();
-    await context.resume();
-    const notes = kind === "new" ? [740, 880] : [880, 660, 880];
+    const context = alertAudio();
+    if (!context || context.state !== "running") return;
+    const notes = kind === "new" ? [784, 988, 784, 1175, 784, 988, 1175] : [659, 880, 659];
+    const start = context.currentTime + 0.02;
     notes.forEach((frequency, index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      const startAt = context.currentTime + index * 0.16;
+      const at = start + index * 0.17;
+      oscillator.type = "square";
       oscillator.frequency.value = frequency;
-      oscillator.type = "sine";
-      gain.gain.setValueAtTime(0.0001, startAt);
-      gain.gain.exponentialRampToValueAtTime(0.16, startAt + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.14);
+      gain.gain.setValueAtTime(0.0001, at);
+      gain.gain.exponentialRampToValueAtTime(0.72, at + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.15);
       oscillator.connect(gain);
       gain.connect(context.destination);
-      oscillator.start(startAt);
-      oscillator.stop(startAt + 0.15);
+      oscillator.start(at);
+      oscillator.stop(at + 0.16);
     });
-    window.setTimeout(() => void context.close(), 900);
   } catch {
-    // Browsers may block audio until a user gesture; realtime order updates remain active.
+    // A browser can still block audio until the next tap. The order itself is unaffected.
   }
 }
 
-function playRoleNotification(kind: "new" | "ready") {
-  const user = useAuthStore.getState().user;
-  if (!user) return;
-  const title = (user.jobTitle || "").toLowerCase();
-  const isCook = /chef|cook|kitchen/.test(title);
-  const isWaiter = /waiter|server|welcomer|floor/.test(title) || (!isCook && user.role === "EMPLOYEE");
-  if ((kind === "new" && (user.role === "ADMIN" || isCook)) || (kind === "ready" && (user.role === "ADMIN" || isWaiter))) void playOrderTone(kind);
-}
+let liveAttempt = 0;
 
 export const useOrderStore = create<OrderState>((set, get) => ({
-  orders: readCachedOrders(),
+  orders: mergeHeldOrders(readCachedOrders()),
   liveState: "offline",
   loading: false,
   source: null,
@@ -107,9 +188,11 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     set({ loading: true });
     try {
       const { data } = await api.get<Order[]>("/orders");
-      const waiting = new Set(listOutbox().filter((item) => item.status === "pending").map((item) => `local-${item.id}`));
-      const pending = get().orders.filter((order) => waiting.has(order.id));
-      const orders = [...pending, ...data];
+      const orders = mergeHeldOrders([...heldOrders(), ...data]);
+      writeCachedOrders(orders);
+      set({ orders });
+    } catch {
+      const orders = mergeHeldOrders(get().orders);
       writeCachedOrders(orders);
       set({ orders });
     } finally {
@@ -123,12 +206,21 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       current?.readyState === EventSource.CONNECTING
     )
       return;
+    const attempt = ++liveAttempt;
     set({ liveState: "connecting" });
     try {
       const { data } = await api.get<{ streamToken: string }>(
         "/orders/events/token",
       );
+      if (attempt !== liveAttempt) return;
+      const latest = get().source;
+      if (
+        latest?.readyState === EventSource.OPEN ||
+        latest?.readyState === EventSource.CONNECTING
+      )
+        return;
       const source = new EventSource(eventSourceUrl(data.streamToken));
+      const stream = source as EventSource & { intentionalClose?: boolean };
       set({ source });
       source.addEventListener("open", () =>
         set({ liveState: "live", reconnectAttempt: 0 }),
@@ -138,11 +230,10 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         const snapshot = JSON.parse(event.data) as Order[];
         const activeIds = new Set(snapshot.map((order) => order.id));
         set((state) => {
-          const orders = [
-            ...state.orders.filter((order) => String(order.id).startsWith("local-")),
+          const orders = mergeHeldOrders([
             ...snapshot,
             ...state.orders.filter((order) => !String(order.id).startsWith("local-") && !activeIds.has(order.id) && (order.status === "COMPLETED" || order.status === "CANCELLED")),
-          ];
+          ]);
           writeCachedOrders(orders);
           return { orders };
         });
@@ -150,9 +241,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
       for (const type of ["created", "updated"]) {
         source.addEventListener(type, (raw) => {
           const order = JSON.parse((raw as MessageEvent<string>).data) as Order;
-          if (type === "created") playRoleNotification("new");
           if (type === "updated" && order.status === "READY" && get().orders.find((current) => current.id === order.id)?.status !== "READY") {
-            playRoleNotification("ready");
             const user = useAuthStore.getState().user;
             const title = (user?.jobTitle || "").toLowerCase();
             const isCook = /chef|cook|kitchen/.test(title);
@@ -168,13 +257,15 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         const { id } = JSON.parse((raw as MessageEvent<string>).data) as {
           id: string;
         };
-        set((state) => ({
-          orders: state.orders.filter((order) => order.id !== id),
-        }));
+        set((state) => {
+          const orders = mergeHeldOrders(state.orders.filter((order) => order.id !== id));
+          writeCachedOrders(orders);
+          return { orders };
+        });
       });
       source.onerror = () => {
+        if (stream.intentionalClose || get().source !== source) return;
         source.close();
-        if (get().source !== source) return;
         const attempt = get().reconnectAttempt + 1;
         const delay = Math.min(1000 * 2 ** Math.min(attempt, 5), 30_000);
         set({ source: null, liveState: "offline", reconnectAttempt: attempt });
@@ -184,23 +275,28 @@ export const useOrderStore = create<OrderState>((set, get) => ({
         set({ reconnectTimer: timer });
       };
     } catch {
-      const attempt = get().reconnectAttempt + 1;
+      if (attempt !== liveAttempt) return;
+      const retry = get().reconnectAttempt + 1;
       const timer = window.setTimeout(
         () => {
           void get().connectLive();
         },
-        Math.min(1000 * 2 ** attempt, 30_000),
+        Math.min(1000 * 2 ** retry, 30_000),
       );
       set({
         liveState: "offline",
-        reconnectAttempt: attempt,
+        reconnectAttempt: retry,
         reconnectTimer: timer,
       });
     }
   },
   disconnectLive: () => {
+    liveAttempt += 1;
     const { source, reconnectTimer } = get();
-    if (source) source.close();
+    if (source) {
+      (source as EventSource & { intentionalClose?: boolean }).intentionalClose = true;
+      source.close();
+    }
     if (reconnectTimer) window.clearTimeout(reconnectTimer);
     set({
       source: null,
@@ -225,14 +321,17 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   },
   deleteOrder: async (id) => {
     await api.delete(`/orders/${id}`);
-    set((state) => ({
-      orders: state.orders.filter((order) => order.id !== id),
-    }));
+    set((state) => {
+      const orders = mergeHeldOrders(state.orders.filter((order) => order.id !== id));
+      writeCachedOrders(orders);
+      return { orders };
+    });
   },
   upsertOrder: (order) =>
     set((state) => {
       const index = state.orders.findIndex((item) => item.id === order.id);
-      const orders = index === -1 ? [order, ...state.orders] : state.orders.map((item, itemIndex) => itemIndex === index ? { ...item, ...order } : item);
+      const replaced = index === -1 ? [order, ...state.orders] : state.orders.map((item, itemIndex) => itemIndex === index ? { ...item, ...order } : item);
+      const orders = mergeHeldOrders(replaced);
       writeCachedOrders(orders);
       return { orders };
     }),

@@ -11,6 +11,10 @@ type LocalStay = {
   leaveTime: string;
   leaveDate: string;
   adults: string;
+  children?: string;
+  source?: string | null;
+  confirmationNumber?: string | null;
+  roomType?: string | null;
   guestNotes: string | null;
   checkedOut: boolean;
 };
@@ -70,11 +74,13 @@ function relativeWhen(label: "Arrives" | "Leaves", day: string, time: string, to
   return hourCount ? `${label} ${daysText} ${hoursText(hourCount)}` : `${label} ${daysText}`;
 }
 function stayCaption(stay: LocalStay, showArrive: boolean, showLeave: boolean, today: string, now: Date) {
-  const guests = Number(stay.adults || 0);
+  const guests = Number(stay.adults || 0) + Number(stay.children || 0);
   const parts = [
     showArrive ? relativeWhen("Arrives", stay.startDate, stay.arriveTime, today, now) : "",
     showLeave ? relativeWhen("Leaves", stay.leaveDate, stay.leaveTime, today, now) : "",
     `${guests} guest${guests === 1 ? "" : "s"}`,
+    stay.roomType || "",
+    stay.confirmationNumber ? `${stay.source || "Cloudbeds"} ${stay.confirmationNumber}` : "",
   ].filter(Boolean);
   return parts.join(" · ");
 }
@@ -93,7 +99,9 @@ function barTone(stay: LocalStay, today: string) {
   return "border-[#b9ddf5] bg-[#e7f4fc] text-[#1d6794]";
 }
 
-export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToken?: number; onVacant: (roomId: string, date: string) => void; onStay: (roomId: string, stayId: string) => void }) {
+export type CalendarStay = LocalStay;
+
+export function RoomCalendar({ reloadToken = 0, onVacant, onStay, onUnassigned }: { reloadToken?: number; onVacant: (roomId: string, date: string) => void; onStay: (roomId: string, stayId: string) => void; onUnassigned?: (stay: CalendarStay) => void }) {
   const [span, setSpan] = useState<(typeof SPANS)[number][0]>(14);
   const [anchor, setAnchor] = useState(() => isoDate(new Date()));
   const [calendar, setCalendar] = useState<CalendarResponse | null>(null);
@@ -127,7 +135,11 @@ export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToke
     return () => window.clearInterval(timer);
   }, []);
 
-  const rooms = calendar?.rooms ?? [];
+  const rooms = [...(calendar?.rooms ?? [])].sort((left, right) => {
+    if (left.id === "unassigned") return -1;
+    if (right.id === "unassigned") return 1;
+    return left.roomNumber.localeCompare(right.roomNumber, undefined, { numeric: true, sensitivity: "base" });
+  });
 
   return <section className="overflow-hidden rounded-[22px] border border-[#f1dfe7] bg-white shadow-card">
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f6e8ee] px-4 py-3">
@@ -169,7 +181,7 @@ export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToke
             </div>;
           })}
         </div>
-        {rooms.map((room) => <RoomRow key={room.id} room={room} from={from} span={span} today={today} now={now} onVacant={onVacant} onStay={onStay} />)}
+        {rooms.map((room) => <RoomRow key={room.id} room={room} from={from} span={span} today={today} now={now} onVacant={onVacant} onStay={onStay} onUnassigned={onUnassigned} />)}
         {!rooms.length && !loading && <p className="px-4 py-10 text-center text-sm text-muted">No rooms yet.</p>}
       </div>
     </div>}
@@ -183,7 +195,8 @@ export function RoomCalendar({ reloadToken = 0, onVacant, onStay }: { reloadToke
   </section>;
 }
 
-function RoomRow({ room, from, span, today, now, onVacant, onStay }: { room: LocalRoom; from: string; span: number; today: string; now: Date; onVacant: (roomId: string, date: string) => void; onStay: (roomId: string, stayId: string) => void }) {
+function RoomRow({ room, from, span, today, now, onVacant, onStay, onUnassigned }: { room: LocalRoom; from: string; span: number; today: string; now: Date; onVacant: (roomId: string, date: string) => void; onStay: (roomId: string, stayId: string) => void; onUnassigned?: (stay: LocalStay) => void }) {
+  const synthetic = room.id === "unassigned";
   const openStay = room.stays.find((stay) => !stay.checkedOut);
   const openRoom = () => {
     if (room.status === "AVAILABLE") onVacant(room.id, today);
@@ -196,7 +209,7 @@ function RoomRow({ room, from, span, today, now, onVacant, onStay }: { room: Loc
         const key = isoDate(addDays(parseDate(from), index));
         return <span key={key} className={`absolute inset-y-0 border-r border-[#f8eef3] ${key === today ? "bg-[#fff7fb]" : ""}`} style={{ left: index * DAY, width: DAY }} />;
       })}
-      {room.status === "AVAILABLE" && Array.from({ length: span }, (_, index) => {
+      {room.status === "AVAILABLE" && !synthetic && Array.from({ length: span }, (_, index) => {
         const key = isoDate(addDays(parseDate(from), index));
         return <button key={key} type="button" aria-label={`Check in ${roomLabel(room.roomNumber)} on ${key}`} onClick={() => onVacant(room.id, key)} className="absolute inset-y-0 z-[1]" style={{ left: index * DAY, width: DAY }} />;
       })}
@@ -210,7 +223,7 @@ function RoomRow({ room, from, span, today, now, onVacant, onStay }: { room: Loc
         const end = Math.min(span, dayIndex(leaveDay, from) + (stay.leaveDate ? 1 : 0));
         if (end <= start) return null;
         const caption = stayCaption(stay, dayIndex(stay.startDate, from) >= 0, dayIndex(leaveDay, from) < span, today, now);
-        return <button key={stay.id} type="button" onClick={() => onStay(room.id, stay.id)} className={`absolute top-[8px] z-[2] h-10 overflow-hidden rounded-md border px-2 text-left leading-tight ${barTone(stay, today)}`} style={{ left: start * DAY + 3, width: (end - start) * DAY - 6 }}>
+        return <button key={stay.id} type="button" aria-label={synthetic ? `Assign ${stay.guestName} to a room` : stay.guestName} onClick={() => { if (synthetic && onUnassigned) onUnassigned(stay); else onStay(room.id, stay.id); }} className={`absolute top-[8px] z-[2] h-10 overflow-hidden rounded-md border px-2 text-left leading-tight ${barTone(stay, today)}`} style={{ left: start * DAY + 3, width: (end - start) * DAY - 6 }}>
           <span className="block truncate text-[11px] font-extrabold">{stay.guestName}</span>
           <span className="block truncate text-[9px] font-semibold opacity-80">{caption}</span>
         </button>;

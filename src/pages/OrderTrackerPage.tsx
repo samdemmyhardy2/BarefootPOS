@@ -5,8 +5,7 @@ import { useOrderStore } from "../stores/orderStore";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { api, errorMessage } from "../lib/api";
-import { money, type PrepStation, type Order } from "../lib/types";
-import { orderLocation } from "../lib/types";
+import { money, orderCode, orderLocation, type PrepStation, type Order } from "../lib/types";
 import { formatOrderDuration } from "../lib/orderTiming";
 
 const filters = ["All active", "Pending", "Preparing", "Ready", "Served"];
@@ -39,7 +38,7 @@ export function OrderTrackerPage() {
           return (
             statusMatch &&
             (!term ||
-              `${orderLocation(order)} ${order.id} ${order.items.map((item) => item.menuItem.name).join(" ")}`
+              `${orderLocation(order)} ${orderCode(order)} ${order.items.map((item) => item.menuItem.name).join(" ")}`
                 .toLowerCase()
                 .includes(term))
           );
@@ -137,7 +136,7 @@ export function OrderTrackerPage() {
                       {orderLocation(order)}
                     </p>
                     <p className="mt-1 font-mono text-[10px] text-muted">
-                      #{order.id.slice(-6).toUpperCase()}
+                      #{orderCode(order)}
                     </p>
                   </div>
                   <OrderBadge status={order.status} />

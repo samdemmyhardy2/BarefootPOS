@@ -13,18 +13,19 @@ import { AccountPage } from "./pages/AccountPage";
 import { RoomsPage } from "./pages/RoomsPage";
 import { BusinessOverviewPage } from "./pages/BusinessOverviewPage";
 import { OrdersPage } from "./pages/OrdersPage";
+import { PrintersPage } from "./pages/PrintersPage";
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route element={<RequireAuth />}>
-        <Route element={<AppLayout />}>
+      <Route element={<AppLayout />}>
+        <Route path="/kitchen" element={<KitchenPage station="KITCHEN" standalone />} />
+        <Route element={<RequireAuth />}>
           <Route index element={<Navigate to="/overview" replace />} />
           <Route element={<RequireJobPermission permission="ORDER_VIEW" />}><Route path="overview" element={<OverviewPage />} /></Route>
           <Route element={<RequireJobPermission permission="ORDER_VIEW" />}><Route path="orders" element={<OrdersPage />} /></Route>
           <Route element={<RequireJobPermission permission="REPORTS" />}><Route path="business-overview" element={<BusinessOverviewPage />} /></Route>
-          <Route element={<RequireJobPermission permission="KITCHEN" />}><Route path="kitchen" element={<KitchenPage station="KITCHEN" />} /></Route>
           <Route element={<RequireJobPermission permission="BAR" />}><Route path="bar" element={<KitchenPage station="BAR" />} /></Route>
           <Route element={<RequireJobPermission permission="ORDER_SERVE" />}><Route path="ready" element={<ReadyOrdersPage />} /></Route>
           <Route element={<RequireJobPermission permission="TABLES" />}>
@@ -35,6 +36,7 @@ export default function App() {
           <Route element={<RequireAuth roles={["ADMIN"]} />}>
             <Route path="menu/*" element={<MenuPage />} />
             <Route path="team" element={<TeamPage />} />
+            <Route path="printers" element={<PrintersPage />} />
           </Route>
           <Route path="account" element={<AccountPage />} />
         </Route>

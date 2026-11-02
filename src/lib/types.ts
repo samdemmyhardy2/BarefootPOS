@@ -3,7 +3,8 @@ export type OrderStatus =
   "PENDING" | "PREPARING" | "READY" | "SERVED" | "COMPLETED" | "CANCELLED";
 export type TableStatus = "AVAILABLE" | "OCCUPIED" | "RESERVED";
 export type TableShape = "ROUND" | "SQUARE" | "RECTANGLE" | "OVAL" | "BOOTH" | "BAR";
-export type PrepStation = "KITCHEN" | "BAR";
+export type PrepStation = "KITCHEN" | "BAR" | "NONE";
+export type SendTo = PrepStation;
 export type RoomStatus = "AVAILABLE" | "OCCUPIED" | "MAINTENANCE" | "ARCHIVED";
 export type OrderPaymentMethod = "CASH" | "CARD" | "PROMPTPAY" | "ROOM_CHECKOUT";
 export type OrderPaymentStatus = "UNPAID" | "PAID" | "ROOM_FOLIO";
@@ -47,7 +48,7 @@ export interface MenuItem {
   id: string;
   name: string;
   description?: string | null;
-  prepStation?: PrepStation;
+  prepStation?: SendTo;
   price: number | string;
   imageUrl?: string | null;
   allergens: string[];
@@ -86,7 +87,7 @@ export interface ModifierGroup {
   nameTh: string;
   category: string;
   icon?: string;
-  appearance?: "RADIO" | "CHECKBOX" | "SLIDER" | "QUANTITY" | "TEXT";
+  appearance?: "RADIO" | "CHECKBOX" | "SLIDER" | "QUANTITY" | "TEXT" | "TOGGLE";
   madeAt?: "SAME_AS_DISH" | PrepStation;
   required: boolean;
   selectionType: "SINGLE" | "MULTIPLE";
@@ -108,7 +109,7 @@ export interface MenuItemModifierGroup {
 export interface ModifierSelectionSnapshot {
   groupId: string;
   groupName: string;
-  station?: PrepStation;
+  station?: SendTo;
   options: { id: string; name: string; price: number }[];
 }
 
@@ -120,6 +121,8 @@ export interface PrepTicketItem {
   addExtras?: string | null;
   specialNotes?: string | null;
   selectedAllergens?: string[];
+  imageUrl?: string | null;
+  kitchenFlag?: boolean;
 }
 
 export interface PrepTicket {
@@ -144,6 +147,7 @@ export interface DiningTable {
   width: number;
   height: number;
   sectionId?: string;
+  createdAt?: string;
   assignedRoomStays?: Pick<RoomStay, "id" | "primaryGuestName" | "room" | "occupants" | "cashOnly">[];
 }
 
@@ -170,6 +174,37 @@ export interface RoomCharge {
   signatureData?: string | null;
   occurredAt: string;
   settledAt?: string | null;
+  billId?: string | null;
+  billNumber?: number | null;
+  lines?: { name: string; quantity: number; amount: number; detail: string | null }[] | null;
+}
+
+export interface TableBillLine {
+  orderId: string;
+  orderItemId: string;
+  unit: number;
+  name: string;
+  detail: string | null;
+  amount: number;
+}
+
+export interface TableBill {
+  id: string;
+  tableId: string;
+  number: number;
+  status: "OPEN" | "SETTLED";
+  method: string | null;
+  stayId: string | null;
+  roomNumber: string | null;
+  guestName: string | null;
+  guestNames: string[];
+  amount: number;
+  signedByName: string | null;
+  signatureData: string | null;
+  paidAt: string | null;
+  chargeId: string | null;
+  lines: TableBillLine[];
+  createdAt: string;
 }
 
 export interface RoomPayment {
@@ -221,11 +256,13 @@ export interface OrderLine {
   selectedAllergens?: string[];
   modifierSelections?: ModifierSelectionSnapshot[];
   specialNotes?: string | null;
+  kitchenFlag?: boolean;
   menuItem: MenuItem;
 }
 
 export interface Order {
   id: string;
+  number?: number;
   tableId?: string | null;
   table?: DiningTable | null;
   roomStayId?: string | null;
@@ -246,13 +283,26 @@ export interface Order {
   servedAt?: string | null;
   items: OrderLine[];
   prepTickets?: PrepTicket[];
+  billShares?: { id: string; stayId: string | null; amount: number; method: string; paidAt: string }[];
+  splits?: TableBill[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OrderSalesSummary {
+  totalAmount: number;
+  totalCount: number;
+  roomAmount: number;
+  roomCount: number;
+  cashAmount: number;
+  cashCount: number;
 }
 
 export interface OrderPage {
   items: Order[];
   total: number;
+  totalAmount: number;
+  summary?: OrderSalesSummary;
   offset: number;
   limit: number;
   hasMore: boolean;
@@ -275,6 +325,11 @@ export interface EmployeeShift {
 
 export const money = (value: number | string | null | undefined) =>
   `${new Intl.NumberFormat("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value ?? 0))} THB`;
+
+export const orderCode = (order: { id: string; number?: number | null }) =>
+  typeof order.number === "number" && Number.isInteger(order.number) && order.number > 0
+    ? String(order.number)
+    : order.id.replace(/-/g, "").slice(0, 8).toUpperCase();
 
 export const orderLocation = (order: Pick<Order, "table" | "roomStay">) =>
   order.table ? order.table.tableNumber : order.roomStay?.room ? `Room ${order.roomStay.room.roomNumber}` : "Room service";

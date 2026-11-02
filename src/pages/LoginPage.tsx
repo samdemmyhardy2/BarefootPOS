@@ -51,7 +51,7 @@ export function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-white lg:grid lg:grid-cols-[1.05fr_.95fr]">
+    <div className="h-dvh overflow-y-auto bg-white lg:grid lg:grid-cols-[1.05fr_.95fr]">
       <section className="relative hidden min-h-screen overflow-hidden bg-[#2e4235] px-10 py-10 text-white lg:flex lg:flex-col lg:justify-between xl:px-16 xl:py-14">
         <div className="absolute -right-28 top-10 h-[460px] w-[460px] rounded-full border border-white/10" />
         <div className="absolute -right-12 top-26 h-[360px] w-[360px] rounded-full border border-white/10" />
