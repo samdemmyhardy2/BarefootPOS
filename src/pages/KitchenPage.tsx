@@ -136,7 +136,7 @@ const kitchenDishes = (
         (entry) => {
           const items = entry.ticket?.items?.length
             ? entry.ticket.items
-            : entry.order.items.map((item) => ({
+            : entry.order.items.filter((item) => !item.removedAt).map((item) => ({
               menuItemName: item.menuItem.name,
               quantity: item.quantity,
               imageUrl: item.menuItem.imageUrl,
@@ -312,39 +312,36 @@ function KitchenBoard({
                       ticket?.id ?? null,
                     )
                   }
-                  className="flex w-full flex-col overflow-hidden rounded-[22px] bg-white text-left shadow-card disabled:opacity-60"
+                  className="flex w-full flex-col rounded-[22px] bg-white text-left shadow-card disabled:opacity-60"
                 >
-                  <div className={`relative shrink-0 overflow-hidden ${imageHeight}`}>
+                  <div className={`relative w-full shrink-0 overflow-hidden rounded-t-[22px] bg-gradient-to-b from-[#f8c6e2] via-[#e48cb8] to-[#c45d90] ${imageHeight}`}>
                     {image ? (
                       <img
                         src={mediaSrc(image)}
                         alt=""
-                        className={`w-full object-cover ${imageHeight}`}
+                        className="absolute inset-0 h-full w-full object-cover"
                       />
                     ) : (
-                      <div className="grid h-full place-items-center bg-gradient-to-b from-[#f8c6e2] via-[#e48cb8] to-[#c45d90] text-[#f6d5e6]">
+                      <div className="absolute inset-0 grid place-items-center text-[#f6d5e6]">
                         <UtensilsCrossed size={42} strokeWidth={1.6} />
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#4a2038]/80 via-[#4a2038]/10 to-transparent" />
                     <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-[#2b1c27]/75 px-2.5 py-1 text-[11px] font-semibold text-white">
                       <Clock3 size={12} />
                       {minutesAgo} min ago
                     </span>
-                    <p className="absolute inset-x-4 bottom-4 flex items-end gap-2 font-display text-[1.65rem] font-extrabold leading-tight tracking-tight text-white">
-                      <span className="min-w-0 flex-1">{item.menuItemName}</span>
-                      {item.kitchenFlag && <MessageCircle className="comment-glow mb-1 h-9 w-9 shrink-0" aria-label="Kitchen comment" />}
-                    </p>
                   </div>
-                  {detailLines.length > 0 && (
-                    <div className="space-y-1 px-4 py-3.5">
-                      {detailLines.map((line) => (
-                        <p key={line.key} className="text-lg leading-6 text-[#8d7a83]">
-                          {line.label}: <span className="font-bold text-[#e21888]">{line.value}</span>
-                        </p>
-                      ))}
-                    </div>
-                  )}
+                  <div className="space-y-1 bg-white px-4 py-3.5">
+                    <p className="flex items-start gap-2 font-display text-[1.45rem] font-extrabold leading-normal text-ink">
+                      <span className="min-w-0 flex-1 whitespace-normal break-words">{item.menuItemName}</span>
+                      {item.kitchenFlag && <MessageCircle className="comment-glow mt-1 h-9 w-9 shrink-0" aria-label="Kitchen comment" />}
+                    </p>
+                    {detailLines.map((line) => (
+                      <p key={line.key} className="text-lg leading-6 text-[#8d7a83]">
+                        {line.label}: <span className="font-bold text-[#e21888]">{line.value}</span>
+                      </p>
+                    ))}
+                  </div>
                 </button>
               </div>
             );
@@ -539,7 +536,8 @@ export function KitchenPage({
             !order.prepTickets?.length &&
             ["PENDING", "PREPARING"].includes(
               order.status,
-            )
+            ) &&
+            order.items.some((item) => !item.removedAt)
           ) {
             return [
               {
@@ -664,7 +662,7 @@ export function KitchenPage({
 
         const ticketItems =
           ticket?.items ??
-          order.items.map((item) => ({
+          order.items.filter((item) => !item.removedAt).map((item) => ({
             menuItemName: item.menuItem.name,
             quantity: item.quantity,
             modifierSelections:

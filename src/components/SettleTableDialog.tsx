@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Split, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { money, type Order, type OrderLine, type TableBill, type TableBillLine } from "../lib/types";
+import { moneyRound, totalWithDishVat } from "../lib/vat";
+import { useUiStore } from "../stores/uiStore";
 import type { CheckoutReceipt } from "./ReceiptPreview";
 
 type Stay = { id: string; primaryGuestName: string; cashOnly?: boolean; occupants: { id: string; name: string }[]; room: { roomNumber: string | number } };
@@ -41,6 +44,51 @@ function groupLines(lines: TableBillLine[]) {
   return groupUnits(lines.map((line) => ({ ...line, key: `${line.orderItemId}:${line.unit}` })));
 }
 
+function dishAmounts(lines: { orderItemId: string; amount: number }[]) {
+  const groups = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const key = line.orderItemId || `line-${index}`;
+    groups.set(key, moneyRound((groups.get(key) ?? 0) + line.amount));
+  });
+  return [...groups.values()];
+}
+
+function pressTender(current: string, key: string) {
+  if (key === "back") return current.slice(0, -1);
+  if (key === "clear") return "";
+  if (key === ".") return current.includes(".") ? current : current === "" ? "0." : `${current}.`;
+  const [whole, fraction] = current.split(".");
+  if (fraction !== undefined && fraction.length >= 2) return current;
+  if ((whole.replace(".", "").length >= 7) && fraction === undefined) return current;
+  if (current === "0") return key;
+  return `${current}${key}`;
+}
+
+export function CashRegister({ amount, tendered, setTendered, busy, onClose, onConfirm, note }: { amount: number; tendered: string; setTendered: (value: string) => void; busy: boolean; onClose: () => void; onConfirm: () => void; note?: string }) {
+  const received = tendered === "" || tendered === "." ? null : Number(tendered);
+  const change = received === null || !Number.isFinite(received) ? null : moneyRound(received - amount);
+  const exact = moneyRound(amount);
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"] as const;
+  return createPortal(<div className="fixed inset-0 z-[10050] flex items-center justify-center bg-ink/45 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section role="dialog" aria-modal="true" aria-label="Cash register" className="w-full max-w-sm rounded-2xl border border-line bg-white p-5 shadow-float">
+      <header className="flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-bold">Cash</h2><p className="mt-1 text-[11px] text-muted">Enter what the customer hands you.</p></div><button type="button" onClick={onClose} aria-label="Close cash register" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header>
+      <div className="mt-4 flex items-center justify-between rounded-xl bg-[#fff5fa] px-3 py-2"><span className="text-[12px] font-semibold text-[#8d4a6a]">Total{note ? <span className="mt-0.5 block text-[10px] font-medium">{note}</span> : null}</span><span className="text-[15px] font-extrabold">{money(amount)}</span></div>
+      <label className="mt-3 block text-[10px] font-semibold text-muted">Customer pays
+        <input inputMode="decimal" value={tendered} onChange={(event) => { const cleaned = event.target.value.replace(/[^\d.]/g, ""); const [whole, ...rest] = cleaned.split("."); setTendered((rest.length ? `${whole}.${rest.join("").slice(0, 2)}` : whole).slice(0, 10)); }} placeholder="0" className="mt-1 h-14 w-full rounded-xl border border-line px-3 text-right font-display text-3xl font-extrabold outline-none focus:border-[#ed168c]" />
+      </label>
+      <div className={`mt-3 rounded-xl px-3 py-3 ${change !== null && change < 0 ? "bg-rose-50" : "bg-[#f4fbf6]"}`}>
+        <p className="text-[11px] font-semibold text-muted">{change !== null && change < 0 ? "Still short" : "Give back"}</p>
+        <p className="mt-1 font-display text-3xl font-extrabold">{change === null ? "—" : money(Math.abs(change))}</p>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {keys.map((key) => <button key={key} type="button" onClick={() => setTendered(pressTender(tendered, key))} className="h-12 rounded-xl border border-[#eadfe6] text-[16px] font-bold">{key === "back" ? "⌫" : key}</button>)}
+      </div>
+      <button type="button" onClick={() => setTendered(Number.isInteger(exact) ? String(exact) : exact.toFixed(2))} className="mt-2 h-10 w-full rounded-xl border border-[#eadfe6] text-[12px] font-bold">Exact {money(amount)}</button>
+      <button type="button" disabled={busy || change === null || change < 0} onClick={onConfirm} className="mt-2 h-11 w-full rounded-xl bg-[#f2168d] text-[13px] font-bold text-white disabled:opacity-40">{change !== null && change > 0 ? `Give back ${money(change)} and finish` : "Take exact cash"}</button>
+    </section>
+  </div>, document.body);
+}
+
 function payPhrase(method: PayMethod, amount: number, roomNumber?: string | number) {
   if (method === "ROOM_CHECKOUT") return roomNumber ? `Add ${money(amount)} to Room ${roomNumber}'s tab and sign` : "Choose a room";
   if (method === "CARD") return `Take ${money(amount)} card`;
@@ -51,6 +99,7 @@ function payPhrase(method: PayMethod, amount: number, roomNumber?: string | numb
 export function SettleTableDialog({
   tableId,
   tableNumber,
+  splitId,
   orders,
   stays,
   assignedStayIds,
@@ -61,6 +110,7 @@ export function SettleTableDialog({
 }: {
   tableId: string;
   tableNumber: string;
+  splitId?: string;
   orders: Order[];
   stays: Stay[];
   assignedStayIds: string[];
@@ -89,10 +139,14 @@ export function SettleTableDialog({
   const [signName, setSignName] = useState("");
   const [signData, setSignData] = useState("");
   const [drawing, setDrawing] = useState(false);
+  const [cashFor, setCashFor] = useState<{ amount: number; confirm: () => void } | null>(null);
+  const [tendered, setTendered] = useState("");
+  const storedRate = useUiStore((state) => state.vatPercent);
+  const [vatPercent, setVatPercent] = useState(storedRate);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const load = async () => {
-    const { data } = await api.get<{ units: Unit[]; bills: TableBill[] }>(`/tables/${tableId}/bills`);
+    const { data } = await api.get<{ units: Unit[]; bills: TableBill[] }>(`/tables/${tableId}/bills`, { params: splitId ? { splitId } : {} });
     setUnits(data.units);
     setBills(data.bills);
     const open = data.bills.filter((bill) => bill.status === "OPEN");
@@ -105,12 +159,20 @@ export function SettleTableDialog({
     let cancel = false;
     void load().catch((cause) => { if (!cancel) setError(errorMessage(cause)); }).finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
-  }, [tableId]);
-
+  }, [tableId, splitId]);
+  useEffect(() => { setVatPercent(storedRate); }, [storedRate]);
+  useEffect(() => {
+    let cancel = false;
+    void api.get<{ vatPercent?: number }>("/restaurant-settings").then(({ data }) => { if (!cancel) setVatPercent(Number(data.vatPercent) || 0); }).catch(() => undefined);
+    return () => { cancel = true; };
+  }, []);
   const openBills = bills.filter((bill) => bill.status === "OPEN").sort((a, b) => a.number - b.number);
   const settledBills = bills.filter((bill) => bill.status === "SETTLED").sort((a, b) => a.number - b.number);
-  const total = Math.round([...units, ...settledBills.flatMap((bill) => bill.lines)].reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
   const wholeTotal = Math.round(units.reduce((sum, unit) => sum + unit.amount, 0) * 100) / 100;
+  const charge = (lines: { orderItemId: string; amount: number }[], percent = vatPercent) => totalWithDishVat(dishAmounts(lines), percent);
+  const rateOf = (bill: TableBill) => bill.status === "SETTLED" ? Number(bill.vatPercent ?? 0) : vatPercent;
+  const settledGrand = Math.round(settledBills.reduce((sum, bill) => sum + charge(bill.lines, rateOf(bill)), 0) * 100) / 100;
+  const tableGrand = Math.round((charge(units) + settledGrand) * 100) / 100;
 
   const reservedNumbers = new Set(settledBills.map((bill) => bill.number));
   const openSplit = (from: View) => {
@@ -145,6 +207,7 @@ export function SettleTableDialog({
     setError("");
     try {
       const { data } = await api.put<{ units: Unit[]; bills: TableBill[] }>(`/tables/${tableId}/bill-split`, {
+        ...(splitId ? { splitId } : {}),
         bills: draftBills().map(([number, lines]) => ({ number, lines: lines.map((line) => ({ orderItemId: line.orderItemId, unit: line.unit })) })),
       });
       setUnits(data.units);
@@ -157,8 +220,15 @@ export function SettleTableDialog({
     }
   };
 
-  const receiptFor = (lines: TableBillLine[], amount: number, method: PayMethod, stay: Stay | undefined, paidAt: string, signature?: { name: string; data: string }, billNumber?: number): CheckoutReceipt => {
-    const grouped = groupLines(lines);
+  const receiptFor = (lines: TableBillLine[], food: number, method: PayMethod, stay: Stay | undefined, paidAt: string, signature?: { name: string; data: string }, billNumber?: number, percent = vatPercent): CheckoutReceipt => {
+    const grouped = [...lines.reduce((groups, line) => {
+      const key = line.orderItemId || `${line.name}:${line.detail ?? ""}`;
+      const group = groups.get(key) ?? { name: line.name, detail: line.detail, quantity: 0, amount: 0 };
+      group.quantity += 1;
+      group.amount = moneyRound(group.amount + line.amount);
+      groups.set(key, group);
+      return groups;
+    }, new Map<string, { name: string; detail: string | null; quantity: number; amount: number }>()).values()];
     const items: OrderLine[] = grouped.map((line, index) => ({
       id: `bill-line-${index}`,
       menuItemId: `bill-line-${index}`,
@@ -181,7 +251,8 @@ export function SettleTableDialog({
         waiterId: "",
         waiter: { id: "", name: cashierName },
         status: "COMPLETED",
-        totalAmount: amount,
+        totalAmount: food,
+        vatPercent: percent,
         items,
         createdAt: paidAt,
         updatedAt: paidAt,
@@ -189,7 +260,7 @@ export function SettleTableDialog({
       paymentMethod: method,
       room: null,
       rooms: charged.length ? charged : assigned,
-      totalAmount: amount,
+      totalAmount: charge(lines, percent),
       checkedOutAt: paidAt,
       cashierName,
       ...(signature ? { signature } : {}),
@@ -203,7 +274,7 @@ export function SettleTableDialog({
     if (method === "ROOM_CHECKOUT" && !signature) {
       setSignName(stay?.primaryGuestName ?? "");
       setSignData("");
-      setSignFor({ billId: null, stayId: stay?.id ?? "", amount: wholeTotal, lines: units });
+      setSignFor({ billId: null, stayId: stay?.id ?? "", amount: charge(units), lines: units });
       return;
     }
     setBusy(true);
@@ -213,9 +284,9 @@ export function SettleTableDialog({
       if (!orderIds.length) { setError("These orders are still saving. Wait a moment, then settle again."); setBusy(false); return; }
       const seated = assignedStayIds.length === 1 ? stays.find((entry) => entry.id === assignedStayIds[0]) : undefined;
       const guest = stay ?? (method === "ROOM_CHECKOUT" ? undefined : seated);
-      const { data } = await api.post<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>(`/tables/${tableId}/settle-party`, { orderIds, paymentMethod: method, amount: wholeTotal, ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) });
+      const { data } = await api.post<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>(`/tables/${tableId}/settle-party`, { orderIds, paymentMethod: method, amount: charge(units), ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) });
       await onChanged();
-      onReceipt(receiptFor(units, Number(data.totalAmount), method, stay, data.checkedOutAt, signature && { name: data.signedByName ?? signature.name, data: signature.data }));
+      onReceipt(receiptFor(units, wholeTotal, method, stay, data.checkedOutAt, signature && { name: data.signedByName ?? signature.name, data: signature.data }));
       onClose();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -233,7 +304,7 @@ export function SettleTableDialog({
     if (method === "ROOM_CHECKOUT" && !signature) {
       setSignName(stay?.primaryGuestName ?? "");
       setSignData("");
-      setSignFor({ billId: bill.id, stayId: stay?.id ?? "", amount: bill.amount, lines: bill.lines });
+      setSignFor({ billId: bill.id, stayId: stay?.id ?? "", amount: charge(bill.lines), lines: bill.lines });
       return;
     }
     setBusy(true);
@@ -243,7 +314,7 @@ export function SettleTableDialog({
       const guest = stay ?? (method === "ROOM_CHECKOUT" ? undefined : seated);
       const { data } = await api.post<{ bill: TableBill; tableNumber: string; tableCleared: boolean; checkedOutAt: string; room: { roomNumber: string; guestName: string; guestNames: string[] } | null }>(`/tables/${tableId}/bills/${bill.id}/settle`, { paymentMethod: method, ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) });
       await onChanged();
-      onReceipt(receiptFor(bill.lines, bill.amount, method, stay, data.checkedOutAt, signature && { name: data.bill.signedByName ?? signature.name, data: signature.data }, bill.number));
+      onReceipt(receiptFor(bill.lines, bill.amount, method, stay, data.checkedOutAt, signature && { name: data.bill.signedByName ?? signature.name, data: signature.data }, bill.number, rateOf(bill)));
       if (data.tableCleared) onClose();
       else {
         const next = await load();
@@ -307,8 +378,8 @@ export function SettleTableDialog({
           {([["CASH", "Cash"], ["CARD", "Card"], ["PROMPTPAY", "PromptPay QR"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={method === value} onClick={() => setMethod(value)} className={`rounded-md px-3 py-1.5 text-[11px] font-semibold ${method === value ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{label}</button>)}
         </div>
       </div>}
-      <button type="button" disabled={busy || (mode === "ROOM_CHECKOUT" && (!stay || stay.cashOnly))} onClick={onTake} className="mt-3 h-11 w-full rounded-xl bg-[#f2168d] text-[13px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">
-        {payPhrase(mode === "ROOM_CHECKOUT" ? "ROOM_CHECKOUT" : method, amount, stay?.room.roomNumber)}
+      <button type="button" disabled={busy || (mode === "ROOM_CHECKOUT" && (!stay || stay.cashOnly))} onClick={() => { if (mode !== "ROOM_CHECKOUT" && method === "CASH") { setTendered(""); setCashFor({ amount, confirm: onTake }); return; } onTake(); }} className="mt-3 h-11 w-full rounded-xl bg-[#f2168d] text-[13px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">
+        {mode !== "ROOM_CHECKOUT" && method === "CASH" ? "Enter cash received" : payPhrase(mode === "ROOM_CHECKOUT" ? "ROOM_CHECKOUT" : method, amount, stay?.room.roomNumber)}
       </button>
     </>;
   };
@@ -322,6 +393,7 @@ export function SettleTableDialog({
           <h2 className="font-display text-lg font-bold">{view === "split" ? `Split the bill · Table ${tableNumber}` : `Settle Table ${tableNumber}`}</h2>
           <p className="mt-1 max-w-3xl text-[12px] text-[#6d7380]">{view === "split" ? "Tap a number to move an item to that bill, or New bill to start another. Anything ordered twice is listed twice, so each one can go on a different bill." : view === "bills" ? "Each bill settles on its own. Add it to a room's tab, where the guest signs, or pay now." : "Everything is on one bill. Settle it all at once, or split it so each person pays their part or adds it to their room."}</p>
         </div>
+        <button type="button" disabled={!units.length && !openBills.length} onClick={() => { const lines = units.length ? units : openBills.flatMap((bill) => bill.lines); const food = lines.reduce((sum, line) => sum + line.amount, 0); if (!lines.length) return; onReceipt(receiptFor(lines, food, "CASH", undefined, new Date().toISOString())); }} className="inline-flex h-8 shrink-0 items-center rounded-lg border border-line px-2.5 text-[12px] font-bold text-ink disabled:opacity-40">View receipt</button>
         <button type="button" onClick={onClose} aria-label="Close settlement" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button>
       </header>
       {loading ? <p className="px-5 py-10 text-sm text-muted">Loading the bill…</p> : view === "split" ? <>
@@ -351,7 +423,7 @@ export function SettleTableDialog({
               {drafts.map(([number, lines]) => <article key={number} className="rounded-xl border border-[#f0e4ea] p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] font-bold text-white ${tone(number).dot}`}>{number}</span><div><p className="text-[13px] font-bold">Bill {number}</p><p className="text-[11px] text-muted">{lines.length} item{lines.length === 1 ? "" : "s"}</p></div></div>
-                  <strong className="text-[13px]">{money(lines.reduce((sum, line) => sum + line.amount, 0))}</strong>
+                  <strong className="text-[13px]">{money(charge(lines))}</strong>
                 </div>
                 <div className="mt-2 space-y-1 border-t border-[#f6eef2] pt-2">
                   {groupUnits(lines).map((line) => <div key={`${line.name}-${line.detail ?? ""}`} className="flex justify-between gap-2 text-[11px] text-[#5c6370]"><span className="min-w-0 truncate">{line.quantity > 1 ? `${line.quantity} × ` : ""}{line.name}</span><span className="shrink-0">{money(line.amount)}</span></div>)}
@@ -361,7 +433,7 @@ export function SettleTableDialog({
           </div>
         </div>
         <footer className="flex items-center justify-between gap-3 border-t border-[#f3e7ed] px-5 py-3">
-          <div><p className="text-[11px] text-muted">Table total</p><p className="text-[15px] font-extrabold">{money(wholeTotal)} · {drafts.length} bill{drafts.length === 1 ? "" : "s"}</p></div>
+          <div><p className="text-[11px] text-muted">Table total</p><p className="text-[15px] font-extrabold">{money(charge(units))} · {drafts.length} bill{drafts.length === 1 ? "" : "s"}</p></div>
           <div className="flex gap-2">
             <button type="button" onClick={() => setView(splitFrom)} className="h-10 rounded-xl border border-[#eadfe6] px-4 text-[13px] font-bold">Cancel</button>
             <button type="button" disabled={busy || !drafts.length} onClick={() => void saveSplit()} className="h-10 rounded-xl bg-[#f2168d] px-4 text-[13px] font-bold text-white disabled:opacity-40">Settle {drafts.length} bill{drafts.length === 1 ? "" : "s"}</button>
@@ -372,12 +444,12 @@ export function SettleTableDialog({
           <article className="rounded-xl border border-[#f0e4ea] p-3">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2"><span className="grid h-5 w-5 place-items-center rounded-full bg-[#5c6b86] text-[10px] font-bold text-white">1</span><div><p className="text-[13px] font-bold">Whole table</p><p className="text-[11px] text-muted">Bill 1 · {units.length} item{units.length === 1 ? "" : "s"}</p></div></div>
-              <strong>{money(wholeTotal)}</strong>
+              <strong>{money(charge(units))}</strong>
             </div>
             <div className="mt-3 space-y-1 border-b border-[#f3e7ed] pb-3">
               {groupUnits(units).map((line) => <div key={`${line.name}-${line.detail ?? ""}`} className="flex justify-between gap-2 text-[12px]"><span className="min-w-0">{line.quantity > 1 ? `${line.quantity} × ` : ""}{line.name}</span><span className="shrink-0 text-[#5c6370]">{money(line.amount)}</span></div>)}
             </div>
-            <div className="pt-3">{payCard("whole", wholeTotal, () => void settleWhole(), wholeMode, setWholeMode, wholeMethod, setWholeMethod, wholeStayId, setWholeStayId)}</div>
+            <div className="pt-3">{payCard("whole", charge(units), () => void settleWhole(), wholeMode, setWholeMode, wholeMethod, setWholeMethod, wholeStayId, setWholeStayId)}</div>
           </article>
           <button type="button" onClick={() => openSplit("whole")} className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[#f3b6d4] bg-[#fffafc] px-6 text-center">
             <span className="grid h-10 w-10 place-items-center rounded-full bg-[#ffe4f2] text-[#f2168d]"><Split size={18} /></span>
@@ -386,28 +458,29 @@ export function SettleTableDialog({
           </button>
         </div>
         <footer className="flex items-end justify-between gap-3 border-t border-[#f3e7ed] px-5 py-3">
-          <div><p className="text-[11px] text-muted">Table total</p><p className="text-[18px] font-extrabold leading-none">{money(wholeTotal)}</p></div>
+          <div><p className="text-[11px] text-muted">Table total</p><p className="text-[18px] font-extrabold leading-none">{money(charge(units))}</p></div>
           <p className="max-w-xs text-right text-[11px] text-[#8d939c]">The table clears once every bill is settled.</p>
         </footer>
       </> : <>
         <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto px-5 py-3 md:grid-cols-2 xl:grid-cols-3">
           {settledBills.map((bill) => <article key={bill.id} className="rounded-xl border border-[#e7f3ef] bg-[#fbfefd] p-3">
-            <div className="flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] font-bold text-white ${tone(bill.number).dot}`}>{bill.number}</span><div><p className="text-[13px] font-bold">Bill {bill.number}</p><p className="text-[11px] text-emerald-700">{bill.method === "ROOM_CHECKOUT" ? `On Room ${bill.roomNumber ?? ""}'s tab` : "Paid"}</p></div></div><strong>{money(bill.amount)}</strong></div>
+            <div className="flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] font-bold text-white ${tone(bill.number).dot}`}>{bill.number}</span><div><p className="text-[13px] font-bold">Bill {bill.number}</p><p className="text-[11px] text-emerald-700">{bill.method === "ROOM_CHECKOUT" ? `On Room ${bill.roomNumber ?? ""}'s tab` : "Paid"}</p></div></div><strong>{money(charge(bill.lines, rateOf(bill)))}</strong></div>
             <div className="mt-2 space-y-1">{groupLines(bill.lines).map((line) => <div key={`${line.name}-${line.detail ?? ""}`} className="flex justify-between gap-2 text-[11px] text-[#5c6370]"><span>{line.quantity > 1 ? `${line.quantity} × ` : ""}{line.name}</span><span>{money(line.amount)}</span></div>)}</div>
           </article>)}
           {openBills.map((bill) => <article key={bill.id} className="rounded-xl border border-[#f0e4ea] p-3">
-            <div className="flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] font-bold text-white ${tone(bill.number).dot}`}>{bill.number}</span><div><p className="text-[13px] font-bold">Bill {bill.number}</p><p className="text-[11px] text-muted">{bill.lines.length} item{bill.lines.length === 1 ? "" : "s"}</p></div></div><strong>{money(bill.amount)}</strong></div>
+            <div className="flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] font-bold text-white ${tone(bill.number).dot}`}>{bill.number}</span><div><p className="text-[13px] font-bold">Bill {bill.number}</p><p className="text-[11px] text-muted">{bill.lines.length} item{bill.lines.length === 1 ? "" : "s"}</p></div></div><strong>{money(charge(bill.lines))}</strong></div>
             <div className="mt-2 space-y-1 border-b border-[#f3e7ed] pb-3">{groupLines(bill.lines).map((line) => <div key={`${line.name}-${line.detail ?? ""}`} className="flex justify-between gap-2 text-[12px]"><span className="min-w-0">{line.quantity > 1 ? `${line.quantity} × ` : ""}{line.name}</span><span className="shrink-0 text-[#5c6370]">{money(line.amount)}</span></div>)}</div>
-            <div className="pt-3">{payCard(bill.id, bill.amount, () => void settleBill(bill), billMode[bill.id] ?? "NOW", (mode) => setBillMode((current) => ({ ...current, [bill.id]: mode })), billMethod[bill.id] ?? "CASH", (method) => setBillMethod((current) => ({ ...current, [bill.id]: method })), billStay[bill.id] ?? "", (id) => setBillStay((current) => ({ ...current, [bill.id]: id })))}</div>
+            <div className="pt-3">{payCard(bill.id, charge(bill.lines), () => void settleBill(bill), billMode[bill.id] ?? "NOW", (mode) => setBillMode((current) => ({ ...current, [bill.id]: mode })), billMethod[bill.id] ?? "CASH", (method) => setBillMethod((current) => ({ ...current, [bill.id]: method })), billStay[bill.id] ?? "", (id) => setBillStay((current) => ({ ...current, [bill.id]: id })))}</div>
           </article>)}
         </div>
         <footer className="flex items-center justify-between gap-3 border-t border-[#f3e7ed] px-5 py-3">
-          <div><p className="text-[11px] text-muted">Table total</p><p className="text-[15px] font-extrabold">{money(total)} · {openBills.length + settledBills.length} bill{openBills.length + settledBills.length === 1 ? "" : "s"}</p></div>
+          <div><p className="text-[11px] text-muted">Table total</p><p className="text-[15px] font-extrabold">{money(tableGrand)} · {openBills.length + settledBills.length} bill{openBills.length + settledBills.length === 1 ? "" : "s"}</p></div>
           <button type="button" onClick={() => openSplit("bills")} className="h-10 rounded-xl border border-[#eadfe6] px-4 text-[13px] font-bold">Change split</button>
         </footer>
       </>}
       {error && <p role="alert" className="mx-5 mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
     </section>
+    {cashFor && <CashRegister amount={cashFor.amount} tendered={tendered} setTendered={setTendered} busy={busy} note={vatPercent > 0 ? "VAT included" : undefined} onClose={() => setCashFor(null)} onConfirm={() => { const confirm = cashFor.confirm; setCashFor(null); confirm(); }} />}
     {signFor && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-ink/45 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setSignFor(null); }}>
       <section role="dialog" aria-modal="true" aria-label="Sign for the room tab" className="w-full max-w-lg rounded-2xl border border-line bg-white p-5 shadow-float">
         <header className="flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-bold">Sign for Room {stays.find((stay) => stay.id === signFor.stayId)?.room.roomNumber}</h2><p className="mt-1 text-[11px] text-muted">{signName || "The guest"}, please sign to add {money(signFor.amount)} to the room’s tab.</p></div><button type="button" onClick={() => setSignFor(null)} aria-label="Close signature" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-canvas"><X size={16} /></button></header>

@@ -43,6 +43,12 @@ export function listOutbox() {
   return read();
 }
 
+export function retargetQueuedTable(fromId: string, toId: string) {
+  const current = read();
+  const next = current.map((item) => item.scope === "order.create" && item.body.tableId === fromId ? { ...item, body: { ...item.body, tableId: toId } } : item);
+  if (next.some((item, index) => item !== current[index])) write(next);
+}
+
 export function dismissOutbox(id: string) {
   write(read().filter((item) => item.id !== id));
 }

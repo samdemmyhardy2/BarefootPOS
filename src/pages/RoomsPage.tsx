@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
-import { BedDouble, Plus, ReceiptText, Trash2, Users, X, Pencil, Search, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
+import { BedDouble, Minus, Plus, ReceiptText, Trash2, Users, X, Pencil, Search, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { Field, Modal, Panel, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import { money, orderCode, type Room, type RoomChargeKind, type RoomPaymentMethod, type RoomStay } from "../lib/types";
+import { money, orderCode, type Order, type Room, type RoomCharge, type RoomChargeKind, type RoomPaymentMethod, type RoomStay } from "../lib/types";
+import { moneyRound, roundUpBaht } from "../lib/vat";
 import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { hasJobPermission } from "../lib/access";
-import { ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
+import { priceFolioCharge, ReceiptPreview, type CheckoutReceipt } from "../components/ReceiptPreview";
+import { CashRegister } from "../components/SettleTableDialog";
 import { RoomCalendar, type CalendarStay } from "../components/RoomCalendar";
 
 type ModalKind = "room" | "checkin" | "arrival" | "charge" | "settle" | "assign" | null;
@@ -26,6 +29,135 @@ function dishName(line: { menuItem?: { name?: string | null } | null; itemSnapsh
   if (copy && typeof copy === "object" && !Array.isArray(copy) && typeof (copy as { name?: unknown }).name === "string") return (copy as { name: string }).name;
   return "Removed dish";
 }
+function QuantityStepper({ value, name, onChange }: { value: number; name: string; onChange: (value: number) => void }) {
+  return <div className="flex h-8 items-center rounded-lg bg-[#fff4f9] p-0.5">
+    <button type="button" aria-label={`Decrease ${name}`} onClick={() => onChange(Math.max(1, value - 1))} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Minus size={12} /></button>
+    <span className="w-6 text-center text-[11px] font-bold text-ink">{value}</span>
+    <button type="button" aria-label={`Increase ${name}`} onClick={() => onChange(Math.min(99, value + 1))} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white"><Plus size={12} /></button>
+  </div>;
+}
+function RoomDishRow({ line, editable, onRemove, onQuantity }: { line: { id?: string; quantity: number; unitPrice?: number | string | null; subtotal?: number | string | null; menuItem?: { name?: string | null; price?: number | string | null } | null; itemSnapshot?: unknown; modifierSelections?: { groupName: string; options: { name: string }[] }[]; detail?: string | null; removedAt?: string | null; removalReason?: string | null }; editable: boolean; onRemove?: (reason: string) => Promise<void>; onQuantity?: (quantity: number) => Promise<void> }) {
+  const removed = Boolean(line.removedAt);
+  const reveal = 56;
+  const [open, setOpen] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(line.quantity);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const drag = useRef<{ pointer: number; startX: number; startOffset: number; moved: boolean } | null>(null);
+  useEffect(() => { setOffset(open ? -reveal : 0); }, [open]);
+  const name = dishName(line);
+  const amount = Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem?.price ?? 0) * line.quantity);
+  const detail = line.detail || line.modifierSelections?.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ");
+  const body = <div className={`px-1 py-1 ${removed ? "text-[#a398a0]" : "text-muted"}`}>
+    <div className="flex justify-between gap-2 text-xs">
+      <span className={removed ? "line-through" : ""}>{line.quantity} × {name}{detail ? <small className={`block pl-4 text-[10px] ${removed ? "line-through" : ""}`}>{detail}</small> : null}</span>
+      <span className="flex shrink-0 items-center gap-2">
+        {editable && !removed && onQuantity && !editing && <button type="button" onClick={() => { setDraft(line.quantity); setEditing(true); setRemoving(false); setOpen(false); }} className="text-[10px] font-bold text-[#d20b79]">Edit</button>}
+        <span className={removed ? "line-through" : ""}>{money(Number.isFinite(amount) ? amount : 0)}</span>
+      </span>
+    </div>
+    {removed && <p className="mt-0.5 text-[10px] leading-4 text-[#8d939c]">Removed · {line.removalReason || "No reason given"}</p>}
+    {editing && onQuantity && <form className="mt-2 flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (busy) return; if (draft === line.quantity) { setEditing(false); return; } setBusy(true); setNote(""); void onQuantity(draft).then(() => setEditing(false)).catch((cause: unknown) => setNote(errorMessage(cause))).finally(() => setBusy(false)); }}>
+      <QuantityStepper value={draft} name={name} onChange={setDraft} />
+      <button type="submit" disabled={busy} className="h-8 rounded-lg bg-[#2a2430] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Save</button>
+    </form>}
+    {removing && onRemove && <form className="mt-2 flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); const next = reason.trim(); if (!next || busy) return; setBusy(true); setNote(""); void onRemove(next).then(() => { setRemoving(false); setOpen(false); setReason(""); }).catch((cause: unknown) => setNote(errorMessage(cause))).finally(() => setBusy(false)); }}>
+      <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is this dish removed?" maxLength={240} className="h-8 min-w-0 flex-1 rounded-lg border border-[#eadfe6] bg-white px-2 text-[11px] text-ink outline-none focus:border-[#ed168c]" />
+      <button type="submit" disabled={busy || !reason.trim()} className="h-8 rounded-lg bg-[#2a2430] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Done</button>
+    </form>}
+    {note && <p className="mt-1 text-[10px] text-rose-700">{note}</p>}
+  </div>;
+  if (!editable || removed || !onRemove) return <div className="ml-6 mt-1">{body}</div>;
+  return <div className="relative ml-6 mt-1 overflow-hidden rounded-lg">
+    <button type="button" onClick={() => { setRemoving(true); setEditing(false); setOpen(false); }} className="absolute inset-y-0 right-0 grid w-14 place-items-center bg-rose-600 text-white" aria-label={`Remove ${name}`}><Trash2 size={16} /></button>
+    <div className="relative bg-white" style={{ transform: `translateX(${offset}px)`, transition: dragging ? "none" : "transform 180ms ease", touchAction: "pan-y" }}
+      onPointerDown={(event) => { if (event.button !== 0 || (event.target as HTMLElement).closest("input, button, textarea, form")) return; drag.current = { pointer: event.pointerId, startX: event.clientX, startOffset: offset, moved: false }; setDragging(true); event.currentTarget.setPointerCapture(event.pointerId); }}
+      onPointerMove={(event) => { const current = drag.current; if (!current || current.pointer !== event.pointerId) return; const delta = event.clientX - current.startX; if (Math.abs(delta) > 8) current.moved = true; setOffset(Math.min(0, Math.max(-reveal, current.startOffset + delta))); }}
+      onPointerUp={(event) => { const current = drag.current; if (!current || current.pointer !== event.pointerId) return; drag.current = null; setDragging(false); if (!current.moved) { if (open) setOpen(false); return; } const shouldOpen = current.startOffset + (event.clientX - current.startX) < -reveal / 2; setOpen(shouldOpen); setOffset(shouldOpen ? -reveal : 0); }}
+      onPointerCancel={() => { drag.current = null; setDragging(false); setOffset(open ? -reveal : 0); }}
+    >{body}</div>
+  </div>;
+}
+
+function ChargeQuantityRow({ quantity, unitPrice, onSave }: { quantity: number; unitPrice: number | string; onSave: (quantity: number) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(quantity);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  return <div className="ml-6 mt-1 text-xs text-muted">
+    <div className="flex items-center justify-between gap-2"><span>{quantity} × {money(unitPrice)}</span>{!editing && <button type="button" onClick={() => { setDraft(quantity); setEditing(true); }} className="text-[10px] font-bold text-[#d20b79]">Edit</button>}</div>
+    {editing && <form className="mt-2 flex items-center gap-2" onSubmit={(event) => { event.preventDefault(); if (busy) return; if (draft === quantity) { setEditing(false); return; } setBusy(true); setNote(""); void onSave(draft).then(() => setEditing(false)).catch((cause: unknown) => setNote(errorMessage(cause))).finally(() => setBusy(false)); }}>
+      <QuantityStepper value={draft} name="quantity" onChange={setDraft} />
+      <button type="submit" disabled={busy} className="h-8 rounded-lg bg-[#2a2430] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Save</button>
+    </form>}
+    {note && <p className="mt-1 text-[10px] text-rose-700">{note}</p>}
+  </div>;
+}
+function chargeDish(line: { name?: string; quantity?: number; amount?: number | string; detail?: string | null; orderItemId?: string; unit?: number; removedAt?: string | null; removalReason?: string | null }, index: number) {
+  return { id: line.orderItemId ? `${line.orderItemId}:${line.unit ?? index}` : `line-${index}`, quantity: line.quantity && line.quantity > 0 ? line.quantity : 1, subtotal: line.amount, menuItem: { name: line.name || "Item" }, detail: line.detail, removedAt: line.removedAt, removalReason: line.removalReason };
+}
+function plainTable(value: string) {
+  return value.replace(/^table\s+/i, "").trim();
+}
+function stayDayKey(value?: string | null) {
+  if (!value) return "";
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? "" : `${when.getFullYear()}-${when.getMonth()}-${when.getDate()}`;
+}
+function chargeTable(charge: RoomCharge, order?: Order) {
+  const raw = order?.table?.tableNumber ? String(order.table.tableNumber) : charge.description.match(/^Table\s+(.+?)(?:\s+restaurant\b|\s+·|\s*:|$)/i)?.[1] ?? "";
+  return plainTable(raw);
+}
+type RoomTabRow =
+  | { kind: "single"; charge: RoomCharge; order?: Order }
+  | { kind: "table"; key: string; table: string; when: string; charges: RoomCharge[]; orders: Order[] };
+function groupRoomCharges(charges: RoomCharge[], orders: Order[]): RoomTabRow[] {
+  const orderFor = (charge: RoomCharge) => charge.orderId ? orders.find((order) => order.id === charge.orderId) : undefined;
+  const rows: RoomTabRow[] = [];
+  const index = new Map<string, number>();
+  for (const charge of charges) {
+    const order = orderFor(charge);
+    const table = charge.kind === "RESTAURANT_ORDER" && !charge.billNumber ? chargeTable(charge, order) : "";
+    const when = charge.occurredAt || order?.createdAt || "";
+    const key = table ? `${table}:${stayDayKey(when)}` : "";
+    if (!key) {
+      rows.push({ kind: "single", charge, order });
+      continue;
+    }
+    const at = index.get(key);
+    if (at == null) {
+      index.set(key, rows.length);
+      rows.push({ kind: "table", key, table, when, charges: [charge], orders: order ? [order] : [] });
+    } else {
+      const row = rows[at];
+      if (row.kind === "table") {
+        row.charges.push(charge);
+        if (order && !row.orders.some((entry) => entry.id === order.id)) row.orders.push(order);
+      }
+    }
+  }
+  return rows;
+}
+function groupPaidOrders(orders: Order[], splitOrderIds: Set<string>) {
+  const rows: { key: string; table: string; when: string; orders: Order[] }[] = [];
+  const index = new Map<string, number>();
+  for (const order of orders) {
+    const table = !splitOrderIds.has(order.id) && order.table?.tableNumber ? plainTable(String(order.table.tableNumber)) : "";
+    const when = order.createdAt;
+    const key = table ? `${table}:${stayDayKey(when)}` : `order:${order.id}`;
+    const at = index.get(key);
+    if (at == null) {
+      index.set(key, rows.length);
+      rows.push({ key, table, when, orders: [order] });
+    } else rows[at].orders.push(order);
+  }
+  return rows;
+}
 
 type PageResponse<T> = {
   data: T[];
@@ -36,6 +168,7 @@ type PageResponse<T> = {
 };
 
 export function RoomsPage() {
+  const navigate = useNavigate();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState<ModalKind>(null);
@@ -49,12 +182,13 @@ export function RoomsPage() {
   const [timeline, setTimeline] = useState<RoomStay | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [stayHistoryValue, setStayHistory] = useState<RoomStay[]>([]);
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const [, setHistoryPage] = useState(1);
+  const [, setHistoryTotalPages] = useState(1);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [roomHistoryOpen, setRoomHistoryOpen] = useState(false);
+  const roomHistoryRef = useRef<HTMLElement>(null);
+  const [, setHistoryLoadingMore] = useState(false);
   const [selectedStayId, setSelectedStayId] = useState<string | null>(null);
-  const historyScrollRef = useRef<HTMLDivElement | null>(null);
   const historyRequestRef = useRef(0);
   const preferredStayRef = useRef<string | null>(null);
   const [checkoutReceipt, setCheckoutReceipt] = useState<CheckoutReceipt | null>(null);
@@ -72,8 +206,12 @@ export function RoomsPage() {
   const [chargeDescription, setChargeDescription] = useState("");
   const [chargeQuantity, setChargeQuantity] = useState("1");
   const [chargePrice, setChargePrice] = useState("");
+  const [commissionItemId, setCommissionItemId] = useState<string | null>(null);
+  const [commissionItems, setCommissionItems] = useState<{ id: string; name: string; price: number; commission: number }[]>([]);
   const [roomPaymentMethod, setRoomPaymentMethod] = useState<RoomPaymentMethod>("CASH");
-  const [settlingChargeId, setSettlingChargeId] = useState<string | null>(null);
+  const [cashOpen, setCashOpen] = useState(false);
+  const [tendered, setTendered] = useState("");
+  const [settlingChargeIds, setSettlingChargeIds] = useState<string[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [deskView, setDeskView] = useState<"folios" | "calendar">("folios");
@@ -100,6 +238,50 @@ export function RoomsPage() {
     checkedOutAt: stay.checkedOutAt ?? new Date().toISOString(),
     cashierName: currentUser?.name ?? "Restaurant staff",
   });
+  const openOrderReceipt = (order: Order) => setCheckoutReceipt({
+    tableNumber: order.table?.tableNumber,
+    locationLabel: order.type === "ROOM_SERVICE" || !order.table ? "Room service" : `Table ${order.table.tableNumber}`,
+    orders: [order],
+    paymentMethod: order.paymentMethod,
+    room: null,
+    rooms: order.roomGuestsSnapshot?.length ? order.roomGuestsSnapshot : order.roomStay?.room ? [{ roomNumber: order.roomStay.room.roomNumber, guestName: order.roomStay.primaryGuestName, guestNames: [...new Set([order.roomStay.primaryGuestName, ...order.roomStay.occupants.map((occupant) => occupant.name)])] }] : [],
+    totalAmount: Number(order.totalAmount),
+    checkedOutAt: order.paidAt ?? order.updatedAt,
+    cashierName: order.paidBy?.name ?? order.waiter?.name ?? currentUser?.name ?? "Restaurant staff",
+    ...(order.paymentMethod === "ROOM_CHECKOUT" && order.roomCharge?.signatureData ? { signature: { name: order.roomCharge.signedByName || "Guest", data: order.roomCharge.signatureData } } : {}),
+  });
+  const openOrdersReceipt = (list: Order[]) => {
+    if (list.length <= 1) {
+      if (list[0]) openOrderReceipt(list[0]);
+      return;
+    }
+    const first = list[0];
+    const table = first.table?.tableNumber ? plainTable(String(first.table.tableNumber)) : "";
+    const rooms = list.flatMap((order) => order.roomGuestsSnapshot?.length ? order.roomGuestsSnapshot : order.roomStay?.room ? [{ roomNumber: order.roomStay.room.roomNumber, guestName: order.roomStay.primaryGuestName, guestNames: [...new Set([order.roomStay.primaryGuestName, ...order.roomStay.occupants.map((occupant) => occupant.name)])] }] : []);
+    setCheckoutReceipt({
+      tableNumber: table || first.table?.tableNumber,
+      locationLabel: table ? `Table ${table}` : list.every((order) => order.type === "ROOM_SERVICE" || !order.table) ? "Room service" : "Restaurant",
+      orders: list,
+      folioCharges: list.map((order) => ({
+        id: order.id,
+        orderId: order.id,
+        kind: "RESTAURANT_ORDER" as const,
+        description: table ? `Table ${table} restaurant order` : order.type === "ROOM_SERVICE" || !order.table ? "Room service" : "Restaurant order",
+        quantity: 1,
+        unitPrice: order.totalAmount,
+        amount: order.totalAmount,
+        occurredAt: order.createdAt,
+        signedByName: order.roomCharge?.signedByName ?? null,
+        signatureData: order.roomCharge?.signatureData ?? null,
+      })),
+      paymentMethod: first.paymentMethod,
+      room: null,
+      rooms,
+      totalAmount: list.reduce((sum, order) => sum + Number(order.totalAmount), 0),
+      checkedOutAt: list.map((order) => order.paidAt ?? order.updatedAt).sort().slice(-1)[0] ?? new Date().toISOString(),
+      cashierName: first.paidBy?.name ?? first.waiter?.name ?? currentUser?.name ?? "Restaurant staff",
+    });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -158,6 +340,14 @@ export function RoomsPage() {
     }
     finally { setBusy(false); }
   };
+  useEffect(() => {
+    if (modal !== "charge") return;
+    let cancelled = false;
+    void api.get<{ id: string; name: string; price: number; commission: number }[]>("/rooms/commission-items")
+      .then(({ data }) => { if (!cancelled) setCommissionItems(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setCommissionItems([]); });
+    return () => { cancelled = true; };
+  }, [modal]);
   const openCheckIn = (room: Room) => {
     setSelectedRoom(room); setGuestName(""); setOccupants(""); setGuestNotes(""); setCashOnly(false); setChargeLimit("");
     const now = new Date();
@@ -176,10 +366,13 @@ export function RoomsPage() {
     setError(""); setModal("arrival");
   };
   const addCharge = async (event: FormEvent) => {
-    event.preventDefault(); if (!selectedRoom?.stays[0]) return; setBusy(true); setError("");
+    event.preventDefault();
+    const stayId = timeline?.id ?? selectedStayId ?? selectedRoom?.stays?.[0]?.id;
+    if (!stayId) return;
+    setBusy(true); setError("");
     try {
-      await api.post(`/rooms/stays/${selectedRoom.stays[0].id}/charges`, { kind: chargeKind, description: chargeDescription, quantity: Number(chargeQuantity), unitPrice: Number(chargePrice) });
-      setModal(null); setChargeDescription(""); setChargeQuantity("1"); setChargePrice(""); notify("Room usage added to the folio."); await openTimeline(selectedRoom.stays[0].id); await load();
+      await api.post(`/rooms/stays/${stayId}/charges`, { kind: chargeKind, description: chargeDescription, quantity: Number(chargeQuantity), unitPrice: Number(chargePrice), ...(commissionItemId ? { commissionItemId } : {}) });
+      setModal(null); setCommissionItemId(null); setChargeDescription(""); setChargeQuantity("1"); setChargePrice(""); notify("Room usage added to the folio."); await openTimeline(stayId); await load();
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   };
@@ -228,11 +421,6 @@ export function RoomsPage() {
     }
   }, []);
 
-  const loadMoreStayHistory = async () => {
-    if (!focusedRoomId || historyLoading || historyLoadingMore || historyPage >= historyTotalPages) return;
-    await loadStayHistory(focusedRoomId, historyPage + 1, true);
-  };
-
   const openAssign = (stay: CalendarStay) => {
     setAssignStay(stay);
     setAssignRoomId("");
@@ -270,6 +458,11 @@ export function RoomsPage() {
       setBusy(false);
     }
   };
+  const moveGuest = async (stay: CalendarStay, room: { id: string; roomNumber: string }) => {
+    await api.post(`/rooms/stays/${stay.id}/assign`, { roomId: room.id });
+    notify(`${stay.guestName} assigned to ${roomLabel(room.roomNumber)}.`);
+    await load();
+  };
   const openTimeline = async (stayId: string) => {
     setSelectedStayId(stayId);
     setTimeline(null);
@@ -288,6 +481,33 @@ export function RoomsPage() {
       setTimelineLoading(false);
     }
   };
+  const removeRoomDish = async (orderId: string, itemId: string, reason: string) => {
+    await api.patch(`/orders/${orderId}/items/${itemId}/remove`, { reason });
+    const stayId = selectedStayId ?? timeline?.id;
+    if (!stayId) return;
+    const { data } = await api.get<RoomStay>(`/rooms/stays/${stayId}/timeline`);
+    setTimeline(data);
+  };
+  const removeChargeLine = async (chargeId: string, orderItemId: string, unit: number, reason: string) => {
+    await api.patch(`/rooms/charges/${chargeId}/lines/remove`, { orderItemId, unit, reason });
+    const stayId = selectedStayId ?? timeline?.id;
+    if (!stayId) return;
+    const { data } = await api.get<RoomStay>(`/rooms/stays/${stayId}/timeline`);
+    setTimeline(data);
+  };
+  const rememberStay = (stay: RoomStay) => setTimeline(stay);
+  const setChargeLineQuantity = async (chargeId: string, orderItemId: string, unit: number, quantity: number) => {
+    const { data } = await api.patch<RoomStay>(`/rooms/charges/${chargeId}/lines/quantity`, { orderItemId, unit, quantity });
+    rememberStay(data);
+  };
+  const setChargedItemQuantity = async (chargeId: string, itemId: string, quantity: number) => {
+    const { data } = await api.patch<RoomStay>(`/rooms/charges/${chargeId}/items/${itemId}/quantity`, { quantity });
+    rememberStay(data);
+  };
+  const saveChargeQuantity = async (chargeId: string, quantity: number) => {
+    const { data } = await api.patch<RoomStay>(`/rooms/charges/${chargeId}/quantity`, { quantity });
+    rememberStay(data);
+  };
   const focusRoom = (room: Room) => {
     setFocusedRoomId(room.id);
     setTimeline(null);
@@ -300,9 +520,11 @@ export function RoomsPage() {
   const checkOut = async () => {
     if (!timeline) return;
     if (Number(timeline.balanceDue ?? timeline.folioTotal ?? 0) > 0) {
-      setSettlingChargeId(null);
+      setSettlingChargeIds(null);
       setSelectedRoom(focusedRoom);
       setRoomPaymentMethod("CASH");
+      setTendered("");
+      setCashOpen(true);
       setModal("settle");
       return;
     }
@@ -320,25 +542,25 @@ export function RoomsPage() {
     if (!timeline) return;
     setBusy(true); setError("");
     try {
-      const singleBill = Boolean(settlingChargeId);
-      const { data } = await api.post<RoomStay>(`/rooms/stays/${timeline.id}/settle`, { method: roomPaymentMethod, ...(settlingChargeId ? { chargeIds: [settlingChargeId] } : {}) });
-      setTimeline(data); setSettlingChargeId(null); notify(singleBill ? `Bill settled by ${roomPaymentMethod === "CARD" ? "card" : "cash"}.` : `Room tab settled by ${roomPaymentMethod.toLowerCase()}.`); setModal(null); await load();
+      const singleBill = Boolean(settlingChargeIds?.length);
+      const { data } = await api.post<RoomStay>(`/rooms/stays/${timeline.id}/settle`, { method: roomPaymentMethod, ...(settlingChargeIds?.length ? { chargeIds: settlingChargeIds } : {}) });
+      setTimeline(data); setSettlingChargeIds(null); setCashOpen(false); setTendered(""); notify(singleBill ? `Bill settled by ${roomPaymentMethod === "CARD" ? "card" : "cash"}.` : `Room tab settled by ${roomPaymentMethod.toLowerCase()}.`); setModal(null); await load();
     } catch (e) {
       setError(errorMessage(e));
     }
     finally { setBusy(false); }
   };
-  const activeRooms = rooms.filter((room) => room.status === "OCCUPIED").length;
+  const activeRooms = rooms.filter((room) => guestInRoom(room) && room.status !== "MAINTENANCE" && room.status !== "ARCHIVED").length;
   const todayKey = new Date().toLocaleDateString();
   const isToday = (value?: string | null) => value ? new Date(value).toLocaleDateString() === todayKey : false;
-  const arrivingRooms = rooms.filter((room) => room.stays?.[0] && isToday(room.stays[0].checkedInAt)).length;
-  const departingRooms = rooms.filter((room) => room.stays?.[0] && isToday(room.stays[0].expectedCheckoutAt)).length;
-  const vacantRooms = rooms.filter((room) => room.status === "AVAILABLE").length;
+  const arrivingRooms = rooms.filter((room) => { const stay = guestInRoom(room); return !!stay && isToday(stay.checkedInAt); }).length;
+  const departingRooms = rooms.filter((room) => { const stay = guestInRoom(room); return !!stay && isToday(stay.expectedCheckoutAt); }).length;
+  const vacantRooms = rooms.filter((room) => !guestInRoom(room) && room.status !== "MAINTENANCE" && room.status !== "ARCHIVED").length;
   const visibleRooms = rooms.filter((room) => {
-    const stay = room.stays?.[0];
+    const stay = guestInRoom(room);
     const matchesFilter = roomFilter === "ALL" ||
-      (roomFilter === "OCCUPIED" && room.status === "OCCUPIED") ||
-      (roomFilter === "VACANT" && room.status === "AVAILABLE") ||
+      (roomFilter === "OCCUPIED" && !!stay) ||
+      (roomFilter === "VACANT" && !stay && room.status !== "MAINTENANCE" && room.status !== "ARCHIVED") ||
       (roomFilter === "ARRIVING" && !!stay && isToday(stay.checkedInAt)) ||
       (roomFilter === "DEPARTING" && !!stay && isToday(stay.expectedCheckoutAt));
     const query = roomSearch.trim().toLowerCase();
@@ -347,12 +569,36 @@ export function RoomsPage() {
   const focusedRoom = rooms.find((room) => room.id === focusedRoomId) ?? null;
   // Defensive guard for stale React Fast Refresh state or unexpected runtime values.
   const safeStayHistory = Array.isArray(stayHistoryValue) ? stayHistoryValue : [];
+  const pastStays = safeStayHistory.filter((stay) => {
+    if (isInHouse(stay)) return false;
+    if (stay.checkedOutAt || stay.cancelledAt) return true;
+    const end = stayTime(stay.expectedCheckoutAt);
+    return end != null && end <= Date.now();
+  }).sort((left, right) => (right.checkedOutAt ?? right.cancelledAt ?? right.checkedInAt).localeCompare(left.checkedOutAt ?? left.cancelledAt ?? left.checkedInAt));
+  const shownStays = (() => {
+    const current = staysOnThisRoom(safeStayHistory);
+    const inRoom = focusedRoom ? guestInRoom(focusedRoom) : null;
+    return inRoom && !current.some((stay) => stay.id === inRoom.id) ? [inRoom, ...current] : current;
+  })();
   const focusedStay = safeStayHistory.find((stay) => stay.id === selectedStayId)
-    ?? focusedRoom?.stays?.[0]
+    ?? (focusedRoom ? guestInRoom(focusedRoom) : null)
+    ?? shownStays.find((stay) => !stay.checkedOutAt)
     ?? null;
-  const isFocusedStayActive = !!focusedStay && !focusedStay.checkedOutAt;
-  const settlingCharge = settlingChargeId ? (timeline?.charges ?? []).find((charge) => charge.id === settlingChargeId && !charge.settledAt) : undefined;
-  const settleAmount = settlingCharge ? Number(settlingCharge.amount) : Number(timeline?.folioTotal ?? 0);
+  const isFocusedStayActive = !!focusedStay && !focusedStay.checkedOutAt && !focusedStay.cancelledAt;
+  const vatPercent = useUiStore((state) => state.vatPercent);
+  const settlingBill = Boolean(settlingChargeIds?.length);
+  const openChargesForDue = (timeline?.charges ?? []).filter((charge) => !charge.settledAt && charge.kind !== "ROOM_FEE");
+  const settleCharges = settlingBill ? openChargesForDue.filter((charge) => settlingChargeIds?.includes(charge.id)) : openChargesForDue;
+  const dueFor = (charges: typeof openChargesForDue) => {
+    const priced = charges.map((charge) => priceFolioCharge(charge, charge.orderId ? timeline?.orders?.find((order) => order.id === charge.orderId) : undefined, vatPercent));
+    const vat = moneyRound(priced.reduce((sum, row) => sum + row.vat, 0));
+    const exact = moneyRound(priced.reduce((sum, row) => sum + row.total, 0));
+    return { vat, total: vat > 0 ? roundUpBaht(exact) : exact };
+  };
+  const openDue = dueFor(openChargesForDue);
+  const settlingDue = dueFor(settleCharges);
+  const settleAmount = settlingDue.total;
+  const settleVat = settlingDue.vat;
 
   useEffect(() => {
     if (!focusedRoomId) {
@@ -360,6 +606,7 @@ export function RoomsPage() {
       setStayHistory([]);
       setSelectedStayId(null);
       setTimeline(null);
+      setRoomHistoryOpen(false);
       setHistoryPage(1);
       setHistoryTotalPages(1);
       return;
@@ -370,6 +617,7 @@ export function RoomsPage() {
     setStayHistory([]);
     setSelectedStayId(null);
     setTimeline(null);
+    setRoomHistoryOpen(false);
     setHistoryPage(1);
     setHistoryTotalPages(1);
     void (async () => {
@@ -377,7 +625,8 @@ export function RoomsPage() {
       if (cancelled || !rows) return;
       const preferred = preferredStayRef.current;
       preferredStayRef.current = null;
-      const defaultStay = (preferred && rows.find((stay) => stay.id === preferred)) ?? rows.find((stay) => !stay.checkedOutAt) ?? rows[0] ?? null;
+      const shown = staysOnThisRoom(rows);
+      const defaultStay = (preferred && rows.find((stay) => stay.id === preferred)) ?? shown.find((stay) => isInHouse(stay)) ?? shown.find((stay) => !stay.checkedOutAt) ?? shown[0] ?? null;
       if (preferred) void openTimeline(preferred);
       else if (defaultStay) void openTimeline(defaultStay.id);
       else {
@@ -389,10 +638,10 @@ export function RoomsPage() {
   }, [focusedRoomId, loadStayHistory]);
   return <>
     <div className="page-enter min-h-full w-full">
-      <div className="mb-5 flex items-center justify-between gap-4"><div><h1 className="font-display text-2xl font-extrabold tracking-tight text-ink">Rooms</h1><p className="mt-1 text-[11px] text-muted">Who’s staying, what’s on their tab, and who arrives or leaves today.</p></div><div className="flex shrink-0 items-center gap-2">{isAdmin && <button type="button" onClick={() => setEditMode((value) => !value)} title={editMode ? "Done editing rooms" : "Edit rooms"} className={`grid h-9 w-9 place-items-center rounded-xl border ${editMode ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-line bg-white text-muted hover:text-ink"}`}><Pencil size={14} /></button>}{canManageStays && <button type="button" disabled={!rooms.some((room) => room.status === "AVAILABLE")} onClick={() => { const available = rooms.find((room) => room.status === "AVAILABLE"); if (available) openCheckIn(available); }} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#f01898] px-3.5 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"><Plus size={13} /> Check in</button>}</div></div>
+      <div className="mb-5 flex items-center justify-between gap-4"><div><h1 className="font-display text-2xl font-extrabold tracking-tight text-ink">Rooms</h1><p className="mt-1 text-[11px] text-muted">Who’s staying, what’s on their tab, and who arrives or leaves today.</p></div><div className="flex shrink-0 items-center gap-2">{isAdmin && <button type="button" onClick={() => setEditMode((value) => !value)} title={editMode ? "Done editing rooms" : "Edit rooms"} className={`grid h-9 w-9 place-items-center rounded-xl border ${editMode ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-line bg-white text-muted hover:text-ink"}`}><Pencil size={14} /></button>}{canManageStays && <button type="button" disabled={!rooms.some((room) => roomIsEmpty(room))} onClick={() => { const available = rooms.find((room) => roomIsEmpty(room)); if (available) openCheckIn(available); }} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#f01898] px-3.5 text-[11px] font-bold text-white shadow-sm disabled:opacity-50"><Plus size={13} /> Check in</button>}</div></div>
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
       <div className="mb-4 inline-flex rounded-lg bg-[#fff4f9] p-0.5">{(["folios", "calendar"] as const).map((view) => <button key={view} type="button" onClick={() => setDeskView(view)} className={`h-8 rounded-md px-3 text-[11px] font-bold ${deskView === view ? "bg-white text-ink shadow-sm" : "text-muted"}`}>{view === "calendar" ? "Calendar" : "Room"}</button>)}</div>
-      {deskView === "calendar" && <RoomCalendar reloadToken={calendarToken} onVacant={(roomId, date) => { const room = rooms.find((item) => item.id === roomId); if (canManageStays && room?.status === "AVAILABLE") openArrival(room, date); }} onUnassigned={openAssign} onStay={(roomId, stayId) => { const room = rooms.find((item) => item.id === roomId); if (!room) return; preferredStayRef.current = stayId; if (focusedRoomId === roomId) void openTimeline(stayId); else focusRoom(room); }} />}
+      {deskView === "calendar" && <RoomCalendar reloadToken={calendarToken} onVacant={(roomId, date) => { const room = rooms.find((item) => item.id === roomId); if (canManageStays && room && roomIsEmpty(room)) openArrival(room, date); }} onUnassigned={openAssign} onMove={canManageStays ? moveGuest : undefined} onStay={(roomId, stayId) => { const room = rooms.find((item) => item.id === roomId); if (!room) return; preferredStayRef.current = stayId; if (focusedRoomId === roomId) void openTimeline(stayId); else focusRoom(room); }} />}
       {deskView === "folios" && <>
       <div className="mb-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
         <Panel className="flex items-center gap-2.5 rounded-2xl p-3"><BedDouble size={16} className="text-[#ec1593]" /><div><p className="text-sm font-extrabold leading-none">{rooms.length}</p><p className="mt-1 text-[9px] text-muted">Total rooms</p></div></Panel>
@@ -402,18 +651,18 @@ export function RoomsPage() {
       </div>
       <div className="mb-3 flex flex-wrap items-center gap-2"><div className="flex flex-1 flex-wrap gap-1.5">{(["ALL", "OCCUPIED", "ARRIVING", "DEPARTING", "VACANT"] as const).map((filter) => { const count = filter === "ALL" ? rooms.length : filter === "OCCUPIED" ? activeRooms : filter === "ARRIVING" ? arrivingRooms : filter === "DEPARTING" ? departingRooms : vacantRooms; const label = filter === "ALL" ? "All" : filter === "OCCUPIED" ? "Occupied" : filter === "ARRIVING" ? "Arriving" : filter === "DEPARTING" ? "Departing" : "Vacant"; return <button key={filter} type="button" onClick={() => setRoomFilter(filter)} className={`rounded-lg px-2.5 py-1.5 text-[9px] font-bold transition ${roomFilter === filter ? "bg-[#f01898] text-white" : "bg-white text-muted hover:bg-pink-50 hover:text-[#bf0c73]"}`}>{label}{filter !== "ALL" && <span className="ml-1 opacity-70">{count}</span>}</button>; })}</div><label className="flex h-8 w-full items-center gap-2 rounded-lg border border-line bg-white px-2.5 text-muted sm:w-48"><Search size={12} /><input value={roomSearch} onChange={(event) => setRoomSearch(event.target.value)} placeholder="Search room or surname" className="w-full bg-transparent text-[10px] text-ink outline-none placeholder:text-muted" /></label></div>
       {loading ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 8 }, (_, i) => <div key={i} className="aspect-[262/178] min-h-[178px] animate-pulse rounded-2xl bg-white" />)}</div> : rooms.length ? visibleRooms.length ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{visibleRooms.map((room) => {
-        const stay = room.stays?.[0];
+        const stay = guestInRoom(room);
         const badge = roomBadge(room);
         const tabTotal = Number(stay?.folioTotal ?? (stay?.charges ?? []).reduce((sum, charge) => sum + Number(charge.amount), 0));
         const stripeColor = badge.label === "Vacant" ? "#19bf8f" : badge.label === "Under maintenance" ? "#ffb11b" : badge.label === "Archived" ? "#b8b2b6" : badge.label === "Arriving" ? "#f6c4de" : badge.label === "Departing" ? "#f3c56b" : "#ff6685";
-        return <Panel key={room.id} className="flex aspect-[262/178] min-h-[178px] flex-col overflow-hidden rounded-[15px] border border-[#f1dfe7] bg-white shadow-[0_3px_12px_rgba(63,29,46,0.035)] transition-shadow hover:shadow-card">
+        return <Panel key={room.id} className="flex min-h-[178px] flex-col overflow-hidden rounded-[15px] border border-[#f1dfe7] bg-white shadow-[0_3px_12px_rgba(63,29,46,0.035)] transition-shadow hover:shadow-card">
           <div className="h-1.5 w-full" style={{ backgroundColor: stripeColor }} />
           <button type="button" onClick={() => focusRoom(room)} className="flex min-h-0 w-full flex-1 flex-col px-5 pb-4 pt-4 text-left">
             <div className="flex items-center justify-between gap-2"><h3 className="font-display text-lg font-extrabold leading-6">{roomLabel(room.roomNumber)}</h3><span className={`rounded-full px-2.5 py-1.5 text-[9px] font-bold leading-none ${badge.className}`}>{badge.label}</span></div>
             <div className="mt-3 rounded-lg bg-[#fff7fa] px-4 py-3">{stay ? <p className="truncate text-sm font-semibold leading-5 text-ink">{[...new Set([stay.primaryGuestName, ...stay.occupants.map((person) => person.name)])].join(" and ")}</p> : <><p className="text-[11px] leading-4 text-muted">No one checked in</p><p className="mt-0.5 text-[10px] leading-4 text-muted">Ready for the next guest</p></>}</div>
             <div className="mt-auto flex items-center gap-2 pt-2 text-xs"><span className="text-muted">Tab</span><strong className="text-sm text-ink">{stay ? money(tabTotal) : "—"}</strong></div>
           </button>
-          {((!stay && canManageStays && room.status === "AVAILABLE") || (isAdmin && editMode)) && <div className="flex gap-2 px-3.5 pb-3.5">{!stay && canManageStays && room.status === "AVAILABLE" && <button onClick={() => openCheckIn(room)} className="h-8 flex-1 rounded-lg border border-[#f7bfdc] text-[9px] font-bold hover:bg-pink-50">Check in</button>}{isAdmin && editMode && <><button onClick={() => openRoom(room)} className="h-8 flex-1 rounded-lg border border-line text-[9px] font-bold hover:bg-canvas">Edit room</button><button onClick={() => void deleteRoom(room)} aria-label={`Delete room ${room.roomNumber}`} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-rose-50 hover:text-rose-600"><Trash2 size={13} /></button></>}</div>}
+          {((roomIsEmpty(room) && canManageStays) || (isAdmin && editMode)) && <div className="flex shrink-0 gap-2 px-3.5 pb-3.5">{roomIsEmpty(room) && canManageStays && <button onClick={() => openCheckIn(room)} className="h-8 flex-1 rounded-lg border border-[#f7bfdc] text-[9px] font-bold hover:bg-pink-50">Check in</button>}{isAdmin && editMode && <><button onClick={() => openRoom(room)} className="h-8 flex-1 rounded-lg border border-line text-[9px] font-bold hover:bg-canvas">Edit room</button><button onClick={() => void deleteRoom(room)} aria-label={`Delete room ${room.roomNumber}`} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-rose-50 hover:text-rose-600"><Trash2 size={13} /></button></>}</div>}
           {isAdmin && editMode && !stay && <div className="px-3.5 pb-3.5"><SelectField label="Room status" value={room.status} onChange={(event) => void changeRoomStatus(room, event.target.value as Room["status"])}><option value="AVAILABLE">Available to rent</option><option value="MAINTENANCE">Under maintenance</option><option value="ARCHIVED">Archived (keep history)</option></SelectField></div>}
         </Panel>;
       })}{isAdmin && <button type="button" onClick={() => openRoom()} className="flex aspect-[262/178] min-h-[178px] flex-col items-center justify-center rounded-[15px] border border-dashed border-[#f3c6db] bg-white/70 text-center transition hover:border-[#f01898] hover:bg-white"><span className="grid h-10 w-10 place-items-center rounded-full bg-[#ffe4f2] text-[#f01898]"><Plus size={18} /></span><span className="mt-3 text-sm font-bold text-ink">Add room</span><span className="mt-1 text-[11px] text-muted">Set up a new room</span></button>}</div> : <Panel className="p-10 text-center"><p className="text-sm font-semibold">No rooms match this view.</p><p className="mt-1 text-xs text-muted">Change the filter or search term to see other rooms.</p></Panel> : isAdmin ? <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"><button type="button" onClick={() => openRoom()} className="flex aspect-[262/178] min-h-[178px] flex-col items-center justify-center rounded-[15px] border border-dashed border-[#f3c6db] bg-white/70 text-center transition hover:border-[#f01898] hover:bg-white"><span className="grid h-10 w-10 place-items-center rounded-full bg-[#ffe4f2] text-[#f01898]"><Plus size={18} /></span><span className="mt-3 text-sm font-bold text-ink">Add room</span><span className="mt-1 text-[11px] text-muted">Set up a new room</span></button></div> : <Panel className="p-12 text-center"><BedDouble className="mx-auto text-muted" /><p className="mt-3 font-semibold">No rooms configured</p><p className="mt-1 text-sm text-muted">Add a room to begin managing guest stays and folios.</p></Panel>}
@@ -423,39 +672,61 @@ export function RoomsPage() {
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <section className="mb-4 rounded-xl border border-[#f2e6ec] p-3.5">
             <div className="mb-2 flex items-center justify-between gap-3">
-              <div><h3 className="text-sm font-extrabold">Stay history</h3><p className="mt-0.5 text-xs text-muted">Select a current or past stay to view its folio.</p></div>
-              <span className="text-[11px] text-muted">{safeStayHistory.length}{historyLoading ? " · Loading…" : ""}</span>
+              <div><h3 className="text-sm font-extrabold">Who is staying</h3><p className="mt-0.5 text-xs text-muted">Only the guest in this room right now. Later bookings stay on the calendar.</p></div>
+              <span className="text-[11px] text-muted">{shownStays.length}{historyLoading ? " · Loading…" : ""}</span>
             </div>
             {historyLoading && safeStayHistory.length === 0 ? <div className="space-y-2">{Array.from({ length: 3 }, (_, i) => <div key={i} className="h-14 animate-pulse rounded-lg bg-[#fbf1f6]" />)}</div>
-              : safeStayHistory.length ? <div ref={historyScrollRef} onScroll={(event) => {
-                const el = event.currentTarget;
-                if (el.scrollHeight - el.scrollTop - el.clientHeight < 64) void loadMoreStayHistory();
-              }} className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                {safeStayHistory.map((stay) => {
-                  const active = !stay.checkedOutAt;
+              : shownStays.length ? <div className="space-y-2">
+                {shownStays.map((stay) => {
+                  const here = isInHouse(stay);
                   const selected = stay.id === selectedStayId;
                   const guestNames = [...new Set([stay.primaryGuestName, ...(stay.occupants ?? []).map((person) => person.name)])].join(" and ");
+                  const label = stay.checkedOutAt ? "Checked out" : here ? "Current" : "Arriving";
                   return <button key={stay.id} type="button" onClick={() => void openTimeline(stay.id)} className={`w-full rounded-lg border p-3 text-left transition ${selected ? "border-[#f01898] bg-pink-50" : "border-[#f1e3ea] hover:bg-[#fff9fc]"}`}>
-                    <div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-[13px] font-bold">{guestNames || "Guest stay"}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{active ? "Current" : "Checked out"}</span></div>
+                    <div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-[13px] font-bold">{guestNames || "Guest stay"}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${here ? "bg-emerald-50 text-emerald-700" : stay.checkedOutAt ? "bg-slate-100 text-slate-600" : "bg-[#ffe8f4] text-[#b30d6e]"}`}>{label}</span></div>
                     <p className="mt-1 text-[11px] text-muted">{dateTime(stay.checkedInAt)}{stay.checkedOutAt ? ` · Checked out ${dateTime(stay.checkedOutAt)}` : stay.expectedCheckoutAt ? ` · Expected ${dateTime(stay.expectedCheckoutAt)}` : ""}</p>
                   </button>;
                 })}
-                {historyLoadingMore && <div className="space-y-2 py-1" aria-label="Loading more stays">{Array.from({ length: 2 }, (_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-[#fbf1f6]" />)}</div>}
-                {!historyLoadingMore && historyPage < historyTotalPages && <button type="button" onClick={() => void loadMoreStayHistory()} className="w-full rounded-lg py-2 text-xs font-bold text-[#d20b79] hover:bg-pink-50">Load more stays</button>}
-                {historyPage >= historyTotalPages && <p className="py-1 text-center text-[10px] text-muted">All stays loaded</p>}
-              </div> : <p className="py-3 text-xs text-muted">No stays recorded for this room yet.</p>}
+              </div> : <p className="py-3 text-xs text-muted">{safeStayHistory.length ? "No guest is checked in right now." : "No stays recorded for this room yet."}</p>}
           </section>
+          {roomHistoryOpen && <section ref={roomHistoryRef} className="mb-4 rounded-xl border border-[#f2e6ec] p-3.5">
+            <div className="mb-2"><h3 className="text-sm font-extrabold">Room history</h3><p className="mt-0.5 text-xs text-muted">Guests who have already left this room.</p></div>
+            {historyLoading && safeStayHistory.length === 0 ? <div className="space-y-2">{Array.from({ length: 3 }, (_, i) => <div key={i} className="h-14 animate-pulse rounded-lg bg-[#fbf1f6]" />)}</div>
+              : pastStays.length ? <div className="space-y-2">{pastStays.map((stay) => {
+                const selected = stay.id === selectedStayId;
+                const guestNames = [...new Set([stay.primaryGuestName, ...(stay.occupants ?? []).map((person) => person.name)])].join(" and ");
+                const label = stay.cancelledAt ? "Cancelled" : "Checked out";
+                return <button key={stay.id} type="button" onClick={() => void openTimeline(stay.id)} className={`w-full rounded-lg border p-3 text-left transition ${selected ? "border-[#f01898] bg-pink-50" : "border-[#f1e3ea] hover:bg-[#fff9fc]"}`}>
+                  <div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-[13px] font-bold">{guestNames || "Guest stay"}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${stay.cancelledAt ? "bg-slate-100 text-slate-600" : "bg-slate-100 text-slate-600"}`}>{label}</span></div>
+                  <p className="mt-1 text-[11px] text-muted">{dateTime(stay.checkedInAt)}{stay.checkedOutAt ? ` · Checked out ${dateTime(stay.checkedOutAt)}` : stay.cancelledAt ? ` · Cancelled ${dateTime(stay.cancelledAt)}` : ""}</p>
+                </button>;
+              })}</div> : <p className="py-3 text-xs text-muted">No past stays for this room.</p>}
+          </section>}
           {focusedStay && timeline ? <>
             {focusedStay.guestNotes && <section className="border-b border-[#f3e7ed] pb-3"><div className="rounded-lg bg-amber-50 px-2.5 py-3 text-[13px] font-medium text-amber-900"><span className="font-bold">Guest note:</span> {focusedStay.guestNotes}</div></section>}
             {(() => {
-              const charges = timeline.charges ?? []; const openCharges = charges.filter((charge) => !charge.settledAt); const settledCharges = charges.filter((charge) => !!charge.settledAt); const orders = timeline.orders ?? []; const orderFor = (charge: typeof charges[number]) => charge.orderId ? orders.find((order) => order.id === charge.orderId) : undefined; const openTotal = Number(timeline.balanceDue ?? timeline.folioTotal ?? 0); const paidOrders = orders.filter((order) => order.paymentStatus === "PAID"); return <>
-                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-2 flex items-center justify-between"><div><h3 className="text-sm font-extrabold">Open tab</h3><p className="mt-0.5 text-xs text-muted">{openCharges.length ? `${openCharges.length} bill${openCharges.length === 1 ? "" : "s"} · Tap a bill to review` : "Nothing on the tab"}</p></div><strong className="text-sm">{money(openTotal)}</strong></div>{openCharges.length ? <div className="divide-y divide-[#f4e7ed]">{openCharges.map((charge) => { const order = orderFor(charge); return <div key={charge.id} className="py-3"><div className="flex items-start justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">{charge.billNumber ? `Bill ${charge.billNumber} · ${charge.description}` : `Bill #${order ? orderCode(order) : charge.id.slice(0, 6).toUpperCase()} · ${order ? `Restaurant · Table ${order.table?.tableNumber ?? "—"}` : charge.kind === "ROOM_FEE" ? "Room fee" : charge.description}`}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order?.createdAt ?? charge.occurredAt)}{order ? ` · Signed by ${focusedStay.primaryGuestName}` : ""}</p></div></div><div className="flex shrink-0 items-center gap-2">{isFocusedStayActive && canManageFolios && <button type="button" disabled={busy} onClick={() => { setSettlingChargeId(charge.id); setSelectedRoom(focusedRoom); setRoomPaymentMethod(timeline?.cashOnly ? "CASH" : roomPaymentMethod); setModal("settle"); }} className="h-8 rounded-lg bg-[#f01898] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Settle</button>}<span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">On tab</span><strong className="text-[13px]">{money(charge.amount)}</strong></div></div>{charge.lines?.length ? charge.lines.map((line, index) => <div key={`${charge.id}-line-${index}`} className="ml-6 mt-1 flex justify-between gap-2 text-xs text-muted"><span>{line.quantity} × {line.name}{line.detail ? <small className="block pl-4 text-[10px] text-muted">{line.detail}</small> : null}</span><span>{money(line.amount)}</span></div>) : order?.items.map((line) => <div key={line.id} className="ml-6 mt-1 flex justify-between gap-2 text-xs text-muted"><span>{line.quantity} × {dishName(line)}{line.modifierSelections?.length ? <small className="block pl-4 text-[10px] text-muted">{line.modifierSelections.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ")}</small> : null}</span><span>{money(line.subtotal ?? Number(line.unitPrice ?? (line.menuItem?.price ?? line.unitPrice ?? 0)) * line.quantity)}</span></div>)}{!order && !charge.lines?.length && <div className="ml-6 mt-1 flex justify-between text-xs text-muted"><span>{charge.quantity} × {money(charge.unitPrice)}</span></div>}</div>; })}</div> : <p className="pb-1 text-xs text-muted">No room or restaurant charges are waiting for payment.</p>}</section>
-                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-1 flex items-center justify-between"><h3 className="text-sm font-extrabold">History</h3><span className="text-[11px] text-muted">Paid bills stay here for receipts</span></div>{paidOrders.length || settledCharges.length ? <div className="divide-y divide-[#f4e7ed]">{paidOrders.map((order) => <div key={order.id} className="py-2"><div className="flex items-center justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">Bill #{orderCode(order)} · {order.table ? `Restaurant · Table ${order.table.tableNumber}` : "Room service"}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order.paidAt ?? order.updatedAt)} · {settledCharges.some((charge) => charge.orderId === order.id) ? `Settled · ${order.paymentMethod === "CARD" ? "Card" : "Cash"}` : order.paymentMethod === "CARD" ? "Paid by card" : "Paid at the table"}</p></div></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">{settledCharges.some((charge) => charge.orderId === order.id) ? "Settled" : "Paid"} · {order.paymentMethod === "CARD" ? "Card" : "Cash"}</span><strong className="text-[13px]">{money(order.totalAmount)}</strong></div></div>{order.items?.map((line) => <div key={line.id} className="ml-6 mt-1 flex justify-between gap-3 text-xs text-muted"><span>{line.quantity} × {dishName(line)}{line.modifierSelections?.length ? <small className="block pl-4 text-[10px] text-muted">{line.modifierSelections.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ")}</small> : null}</span><span>{money(line.subtotal ?? Number(line.unitPrice ?? (line.menuItem?.price ?? line.unitPrice ?? 0)) * line.quantity)}</span></div>)}</div>)}{settledCharges.filter((charge) => !!charge.lines?.length || !charge.orderId).map((charge) => <div key={charge.id} className="py-3 text-[13px]"><div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate font-bold">{charge.billNumber ? `Bill ${charge.billNumber} · ${charge.description}` : charge.description}</span><span className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">Settled</span><span>{money(charge.amount)}</span></span></div>{charge.lines?.map((line, index) => <div key={`${charge.id}-paid-${index}`} className="ml-6 mt-1 flex justify-between gap-3 text-xs text-muted"><span>{line.quantity} × {line.name}{line.detail ? <small className="block pl-4 text-[10px]">{line.detail}</small> : null}</span><span>{money(line.amount)}</span></div>)}</div>)}</div> : <p className="py-3 text-xs text-muted">No settled bills yet.</p>}</section>
+              const charges = timeline.charges ?? []; const openCharges = charges.filter((charge) => !charge.settledAt); const settledCharges = charges.filter((charge) => !!charge.settledAt); const orders = timeline.orders ?? []; const orderFor = (charge: typeof charges[number]) => charge.orderId ? orders.find((order) => order.id === charge.orderId) : undefined; const openTotal = openDue.total; const paidOrders = orders.filter((order) => order.paymentStatus === "PAID"); const openRows = groupRoomCharges(openCharges, orders); const paidGroups = groupPaidOrders(paidOrders, new Set(settledCharges.flatMap((charge) => charge.billNumber && charge.orderId ? [charge.orderId] : []))); return <>
+                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-2 flex items-center justify-between"><div><h3 className="text-sm font-extrabold">Open tab</h3><p className="mt-0.5 text-xs text-muted">{openRows.length ? `${openRows.length} bill${openRows.length === 1 ? "" : "s"} · Tap a bill to review` : "Nothing on the tab"}</p></div><strong className="text-sm">{money(openTotal)}</strong></div>{openRows.length ? <div className="divide-y divide-[#f4e7ed]">{openRows.map((row) => {
+                  if (row.kind === "table") {
+                    const amount = row.charges.reduce((sum, charge) => sum + Number(charge.amount), 0);
+                    return <div key={row.key} className="py-3"><div className="flex items-start justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">Table {row.table}</p><p className="mt-0.5 text-xs text-muted">{dateTime(row.when)}</p></div></div><div className="flex shrink-0 items-center gap-2">{row.orders.length > 0 && <button type="button" onClick={() => openOrdersReceipt(row.orders)} className="h-8 rounded-lg border border-[#f0dfe8] px-2.5 text-[11px] font-bold">View</button>}{isFocusedStayActive && canManageFolios && <button type="button" disabled={busy} onClick={() => { const method = timeline?.cashOnly ? "CASH" : roomPaymentMethod; setSettlingChargeIds(row.charges.map((charge) => charge.id)); setSelectedRoom(focusedRoom); setRoomPaymentMethod(method); if (method === "CASH") { setTendered(""); setCashOpen(true); } setModal("settle"); }} className="h-8 rounded-lg bg-[#f01898] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Settle</button>}<span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">On tab</span><strong className="text-[13px]">{money(amount)}</strong></div></div>{row.charges.map((charge) => { const order = row.orders.find((entry) => entry.id === charge.orderId); return <div key={charge.id}>{charge.lines?.length ? charge.lines.map((line, index) => <RoomDishRow key={`${charge.id}-line-${line.orderItemId ?? index}-${line.unit ?? index}`} line={chargeDish(line, index)} editable={Boolean(canManageFolios && isFocusedStayActive && !charge.settledAt && line.orderItemId && line.unit != null && !line.removedAt)} onRemove={(reason) => removeChargeLine(charge.id, line.orderItemId!, line.unit!, reason)} onQuantity={(quantity) => setChargeLineQuantity(charge.id, line.orderItemId!, line.unit!, quantity)} />) : order?.items?.map((line) => <RoomDishRow key={line.id ?? `${charge.id}-dish`} line={line} editable={Boolean(canManageFolios && isFocusedStayActive && !charge.settledAt && line.id && !line.removedAt)} onRemove={(reason) => removeRoomDish(order.id, line.id!, reason)} onQuantity={(quantity) => setChargedItemQuantity(charge.id, line.id!, quantity)} />)}</div>; })}</div>;
+                  }
+                  const { charge, order } = row;
+                  return <div key={charge.id} className="py-3"><div className="flex items-start justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">{charge.billNumber ? `Bill ${charge.billNumber} · ${charge.description}` : `Bill #${order ? orderCode(order) : charge.id.slice(0, 6).toUpperCase()} · ${order ? (order.type === "ROOM_SERVICE" || !order.table ? "Room service" : "Restaurant · Table " + order.table.tableNumber) : charge.kind === "ROOM_FEE" ? "Room fee" : charge.description}`}</p><p className="mt-0.5 text-xs text-muted">{dateTime(order?.createdAt ?? charge.occurredAt)}{order ? ` · Signed by ${focusedStay.primaryGuestName}` : ""}</p></div></div><div className="flex shrink-0 items-center gap-2">{order && <button type="button" onClick={() => openOrderReceipt(order)} className="h-8 rounded-lg border border-[#f0dfe8] px-2.5 text-[11px] font-bold">View</button>}{isFocusedStayActive && canManageFolios && <button type="button" disabled={busy} onClick={() => { const method = timeline?.cashOnly ? "CASH" : roomPaymentMethod; setSettlingChargeIds([charge.id]); setSelectedRoom(focusedRoom); setRoomPaymentMethod(method); if (method === "CASH") { setTendered(""); setCashOpen(true); } setModal("settle"); }} className="h-8 rounded-lg bg-[#f01898] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Settle</button>}<span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">On tab</span><strong className="text-[13px]">{money(charge.amount)}</strong></div></div>{charge.lines?.length ? charge.lines.map((line, index) => <RoomDishRow key={`${charge.id}-line-${line.orderItemId ?? index}-${line.unit ?? index}`} line={chargeDish(line, index)} editable={Boolean(canManageFolios && isFocusedStayActive && !charge.settledAt && line.orderItemId && line.unit != null && !line.removedAt)} onRemove={(reason) => removeChargeLine(charge.id, line.orderItemId!, line.unit!, reason)} onQuantity={(quantity) => setChargeLineQuantity(charge.id, line.orderItemId!, line.unit!, quantity)} />) : order?.items.map((line) => <RoomDishRow key={line.id ?? `${charge.id}-dish`} line={line} editable={Boolean(canManageFolios && isFocusedStayActive && !charge.settledAt && line.id && !line.removedAt)} onRemove={(reason) => removeRoomDish(order.id, line.id!, reason)} onQuantity={(quantity) => setChargedItemQuantity(charge.id, line.id!, quantity)} />)}{!order && !charge.lines?.length && (canManageFolios && isFocusedStayActive && charge.kind !== "ROOM_FEE" ? <ChargeQuantityRow quantity={charge.quantity} unitPrice={charge.unitPrice} onSave={(quantity) => saveChargeQuantity(charge.id, quantity)} /> : <div className="ml-6 mt-1 flex justify-between text-xs text-muted"><span>{charge.quantity} × {money(charge.unitPrice)}</span></div>)}</div>;
+                })}</div> : <p className="pb-1 text-xs text-muted">No room or restaurant charges are waiting for payment.</p>}</section>
+                <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><div className="mb-1 flex items-center justify-between"><h3 className="text-sm font-extrabold">History</h3><span className="text-[11px] text-muted">Paid bills stay here for receipts</span></div>{paidOrders.length || settledCharges.length ? <div className="divide-y divide-[#f4e7ed]">{paidGroups.map((group) => {
+                  const amount = group.orders.reduce((sum, order) => sum + Number(order.totalAmount), 0);
+                  const methods = [...new Set(group.orders.map((order) => order.paymentMethod === "CARD" ? "Card" : order.paymentMethod === "PROMPTPAY" ? "PromptPay" : order.paymentMethod === "ROOM_CHECKOUT" ? "Room" : "Cash"))];
+                  const method = methods.length === 1 ? methods[0] : "Paid";
+                  const settled = group.orders.some((order) => settledCharges.some((charge) => charge.orderId === order.id));
+                  const title = group.table ? `Table ${group.table}` : `Bill #${orderCode(group.orders[0])} · Room service`;
+                  return <div key={group.key} className="py-2"><div className="flex items-center justify-between gap-2"><div className="flex min-w-0 gap-2"><ReceiptText size={16} className="mt-0.5 shrink-0 text-muted" /><div className="min-w-0"><p className="truncate text-[13px] font-bold">{title}</p><p className="mt-0.5 text-xs text-muted">{dateTime(group.orders.map((order) => order.paidAt ?? order.updatedAt).sort().slice(-1)[0] ?? group.when)} · {settled ? `Settled · ${method}` : `Paid · ${method}`}</p></div></div><div className="flex shrink-0 items-center gap-2"><button type="button" onClick={() => openOrdersReceipt(group.orders)} className="h-8 rounded-lg border border-[#f0dfe8] px-2.5 text-[11px] font-bold">View</button><span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">{settled ? "Settled" : "Paid"} · {method}</span><strong className="text-[13px]">{money(amount)}</strong></div></div>{group.orders.flatMap((order) => order.items?.map((line) => <RoomDishRow key={line.id ?? `${order.id}-history`} line={line} editable={false} onRemove={async () => undefined} />))}</div>;
+                })}{settledCharges.filter((charge) => !!charge.lines?.length || !charge.orderId).map((charge) => { const order = orderFor(charge); return <div key={charge.id} className="py-3 text-[13px]"><div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate font-bold">{charge.billNumber ? `Bill ${charge.billNumber} · ${charge.description}` : charge.description}</span><span className="flex shrink-0 items-center gap-2">{order && <button type="button" onClick={() => openOrderReceipt(order)} className="h-8 rounded-lg border border-[#f0dfe8] px-2.5 text-[11px] font-bold">View</button>}<span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">Settled</span><span>{money(charge.amount)}</span></span></div>{charge.lines?.map((line, index) => <RoomDishRow key={`${charge.id}-paid-${line.orderItemId ?? index}-${line.unit ?? index}`} line={chargeDish(line, index)} editable={false} onRemove={async () => undefined} />)}</div>; })}</div> : <p className="py-3 text-xs text-muted">No settled bills yet.</p>}</section>
                 <section className="mt-4 rounded-xl border border-[#f2e6ec] px-4 py-3.5"><h3 className="text-sm font-extrabold">Deposits and payments</h3>{timeline.payments?.length ? timeline.payments.map((payment) => <div key={payment.id} className="mt-2 flex items-start gap-2 border-t border-[#f4e7ed] pt-2"><ReceiptText size={15} className="mt-0.5 shrink-0 text-[#e91488]" /><div className="min-w-0 flex-1"><p className="text-[13px] font-bold">{payment.method === "CARD" ? "Tab settled by card" : "Tab settled by cash"}</p><p className="mt-0.5 text-[11px] text-muted">{dateTime(payment.paidAt)}{payment.receivedBy?.name ? ` · Taken by ${payment.receivedBy.name}` : ""}</p></div><strong className="shrink-0 text-[13px]">{money(payment.amount)}</strong></div>) : <p className="mt-1 text-xs text-muted">No payments recorded</p>}<div className="mt-2 flex justify-between border-t border-[#f4e7ed] pt-2 text-base font-extrabold"><span>Balance</span><span>{money(openTotal)}</span></div></section>
               </>;
             })()}
-          </> : <div className="py-12 text-center text-xs text-muted">{timelineLoading ? "Loading room folio…" : focusedStay ? "Select a stay to load its folio." : "Choose a stay from the history above."}</div>}</div>
-        <div className="flex flex-wrap items-center gap-2 border-t border-[#f3e7ed] bg-white px-5 py-2.5"><button disabled={!canManageFolios || !isFocusedStayActive || timeline?.cashOnly} onClick={() => { setSelectedRoom(focusedRoom); setChargeKind("OTHER"); setChargeDescription(""); setChargeQuantity("1"); setChargePrice(""); setModal("charge"); }} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Add charge</button><button disabled={!timeline} onClick={() => timeline && setCheckoutReceipt(createFolioReceipt(timeline))} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">View receipt</button><span className="flex-1" />{isFocusedStayActive && canManageFolios && <><button disabled={busy} onClick={() => void checkOut()} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Check out</button>{Number(timeline?.folioTotal ?? 0) > 0 && <button disabled={busy} onClick={() => { setSettlingChargeId(null); setSelectedRoom(focusedRoom); setRoomPaymentMethod("CASH"); setModal("settle"); }} className="h-12 rounded-lg bg-[#f01898] px-5 text-sm font-bold text-white disabled:opacity-40">Settle tab · {money(timeline?.folioTotal ?? 0)}</button>}</>}</div></aside></div>, document.body)}
+          </> : <div className="py-12 text-center text-xs text-muted">{timelineLoading ? "Loading room folio…" : focusedStay ? "Select a stay to load its folio." : "No one is checked in. Use Check in to add a guest."}</div>}</div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-[#f3e7ed] bg-white px-5 py-2.5">{canManageStays && roomIsEmpty(focusedRoom) && <button type="button" onClick={() => openCheckIn(focusedRoom)} className="h-12 rounded-lg bg-[#f01898] px-5 text-sm font-bold text-white">Check in</button>}<button disabled={!canManageFolios || !isFocusedStayActive || timeline?.cashOnly || !focusedStay} onClick={() => focusedStay && navigate(`/rooms/service/${focusedStay.id}`)} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Room service</button><button disabled={!timeline} onClick={() => timeline && setCheckoutReceipt(createFolioReceipt(timeline))} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">View receipt</button><button type="button" aria-expanded={roomHistoryOpen} onClick={() => setRoomHistoryOpen((open) => { const next = !open; if (next) window.setTimeout(() => roomHistoryRef.current?.scrollIntoView({ block: "nearest" }), 0); return next; })} className={`h-12 rounded-lg border px-5 text-sm font-bold ${roomHistoryOpen ? "border-[#f01898] bg-pink-50 text-[#d20b79]" : "border-[#f0dfe8]"}`}>Room history</button><span className="flex-1" />{isFocusedStayActive && canManageFolios && <><button disabled={busy} onClick={() => void checkOut()} className="h-12 rounded-lg border border-[#f0dfe8] px-5 text-sm font-bold disabled:opacity-40">Check out</button>{openDue.total > 0 && <button disabled={busy} onClick={() => { setSettlingChargeIds(null); setSelectedRoom(focusedRoom); setRoomPaymentMethod("CASH"); setTendered(""); setCashOpen(true); setModal("settle"); }} className="h-12 rounded-lg bg-[#f01898] px-5 text-sm font-bold text-white disabled:opacity-40">Settle tab · {money(openDue.total)}</button>}</>}</div></aside></div>, document.body)}
 
       {modal === "assign" && assignStay && <Modal title="Assign room" onClose={() => { setModal(null); setAssignStay(null); }} footer={<div className="flex items-center justify-between gap-3"><button type="button" onClick={() => { setModal(null); setAssignStay(null); }} className="h-11 rounded-xl border border-line px-5 text-sm font-bold">Cancel</button><button type="button" disabled={busy || choicesLoading || !assignRoomId} onClick={() => void assignRoom()} className="h-11 rounded-xl bg-[#ed168c] px-5 text-sm font-bold text-white disabled:opacity-50">Assign room</button></div>}><div className="space-y-4">
         <div><p className="font-display text-lg font-extrabold">{assignStay.guestName}</p><p className="mt-1 text-xs text-muted">{stayDay(assignStay.startDate)} – {stayDay(assignStay.leaveDate || assignStay.endDate)}{assignStay.roomType ? ` · ${assignStay.roomType}` : ""}{assignStay.confirmationNumber ? ` · ${assignStay.source || "Booking"} ${assignStay.confirmationNumber}` : ""}</p></div>
@@ -480,8 +751,9 @@ export function RoomsPage() {
         <Field label="Guest name" required value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Guest name" />
         <label className="block"><span className="mb-1.5 block text-xs font-semibold text-ink">Note</span><textarea value={guestNotes} onChange={(event) => setGuestNotes(event.target.value)} rows={3} placeholder="Note" className="w-full rounded-xl border border-line bg-white px-3.5 py-3 text-sm outline-none focus:border-[#f01898]" /></label>
       </form></Modal>}
-      {modal === "charge" && <Modal title={`Add charge · Room ${selectedRoom?.roomNumber ?? ""}`} onClose={() => setModal(null)}><form onSubmit={(event) => void addCharge(event)} className="space-y-4"><p className="text-[10px] font-semibold text-muted">Quick add</p><div className="grid grid-cols-2 gap-2">{[{ name: "Laundry", kind: "OTHER" as const, description: "Laundry, 1 bag", price: "5" }, { name: "Scooter rental", kind: "OTHER" as const, description: "Scooter rental, 1 day", price: "15" }, { name: "Island tour", kind: "OTHER" as const, description: "Island tour", price: "45" }, { name: "Boat transfer", kind: "OTHER" as const, description: "Boat transfer", price: "30" }].map((preset) => <button type="button" key={preset.name} onClick={() => { setChargeKind(preset.kind); setChargeDescription(preset.description); setChargeQuantity("1"); setChargePrice(preset.price); }} className={`rounded-xl border px-3 py-3 text-left ${chargeDescription === preset.description ? "border-[#f01898] bg-pink-50" : "border-line hover:border-pink-200"}`}><span className="block text-xs font-bold">{preset.name}</span><span className="mt-1 block text-[10px] text-muted">{money(preset.price)} per unit</span></button>)}</div><Field label="Description" required value={chargeDescription} onChange={(event) => setChargeDescription(event.target.value)} placeholder="Describe this charge" /><div className="grid grid-cols-2 gap-3"><Field label="Quantity" type="number" required min="1" value={chargeQuantity} onChange={(event) => setChargeQuantity(event.target.value)} /><Field label="Price each" type="number" required min="0" step="0.01" value={chargePrice} onChange={(event) => setChargePrice(event.target.value)} /></div><div className="flex justify-between border-t border-line pt-3 text-sm"><span className="text-muted">Amount</span><strong>{money(Number(chargePrice || 0) * Number(chargeQuantity || 0))}</strong></div><button disabled={busy} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white">Add charge to tab</button></form></Modal>}
-      {modal === "settle" && <Modal title={`${settlingCharge ? "Settle bill" : "Settle tab"} · Room ${selectedRoom?.roomNumber ?? focusedRoom?.roomNumber ?? ""}`} onClose={() => { setModal(null); setSettlingChargeId(null); }}><div className="space-y-4"><p className="text-xs text-muted">{settlingCharge ? "Choose how the guest paid this bill. It is marked settled and stays on the receipt." : "Choose how the guest paid. The stay remains open and settled bills move to history."}</p><div className="grid grid-cols-2 gap-2">{(["CASH", "CARD"] as const).map((method) => <button key={method} disabled={method === "CARD" && !!timeline?.cashOnly} onClick={() => setRoomPaymentMethod(method)} className={`rounded-xl border p-3 text-sm font-bold disabled:opacity-40 ${roomPaymentMethod === method ? "border-[#f01898] bg-pink-50 text-[#c20d77]" : "border-line"}`}>{method === "CASH" ? "Cash" : "Paid by card"}</button>)}</div><div className="flex justify-between rounded-xl bg-canvas p-4 text-sm font-bold"><span>{settlingCharge ? "This bill" : "Tab total"}</span><span>{money(settleAmount)}</span></div><button disabled={busy || settleAmount <= 0} onClick={() => void settleTab()} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white disabled:opacity-50">{settlingCharge ? "Mark settled" : "Settle tab"} · {money(settleAmount)}</button></div></Modal>}
+      {modal === "charge" && <Modal title={`Add charge · Room ${selectedRoom?.roomNumber ?? ""}`} onClose={() => setModal(null)}><form onSubmit={(event) => void addCharge(event)} className="space-y-4">{commissionItems.length > 0 && <div><p className="text-[10px] font-semibold text-muted">Commission</p><div className="mt-2 grid grid-cols-2 gap-2">{commissionItems.map((item) => <button type="button" key={item.id} onClick={() => { setCommissionItemId(item.id); setChargeKind("OTHER"); setChargeDescription(item.name); setChargeQuantity("1"); setChargePrice(String(item.price)); }} className={`rounded-xl border px-3 py-3 text-left ${commissionItemId === item.id ? "border-[#f01898] bg-pink-50" : "border-line hover:border-pink-200"}`}><span className="block text-xs font-bold">{item.name}</span><span className="mt-1 block text-[10px] text-muted">Guest pays {money(item.price)} · commission {money(item.commission)}</span></button>)}</div></div>}<p className="text-[10px] font-semibold text-muted">Quick add</p><div className="grid grid-cols-2 gap-2">{[{ name: "Laundry", kind: "OTHER" as const, description: "Laundry, 1 bag", price: "5" }, { name: "Scooter rental", kind: "OTHER" as const, description: "Scooter rental, 1 day", price: "15" }, { name: "Island tour", kind: "OTHER" as const, description: "Island tour", price: "45" }, { name: "Boat transfer", kind: "OTHER" as const, description: "Boat transfer", price: "30" }].map((preset) => <button type="button" key={preset.name} onClick={() => { setCommissionItemId(null); setChargeKind(preset.kind); setChargeDescription(preset.description); setChargeQuantity("1"); setChargePrice(preset.price); }} className={`rounded-xl border px-3 py-3 text-left ${chargeDescription === preset.description ? "border-[#f01898] bg-pink-50" : "border-line hover:border-pink-200"}`}><span className="block text-xs font-bold">{preset.name}</span><span className="mt-1 block text-[10px] text-muted">{money(preset.price)} per unit</span></button>)}</div><Field label="Description" required value={chargeDescription} onChange={(event) => setChargeDescription(event.target.value)} placeholder="Describe this charge" /><div className="grid grid-cols-2 gap-3"><Field label="Quantity" type="number" required min="1" value={chargeQuantity} onChange={(event) => setChargeQuantity(event.target.value)} /><Field label="Price each" type="number" required min="0" step="0.01" readOnly={!!commissionItemId} value={chargePrice} onChange={(event) => setChargePrice(event.target.value)} /></div><div className="flex justify-between border-t border-line pt-3 text-sm"><span className="text-muted">Guest pays</span><strong>{money(Number(chargePrice || 0) * Number(chargeQuantity || 0))}</strong></div>{commissionItemId && <p className="text-[11px] text-muted">The daily report shows only the commission, {money((commissionItems.find((item) => item.id === commissionItemId)?.commission ?? 0) * Number(chargeQuantity || 0))}, after this charge is paid.</p>}<button disabled={busy} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white">Add charge to tab</button></form></Modal>}
+      {modal === "settle" && <Modal title={`${settlingBill ? "Settle bill" : "Settle tab"} · Room ${selectedRoom?.roomNumber ?? focusedRoom?.roomNumber ?? ""}`} onClose={() => { setModal(null); setSettlingChargeIds(null); setCashOpen(false); }}><div className="space-y-4"><p className="text-xs text-muted">{settlingBill ? "Choose how the guest paid this bill. It is marked settled and stays on the receipt." : "Choose how the guest paid. The stay remains open and settled bills move to history."}</p><div className="grid grid-cols-2 gap-2">{(["CASH", "CARD"] as const).map((method) => <button key={method} disabled={method === "CARD" && !!timeline?.cashOnly} onClick={() => { setRoomPaymentMethod(method); if (method !== "CASH") setCashOpen(false); }} className={`rounded-xl border p-3 text-sm font-bold disabled:opacity-40 ${roomPaymentMethod === method ? "border-[#f01898] bg-pink-50 text-[#c20d77]" : "border-line"}`}>{method === "CASH" ? "Cash" : "Paid by card"}</button>)}</div><div className="rounded-xl bg-canvas p-4 text-sm font-bold"><div className="flex justify-between"><span>{settlingBill ? "This bill" : "Total with VAT"}</span><span>{money(settleAmount)}</span></div>{settleVat > 0 && <p className="mt-1 text-[11px] font-semibold text-muted">VAT included</p>}</div><button disabled={busy || settleAmount <= 0} onClick={() => { if (roomPaymentMethod === "CASH") { setTendered(""); setCashOpen(true); return; } void settleTab(); }} className="h-11 w-full rounded-xl bg-[#f01898] text-sm font-bold text-white disabled:opacity-50">{roomPaymentMethod === "CASH" ? "Enter cash" : settlingBill ? "Mark settled" : "Settle tab"} · {money(settleAmount)}</button></div></Modal>}
+      {cashOpen && modal === "settle" && <CashRegister amount={settleAmount} note={settleVat > 0 ? "VAT included" : undefined} tendered={tendered} setTendered={setTendered} busy={busy} onClose={() => setCashOpen(false)} onConfirm={() => void settleTab()} />}
 
 
     </div>
@@ -506,11 +778,32 @@ function nextDay(value: string) {
   date.setDate(date.getDate() + 1);
   return localDay(date);
 }
+function stayTime(value?: string | null) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+function isInHouse(stay: Pick<RoomStay, "checkedInAt" | "expectedCheckoutAt" | "checkedOutAt" | "cancelledAt">, now = Date.now()) {
+  if (stay.checkedOutAt || stay.cancelledAt) return false;
+  const start = stayTime(stay.checkedInAt);
+  if (start == null || start > now) return false;
+  const end = stayTime(stay.expectedCheckoutAt);
+  return end == null || end > now;
+}
+function guestInRoom(room: Room) {
+  return room.stays?.find((stay) => isInHouse(stay)) ?? null;
+}
+function roomIsEmpty(room: Room) {
+  return !guestInRoom(room) && room.status !== "MAINTENANCE" && room.status !== "ARCHIVED";
+}
+function staysOnThisRoom(stays: RoomStay[], now = Date.now()) {
+  return stays.filter((stay) => isInHouse(stay, now));
+}
 function roomBadge(room: Room) {
   if (room.status === "MAINTENANCE") return { label: "Under maintenance", className: "bg-[#fff1e6] text-[#a85b1c]" };
   if (room.status === "ARCHIVED") return { label: "Archived", className: "bg-[#f6f4f5] text-[#8a8388]" };
-  const stay = room.stays?.find((item) => !item.checkedOutAt);
-  if (room.status !== "OCCUPIED" || !stay) return { label: "Vacant", className: "bg-emerald-50 text-emerald-700" };
+  const stay = guestInRoom(room);
+  if (!stay) return { label: "Vacant", className: "bg-emerald-50 text-emerald-700" };
   const today = localDay(new Date());
   const onDay = (value?: string | null) => value ? localDay(new Date(value)) === today : false;
   if (onDay(stay.expectedCheckoutAt)) return { label: "Departing", className: "bg-[#fff8e6] text-[#8a5a00]" };

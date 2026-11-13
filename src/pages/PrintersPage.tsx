@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Printer, RefreshCw } from "lucide-react";
-import { PageHeader, Panel } from "../components/ui";
+import { Panel } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
 
 type Device = {
@@ -112,8 +112,8 @@ export function PrintersPage() {
 
   const devices = scan.devices.filter((device) => !printersOnly || device.deviceType === "printer");
 
-  return <div className="page-enter">
-    <PageHeader title="Printers" description="Scan the local network, save the Epson receipt printer, and print from the orders already stored on the server." action={<button type="button" onClick={() => void scanNetwork()} disabled={scan.scanning} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#ed168c] px-4 text-xs font-bold text-white disabled:opacity-50"><RefreshCw size={14} /> {scan.scanning ? "Scanning…" : "Scan network"}</button>} />
+  return <div>
+    <div className="mb-4 flex justify-end"><button type="button" onClick={() => void scanNetwork()} disabled={scan.scanning} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#ed168c] px-4 text-xs font-bold text-white disabled:opacity-50"><RefreshCw size={14} /> {scan.scanning ? "Scanning…" : "Scan network"}</button></div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
     {message && <p className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{message}</p>}
     <Panel className="mb-5 p-5">

@@ -13,7 +13,6 @@ import { AccountPage } from "./pages/AccountPage";
 import { RoomsPage } from "./pages/RoomsPage";
 import { BusinessOverviewPage } from "./pages/BusinessOverviewPage";
 import { OrdersPage } from "./pages/OrdersPage";
-import { PrintersPage } from "./pages/PrintersPage";
 
 export default function App() {
   return (
@@ -33,10 +32,14 @@ export default function App() {
             <Route element={<RequireJobPermission permission="ORDER_CREATE" />}><Route path="tables/:tableId" element={<NewOrderPage />} /></Route>
           </Route>
           <Route element={<RequireJobPermission permission="ROOM_VIEW" />}><Route path="rooms" element={<RoomsPage />} /></Route>
+          <Route element={<RequireJobPermission permission="ORDER_CREATE" />}><Route path="rooms/service/:stayId" element={<NewOrderPage />} /></Route>
           <Route element={<RequireAuth roles={["ADMIN"]} />}>
             <Route path="menu/*" element={<MenuPage />} />
             <Route path="team" element={<TeamPage />} />
-            <Route path="printers" element={<PrintersPage />} />
+            <Route path="printers" element={<Navigate to="/account/printers" replace />} />
+            <Route path="account/printers" element={<AccountPage />} />
+            <Route path="email-import" element={<Navigate to="/account/email" replace />} />
+            <Route path="account/email" element={<AccountPage />} />
           </Route>
           <Route path="account" element={<AccountPage />} />
         </Route>

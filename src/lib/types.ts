@@ -24,6 +24,7 @@ export interface User {
 export interface RestaurantIdentity {
   name: string;
   logoUrl: string | null;
+  vatPercent?: number;
 }
 
 export interface StaffTask {
@@ -149,6 +150,7 @@ export interface DiningTable {
   sectionId?: string;
   createdAt?: string;
   assignedRoomStays?: Pick<RoomStay, "id" | "primaryGuestName" | "room" | "occupants" | "cashOnly">[];
+  splits?: { id: string; label: string; roomStayId: string | null; position: number }[];
 }
 
 export interface FloorSection {
@@ -176,7 +178,7 @@ export interface RoomCharge {
   settledAt?: string | null;
   billId?: string | null;
   billNumber?: number | null;
-  lines?: { name: string; quantity: number; amount: number; detail: string | null }[] | null;
+  lines?: { name: string; quantity?: number; amount: number; detail: string | null; orderId?: string; orderItemId?: string; unit?: number; removedAt?: string | null; removalReason?: string | null }[] | null;
 }
 
 export interface TableBillLine {
@@ -199,6 +201,7 @@ export interface TableBill {
   guestName: string | null;
   guestNames: string[];
   amount: number;
+  vatPercent?: number;
   signedByName: string | null;
   signatureData: string | null;
   paidAt: string | null;
@@ -225,6 +228,7 @@ export interface RoomStay {
   checkedInAt: string;
   expectedCheckoutAt?: string | null;
   checkedOutAt?: string | null;
+  cancelledAt?: string | null;
   guestNotes?: string | null;
   cashOnly?: boolean;
   chargeLimit?: number | string | null;
@@ -257,13 +261,17 @@ export interface OrderLine {
   modifierSelections?: ModifierSelectionSnapshot[];
   specialNotes?: string | null;
   kitchenFlag?: boolean;
+  removedAt?: string | null;
+  removalReason?: string | null;
   menuItem: MenuItem;
 }
 
 export interface Order {
   id: string;
   number?: number;
+  type?: "DINE_IN" | "ROOM_SERVICE" | "PICKUP";
   tableId?: string | null;
+  tableSplitId?: string | null;
   table?: DiningTable | null;
   roomStayId?: string | null;
   roomStay?: RoomStay | null;
@@ -278,6 +286,7 @@ export interface Order {
   servedBy?: Pick<User, "id" | "name"> | null;
   status: OrderStatus;
   totalAmount: number | string;
+  vatPercent?: number | string | null;
   preparingAt?: string | null;
   readyAt?: string | null;
   servedAt?: string | null;
@@ -296,6 +305,19 @@ export interface OrderSalesSummary {
   roomCount: number;
   cashAmount: number;
   cashCount: number;
+  commissionAmount?: number;
+  commissionCount?: number;
+}
+
+export interface CommissionReportRow {
+  id: string;
+  name: string;
+  roomNumber: string | null;
+  guestName: string;
+  quantity: number;
+  chargedAmount: number;
+  commissionAmount: number;
+  paidAt: string;
 }
 
 export interface OrderPage {
@@ -331,8 +353,13 @@ export const orderCode = (order: { id: string; number?: number | null }) =>
     ? String(order.number)
     : order.id.replace(/-/g, "").slice(0, 8).toUpperCase();
 
-export const orderLocation = (order: Pick<Order, "table" | "roomStay">) =>
-  order.table ? order.table.tableNumber : order.roomStay?.room ? `Room ${order.roomStay.room.roomNumber}` : "Room service";
+export const orderLocation = (order: Pick<Order, "table" | "roomStay" | "type">) => {
+  if (order.type === "ROOM_SERVICE") {
+    const number = order.roomStay?.room?.roomNumber;
+    return number ? `Room service · Room ${number}` : "Room service";
+  }
+  return order.table ? order.table.tableNumber : order.roomStay?.room ? `Room ${order.roomStay.room.roomNumber}` : "Room service";
+};
 
 export const initials = (name: string) =>
   name

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api } from "../lib/api";
 import { AUTH_EXPIRED_EVENT } from "../lib/authEvents";
+import { clearOfflineCache } from "../lib/offlineCache";
 import type { Role, User } from "../lib/types";
 
 interface AuthState {
@@ -54,6 +55,7 @@ export const useAuthStore = create<AuthState>()(
           { email, password },
         );
         localStorage.setItem("restaurant-access-token", data.access_token);
+        await clearOfflineCache();
         set({
           token: data.access_token,
           user: decodeUser(data.access_token, email),
@@ -61,6 +63,7 @@ export const useAuthStore = create<AuthState>()(
       },
       logout: () => {
         localStorage.removeItem("restaurant-access-token");
+        void clearOfflineCache();
         set({ token: null, user: null });
       },
       refreshProfile: async () => {

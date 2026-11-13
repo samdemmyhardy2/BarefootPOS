@@ -13,7 +13,6 @@ import {
   ClipboardList,
   LayoutDashboard,
   Menu,
-  Printer,
   Utensils,
   X,
 } from "lucide-react";
@@ -22,6 +21,7 @@ import { useAuthStore } from "../stores/authStore";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { initials } from "../lib/types";
+import { OfflineBanner } from "../components/OfflineBanner";
 import { OutboxBanner } from "../components/OutboxBanner";
 import { Toast } from "../components/Toast";
 import { observeUiTranslations } from "../lib/uiLocalization";
@@ -35,7 +35,6 @@ const baseNav = [
   { label: "Tables", to: "/tables", icon: Utensils, permission: "TABLES" },
   { label: "Rooms", to: "/rooms", icon: BedDouble, permission: "ROOM_VIEW" },
   { label: "Menu", to: "/menu", icon: BookOpen, adminOnly: true },
-  { label: "Printers", to: "/printers", icon: Printer, adminOnly: true },
   { label: "Kitchen display", to: "/kitchen", icon: ChefHat, permission: "KITCHEN" },
 ];
 
@@ -70,7 +69,7 @@ export function AppLayout() {
   }, [refreshProfile, userId]);
   useEffect(() => {
     void api.get<RestaurantIdentity>("/restaurant-settings")
-      .then(({ data }) => setRestaurantIdentity(data.name, data.logoUrl))
+      .then(({ data }) => setRestaurantIdentity(data.name, data.logoUrl, Number(data.vatPercent) || 0))
       .catch(() => undefined);
   }, [setRestaurantIdentity]);
   useEffect(() => {
@@ -200,6 +199,7 @@ export function AppLayout() {
           </button>
         )}
         <main ref={mainRef} className={`mx-auto flex min-h-0 w-full flex-1 flex-col ${kitchen ? "overflow-hidden p-4" : location.pathname === "/tables" || location.pathname.startsWith("/rooms") ? "overflow-y-auto px-4 pb-4 pt-[max(4.5rem,calc(env(safe-area-inset-top)+3.5rem))] sm:px-5 md:pt-5" : `overflow-y-auto px-4 pb-4 pt-[max(4.5rem,calc(env(safe-area-inset-top)+3.5rem))] sm:px-7 lg:px-9 md:pt-8`} ${fullCanvas || kitchen ? "max-w-none" : "max-w-[1500px]"}`}>
+          <OfflineBanner />
           <OutboxBanner />
           <Outlet />
         </main>

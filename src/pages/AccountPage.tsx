@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { Building2, Camera, LogOut, Moon, Sun, UserRound, Utensils } from "lucide-react";
 import { Field, PageHeader, Panel } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
@@ -8,6 +8,8 @@ import { useAuthStore } from "../stores/authStore";
 import { useUiStore } from "../stores/uiStore";
 import { translate } from "../lib/translations";
 import { mediaSrc } from "../lib/media";
+import { PrintersPage } from "./PrintersPage";
+import { EmailImportPage } from "./EmailImportPage";
 
 export function AccountPage() {
   const user = useAuthStore((state) => state.user)!;
@@ -15,6 +17,9 @@ export function AccountPage() {
   const updateUser = useAuthStore((state) => state.updateUser);
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
+  const location = useLocation();
+  const printersTab = location.pathname.startsWith("/account/printers");
+  const emailTab = location.pathname.startsWith("/account/email");
   const theme = useUiStore((state) => state.theme);
   const setTheme = useUiStore((state) => state.setTheme);
   const language = useUiStore((state) => state.language);
@@ -31,6 +36,7 @@ export function AccountPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [restaurantName, setRestaurantName] = useState("Table & Thyme");
+  const [vatPercent, setVatPercent] = useState("0");
   const [restaurantLogoFile, setRestaurantLogoFile] = useState<File | null>(null);
   const [restaurantLogoPreview, setRestaurantLogoPreview] = useState("");
   const [restaurantBusy, setRestaurantBusy] = useState(false);
@@ -45,8 +51,9 @@ export function AccountPage() {
     if (!isAdmin) return;
     void api.get<RestaurantIdentity>("/restaurant-settings").then(({ data }) => {
       setRestaurantName(data.name);
+      setVatPercent(String(Number(data.vatPercent) || 0));
       setRestaurantLogoPreview(data.logoUrl ?? "");
-      setRestaurantIdentity(data.name, data.logoUrl);
+      setRestaurantIdentity(data.name, data.logoUrl, Number(data.vatPercent) || 0);
     }).catch((cause) => setError(errorMessage(cause)));
   }, [isAdmin, setRestaurantIdentity]);
 
@@ -104,11 +111,15 @@ export function AccountPage() {
         const uploaded = await api.post<{ imageUrl: string }>("/media/images", form, { headers: { "Content-Type": "multipart/form-data" } });
         logoUrl = uploaded.data.imageUrl;
       }
-      const { data } = await api.patch<RestaurantIdentity>("/restaurant-settings", { name: restaurantName.trim(), logoUrl });
+      const rate = Number(vatPercent);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 100) { setError("VAT must be between 0 and 100."); setRestaurantBusy(false); return; }
+      const savedRate = Math.round(rate * 100) / 100;
+      const { data } = await api.patch<RestaurantIdentity>("/restaurant-settings", { name: restaurantName.trim(), logoUrl, vatPercent: savedRate });
       setRestaurantName(data.name);
+      setVatPercent(String(Number(data.vatPercent) || 0));
       setRestaurantLogoPreview(data.logoUrl ?? "");
       setRestaurantLogoFile(null);
-      setRestaurantIdentity(data.name, data.logoUrl);
+      setRestaurantIdentity(data.name, data.logoUrl, Number(data.vatPercent) || 0);
       notify("Restaurant identity saved.");
     } catch (cause) {
       setError(errorMessage(cause));
@@ -119,13 +130,25 @@ export function AccountPage() {
 
   return (
     <div className="page-enter">
-      <PageHeader eyebrow="Your workspace" title={t("account")} description="Manage your profile, sign-in security, and display preferences." action={<button onClick={() => { logout(); navigate("/login"); }} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3.5 text-xs font-bold text-ink hover:bg-canvas"><LogOut size={14} /> Sign out</button>} />
+      <PageHeader eyebrow="Your workspace" title={t("account")} description={printersTab ? "Scan the local network, save the receipt printer, and print from the orders already stored on the server." : emailTab ? "Import Cloudbeds reservation emails and review each synchronization." : "Manage your profile, sign-in security, and display preferences."} action={<button onClick={() => { logout(); navigate("/login"); }} className="inline-flex h-10 items-center gap-2 rounded-xl border border-line bg-white px-3.5 text-xs font-bold text-ink hover:bg-canvas"><LogOut size={14} /> Sign out</button>} />
+      {isAdmin && <nav aria-label="Account sections" className="mb-6 flex w-fit gap-1 rounded-2xl border border-line bg-white p-1">
+        <NavLink to="/account" end className={({ isActive }) => `rounded-xl px-4 py-2 text-[13px] font-bold ${isActive ? "bg-[#f71591] text-white" : "text-[#62685f] hover:bg-canvas"}`}>Account</NavLink>
+        <NavLink to="/account/printers" className={({ isActive }) => `rounded-xl px-4 py-2 text-[13px] font-bold ${isActive ? "bg-[#f71591] text-white" : "text-[#62685f] hover:bg-canvas"}`}>Printers</NavLink>
+        <NavLink to="/account/email" className={({ isActive }) => `rounded-xl px-4 py-2 text-[13px] font-bold ${isActive ? "bg-[#f71591] text-white" : "text-[#62685f] hover:bg-canvas"}`}>Email</NavLink>
+      </nav>}
+      {printersTab ? <PrintersPage /> : emailTab ? <EmailImportPage /> : <>
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
       <div className="grid max-w-4xl gap-5 lg:grid-cols-2">
         {isAdmin && <Panel className="p-5 sm:p-6 lg:col-span-2">
           <div className="mb-5 flex items-center gap-3"><Building2 size={18} className="text-olive" /><div><h2 className="font-display text-base font-bold">Restaurant identity</h2><p className="mt-1 text-xs text-muted">Set the restaurant name and logo shown in the sidebar for your team.</p></div></div>
           <form onSubmit={(event) => void saveRestaurantIdentity(event)} className="grid gap-5 sm:grid-cols-[1fr_auto] sm:items-end">
-            <Field label="Restaurant name" required maxLength={80} value={restaurantName} onChange={(event) => setRestaurantName(event.target.value)} />
+            <div className="space-y-4">
+              <Field label="Restaurant name" required maxLength={80} value={restaurantName} onChange={(event) => setRestaurantName(event.target.value)} />
+              <label className="block text-xs font-semibold text-ink">VAT percent
+                <input type="number" min={0} max={100} step={0.01} value={vatPercent} onChange={(event) => setVatPercent(event.target.value)} className="mt-1.5 h-11 w-full rounded-xl border border-line bg-white px-3 text-sm font-normal outline-none focus:border-olive" />
+                <span className="mt-1 block text-[11px] font-normal text-muted">Added on top of every dish. Saving it updates previous orders, room-tab charges, and split bills. Nothing is deleted.</span>
+              </label>
+            </div>
             <div className="flex items-center gap-3 sm:min-w-64">
               <div className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-2xl border border-line bg-canvas text-olive">{restaurantLogoPreview ? <img src={mediaSrc(restaurantLogoPreview)} alt="Restaurant logo preview" className="h-full w-full object-contain" /> : <Utensils size={22} />}</div>
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-line bg-white px-3 py-2.5 text-xs font-bold hover:bg-canvas"><Camera size={14} /> Upload logo<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; if (file) { setRestaurantLogoFile(file); setRestaurantLogoPreview(URL.createObjectURL(file)); } }} /></label>
@@ -184,6 +207,7 @@ export function AccountPage() {
           </Panel>
         </div>
       </div>
+      </>}
     </div>
   );
 }

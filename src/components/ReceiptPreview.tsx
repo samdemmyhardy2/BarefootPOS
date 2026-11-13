@@ -3,7 +3,9 @@ import { Eye, Mail, Printer, X } from "lucide-react";
 import { money, orderCode, type Order, type OrderPaymentMethod, type RoomCharge } from "../lib/types";
 import { mediaSrc } from "../lib/media";
 import { api, errorMessage } from "../lib/api";
+import { useUiStore } from "../stores/uiStore";
 import { localUuid } from "../lib/outbox";
+import { dishVat, moneyRound, roundUpBaht, vatAmount, vatRateText } from "../lib/vat";
 
 function isAppleTouch() {
   const ua = navigator.userAgent;
@@ -29,6 +31,7 @@ type SlipPayload = {
   location?: string;
   printedAt: string;
   lines: SlipRow[];
+  vat?: SlipRow;
   total: string;
   rows: SlipRow[];
   signatureLabel?: string;
@@ -57,6 +60,63 @@ function groupedChargeLines(lines: { name?: string | null; quantity?: number | n
     groups.set(`${name}\0${detail ?? ""}`, group);
   }
   return [...groups.values()];
+}
+
+type GuestSign = { name: string; data: string };
+
+function guestSign(name?: string | null, data?: string | null): GuestSign | null {
+  const image = data?.trim();
+  if (!image) return null;
+  return { name: name?.trim() || "Guest", data: image };
+}
+
+function rememberSign(signs: GuestSign[], sign: GuestSign | null) {
+  if (sign && !signs.some((existing) => existing.data === sign.data)) signs.push(sign);
+}
+
+function plainTable(value: string) {
+  return value.replace(/^table\s+/i, "").trim();
+}
+
+function dayStamp(value?: string | null) {
+  if (!value) return "";
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? "" : `${when.getFullYear()}-${when.getMonth()}-${when.getDate()}`;
+}
+
+function dayText(value?: string | null) {
+  if (!value) return "";
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(when);
+}
+
+function chargeSign(charge: RoomCharge, order?: Order) {
+  const own = guestSign(charge.signedByName, charge.signatureData);
+  if (own) return own;
+  if (order && charge.orderId === order.id) return guestSign(order.roomCharge?.signedByName, order.roomCharge?.signatureData);
+  return null;
+}
+
+function orderSigns(order: Order) {
+  const signs: GuestSign[] = [];
+  rememberSign(signs, guestSign(order.roomCharge?.signedByName, order.roomCharge?.signatureData));
+  for (const split of order.splits ?? []) rememberSign(signs, guestSign(split.signedByName, split.signatureData));
+  return signs;
+}
+
+function uniqueRooms<T extends { roomNumber: string | number; guestName: string; guestNames?: string[] }>(rooms: T[]) {
+  const seen = new Set<string>();
+  return rooms.filter((room) => {
+    const names = (room.guestNames?.length ? room.guestNames : [room.guestName]).filter(Boolean).join("\0");
+    const key = `${room.roomNumber}\0${names}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function SignMark({ sign }: { sign: GuestSign }) {
+  return <div className="mt-3"><img src={sign.data} alt={`Signature by ${sign.name}`} className="mx-auto h-14 max-w-[220px] object-contain" /><div className="mx-auto mt-1 h-px w-48 bg-slate-800" /><p className="mt-1 text-center text-[10px] font-semibold text-slate-700">{sign.name}</p></div>;
 }
 
 function clip(value: string, max: number) {
@@ -122,6 +182,34 @@ export type CheckoutReceipt = {
   signature?: { name: string; data: string };
 };
 
+export function priceFolioCharge(charge: RoomCharge, order: Order | undefined, settingsRate: number) {
+  const activeLines = charge.lines?.filter((line) => !line.removedAt);
+  const lined = charge.lines?.length ? moneyRound((activeLines ?? []).reduce((sum, line) => sum + Number(line.amount), 0)) : null;
+  const itemDishes = order ? order.items.filter((line) => !line.removedAt).map((line) => Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem?.price ?? 0) * countOf(line.quantity))) : [];
+  const itemFood = order ? moneyRound(itemDishes.reduce((sum, amount) => sum + amount, 0)) : null;
+  const lineDishes = (() => {
+    const groups = new Map<string, number>();
+    (activeLines ?? []).forEach((line, index) => groups.set(line.orderItemId || `line-${index}`, moneyRound((groups.get(line.orderItemId || `line-${index}`) ?? 0) + Number(line.amount))));
+    return [...groups.values()];
+  })();
+  const stored = moneyRound(Number(charge.amount));
+  const restaurant = charge.kind === "RESTAURANT_ORDER" || lined !== null || Boolean(order);
+  const percent = Number(order?.vatPercent || 0) > 0 ? Number(order?.vatPercent) : settingsRate;
+  let food = stored;
+  if (lined !== null) food = lined;
+  else if (itemFood !== null) {
+    const withRate = moneyRound(itemFood + vatAmount(itemFood, percent));
+    const withDishes = moneyRound(itemFood + dishVat(itemDishes, percent));
+    if (Math.abs(stored - itemFood) < 0.02 || Math.abs(stored - withRate) < 0.02 || Math.abs(stored - withDishes) < 0.02) food = itemFood;
+  }
+  if (!restaurant) return { food: stored, vat: 0, percent: 0, total: stored };
+  const gap = moneyRound(stored - food);
+  if (gap > 0.009) return { food, vat: gap, percent: percent || settingsRate, total: stored };
+  const dishes = lineDishes.length ? lineDishes : itemDishes.length ? itemDishes : [food];
+  const vat = dishVat(dishes, percent);
+  return { food, vat, percent, total: moneyRound(food + vat) };
+}
+
 export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onClose }: {
   receipt: CheckoutReceipt;
   restaurantName: string;
@@ -161,12 +249,67 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
   };
   const [thankYouPhrase, setThankYouPhrase] = useState(() => getThanks(receipt.receiptKind));
   const paperRef = useRef<HTMLDivElement>(null);
+  const storedRate = useUiStore((state) => state.vatPercent);
+  const [settingsRate, setSettingsRate] = useState(storedRate);
+  useEffect(() => {
+    let cancelled = false;
+    api.get<{ vatPercent?: number }>("/restaurant-settings").then(({ data }) => {
+      if (!cancelled) setSettingsRate(Number(data.vatPercent) || 0);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
   const isFolio = receipt.paymentMethod === "ROOM_CHECKOUT";
   const folioCharges = receipt.folioCharges?.filter((charge) => charge.kind !== "ROOM_FEE");
-  const receiptTotal = folioCharges ? folioCharges.reduce((sum, charge) => sum + Number(charge.amount), 0) : Number(receipt.totalAmount);
-  const signatureImage = receipt.signature?.data ?? folioCharges?.find((charge) => charge.signatureData)?.signatureData;
+  const folioPriced = folioCharges?.map((charge) => {
+    const order = charge.orderId ? receipt.orders.find((candidate) => candidate.id === charge.orderId) : undefined;
+    return { charge, order, ...priceFolioCharge(charge, order, settingsRate) };
+  });
+  const folioFood = moneyRound((folioPriced ?? []).reduce((sum, row) => sum + row.food, 0));
+  const folioVat = moneyRound((folioPriced ?? []).reduce((sum, row) => sum + row.vat, 0));
+  const folioPercent = folioPriced?.length && folioPriced.every((row) => row.percent === folioPriced[0].percent) ? folioPriced[0].percent : 0;
+  const diningFood = moneyRound(receipt.orders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0));
+  const diningVat = moneyRound(receipt.orders.reduce((sum, order) => {
+    const percent = Number(order.vatPercent || 0) || settingsRate;
+    const dishes = order.items.filter((line) => !line.removedAt).map((line) => Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem?.price ?? 0) * countOf(line.quantity)));
+    return sum + dishVat(dishes.length ? dishes : [Number(order.totalAmount || 0)], percent);
+  }, 0));
+  const diningPercent = receipt.orders.length && receipt.orders.every((order) => Number(order.vatPercent || 0) === Number(receipt.orders[0]?.vatPercent || 0)) ? Number(receipt.orders[0]?.vatPercent || 0) || settingsRate : settingsRate;
+  const receiptVat = folioPriced ? folioVat : diningVat;
+  const receiptExact = folioPriced ? moneyRound(folioFood + folioVat) : moneyRound(diningFood + diningVat);
+  const receiptTotal = receiptVat > 0 ? roundUpBaht(receiptExact) : receiptExact;
+  const folioGroups = (() => {
+    if (!folioPriced) return null;
+    const groups: { key: string; title: string | null; rows: typeof folioPriced }[] = [];
+    const index = new Map<string, number>();
+    for (const row of folioPriced) {
+      const raw = row.order?.table?.tableNumber ? String(row.order.table.tableNumber) : row.charge.description.match(/^Table\s+(.+?)(?:\s+restaurant\b|\s+·|\s*:|$)/i)?.[1] ?? "";
+      const table = plainTable(raw);
+      const when = row.charge.occurredAt || row.order?.createdAt || "";
+      const day = dayStamp(when);
+      const bill = row.charge.billNumber;
+      const roomServiceOrder = row.order?.type === "ROOM_SERVICE" || (!table && /^room service\b/i.test(row.charge.description));
+      const key = bill ? `bill:${row.charge.id}` : table ? `table:${table}:${day}` : roomServiceOrder ? `room-service:${day}` : `charge:${row.charge.id}`;
+      let at = index.get(key);
+      if (at == null) {
+        at = groups.length;
+        index.set(key, at);
+        const title = bill ? `Bill ${bill}` : roomServiceOrder ? ["Room service", day ? dayText(when) : ""].filter(Boolean).join(" · ") : [table ? `Table ${table}` : "", day ? dayText(when) : ""].filter(Boolean).join(" · ") || null;
+        groups.push({ key, title, rows: [] });
+      }
+      groups[at].rows.push(row);
+    }
+    return groups;
+  })();
+  const diningSigns = (() => {
+    const signs: GuestSign[] = [];
+    for (const order of receipt.orders) for (const sign of orderSigns(order)) rememberSign(signs, sign);
+    rememberSign(signs, guestSign(receipt.signature?.name, receipt.signature?.data));
+    return signs;
+  })();
+  const shownSigns = folioGroups ? folioGroups.flatMap((group) => group.rows.map((row) => chargeSign(row.charge, row.order)).filter((sign): sign is GuestSign => Boolean(sign))) : diningSigns;
+  const signatureImage = shownSigns[0]?.data;
   const showSignature = isFolio && signatureCopy && Boolean(signatureImage);
-  const receiptRooms = receipt.rooms?.length ? receipt.rooms : receipt.room ? [receipt.room] : [];
+  const receiptRooms = uniqueRooms(receipt.rooms?.length ? receipt.rooms : receipt.room ? [receipt.room] : []);
   useEffect(() => {
     const clearPrintMode = () => {
       document.body.classList.remove("printing-receipt");
@@ -325,41 +468,49 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
       try { signaturePng = await pngFromImage(signatureImage, 520); } catch { signaturePng = undefined; }
     }
     const lines: SlipRow[] = [];
-    if (folioCharges) {
-      for (const charge of folioCharges) {
-        const order = charge.orderId ? receipt.orders.find((candidate) => candidate.id === charge.orderId) : undefined;
-        const label = charge.lines?.length ? (charge.billNumber ? `Bill ${charge.billNumber} · ${charge.description}` : charge.description) : order ? `Restaurant order #${orderCode(order)}` : charge.description;
-        lines.push({ left: clip(label, 160), right: clip(money(charge.amount), 40) });
-        if (charge.lines?.length) {
-          for (const line of groupedChargeLines(charge.lines)) lines.push({ left: clip(`  ${line.quantity}× ${line.name}`, 160), right: clip(money(line.amount), 40), note: line.detail ? clip(line.detail, 240) : undefined });
-        } else if (order) {
-          if (order.table?.tableNumber) lines.push({ left: clip(`  ${order.table.tableNumber}`, 160) });
-          for (const line of order.items) {
-            const extras = [line.addExtras, line.removeIngredients ? `No ${line.removeIngredients}` : ""].filter(Boolean).join(" · ");
-            const mods = line.modifierSelections?.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ");
-            lines.push({ left: clip(`  ${countOf(line.quantity)}× ${line.menuItem?.name || "Item"}${extras ? ` · ${extras}` : ""}`, 160), right: clip(money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * countOf(line.quantity)), 40), note: mods ? clip(mods, 240) : undefined });
+    if (folioGroups) {
+      for (const group of folioGroups) {
+        const food = moneyRound(group.rows.reduce((sum, row) => sum + row.food, 0));
+        const only = group.rows.length === 1 ? group.rows[0] : null;
+        const heading = group.title || (only?.charge.billNumber ? `Bill ${only.charge.billNumber} · ${only.charge.description}` : only?.charge.description || "Restaurant order");
+        lines.push({ left: clip(heading, 160), right: clip(money(food), 40) });
+        if (only && !only.order && !only.charge.lines?.length) {
+          lines.push({ left: clip(`  ${only.charge.quantity} × ${money(only.charge.unitPrice)}`, 160) });
+          continue;
+        }
+        for (const { charge, order } of group.rows) {
+          if (charge.lines?.length) {
+            for (const line of groupedChargeLines((charge.lines ?? []).filter((line) => !line.removedAt))) lines.push({ left: clip(`  ${line.quantity}× ${line.name}`, 160), right: clip(money(line.amount), 40), note: line.detail ? clip(line.detail, 240) : undefined });
+          } else if (order) {
+            for (const line of order.items.filter((line) => !line.removedAt)) {
+              const extras = [line.addExtras, line.removeIngredients ? `No ${line.removeIngredients}` : ""].filter(Boolean).join(" · ");
+              const mods = line.modifierSelections?.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ");
+              lines.push({ left: clip(`  ${countOf(line.quantity)}× ${line.menuItem?.name || "Item"}${extras ? ` · ${extras}` : ""}`, 160), right: clip(money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * countOf(line.quantity)), 40), note: mods ? clip(mods, 240) : undefined });
+            }
           }
-        } else lines.push({ left: clip(`  ${charge.quantity} × ${money(charge.unitPrice)}`, 160) });
+        }
       }
     } else {
       for (const order of receipt.orders) {
         lines.push({ left: clip(`Order #${orderCode(order)}`, 160), right: order.waiter?.name ? clip(order.waiter.name, 40) : undefined });
-        for (const line of order.items) {
+        for (const line of order.items.filter((line) => !line.removedAt)) {
           const extras = [line.addExtras, line.removeIngredients ? `No ${line.removeIngredients}` : ""].filter(Boolean).join(" · ");
           const mods = line.modifierSelections?.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · ");
           const kitchen = [line.removeIngredients && `No: ${line.removeIngredients}`, line.addExtras && `Extra: ${line.addExtras}`, line.selectedAllergens?.length && `Allergy: ${line.selectedAllergens.join(", ")}`, line.specialNotes].filter(Boolean).join(" · ");
           lines.push({ left: clip(`  ${countOf(line.quantity)}× ${line.menuItem?.name || "Item"}${extras ? ` · ${extras}` : ""}`, 160), right: clip(money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * countOf(line.quantity)), 40), note: mods || kitchen ? clip([mods, kitchen].filter(Boolean).join(" · "), 240) : undefined });
         }
-        lines.push({ left: clip("  Ticket subtotal", 160), right: clip(money(order.totalAmount), 40) });
       }
     }
+    const vatMoney = folioPriced ? folioVat : diningVat;
+    const vatRate = vatRateText(folioPriced ? folioPercent : diningPercent);
+    const vat = vatMoney > 0 ? { left: "VAT", right: vatRate || undefined } : undefined;
     const payment = receipt.paymentMethod === "CASH" ? "Cash · Paid" : receipt.paymentMethod === "CARD" ? "Card · Paid" : receipt.paymentMethod === "PROMPTPAY" ? "PromptPay QR · Paid" : "Room folio";
     const rows: SlipRow[] = [{ left: "Payment", right: payment }];
     for (const room of receiptRooms) {
       rows.push({ left: "Room number", right: clip(String(room.roomNumber), 40) });
       rows.push({ left: "Guest name", right: clip((room.guestNames?.length ? room.guestNames : [room.guestName]).filter(Boolean).join(" and ") || "—", 80) });
     }
-    const signedBy = receipt.signature?.name ?? folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest";
+    const signedBy = shownSigns[0]?.name ?? "Guest";
     const orderId = receipt.orders.find((order) => order.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(order.id))?.id;
     return {
       title: showSignature ? "Room charge authorization" : "Restaurant receipt",
@@ -367,6 +518,7 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
       location: clip(receipt.locationLabel ?? receipt.tableNumber ?? "", 120) || undefined,
       printedAt: clip(new Date(receipt.checkedOutAt).toLocaleString(), 80),
       lines: lines.slice(0, 200),
+      vat,
       total: clip(money(receiptTotal), 40),
       rows,
       signatureLabel: signaturePng ? "Guest signature" : undefined,
@@ -424,31 +576,37 @@ export function ReceiptPreview({ receipt, restaurantName, restaurantLogoUrl, onC
           <p className="mt-2 text-[10px] text-slate-500">{new Date(receipt.checkedOutAt).toLocaleString()}</p>
         </header>
         <div className="relative border-y border-dashed border-pink-300 py-3">
-          {folioCharges ? folioCharges.map((charge) => {
-            const order = charge.orderId ? receipt.orders.find((candidate) => candidate.id === charge.orderId) : undefined;
-            return <div key={charge.id} className="receipt-item mb-3 last:mb-0">
-              <div className="flex justify-between gap-3 py-1"><span className="font-semibold">{charge.lines?.length ? (charge.billNumber ? `Bill ${charge.billNumber} · ${charge.description}` : charge.description) : order ? `Restaurant order #${orderCode(order)}` : charge.description}</span><span className="shrink-0 font-semibold tabular-nums">{money(charge.amount)}</span></div>
-              {charge.lines?.length ? groupedChargeLines(charge.lines).map((line, index) => <div key={`${charge.id}-${index}`} className="ml-3 py-0.5 text-[10px]"><div className="flex justify-between gap-3"><span>{line.quantity}× {line.name}</span><span className="shrink-0 tabular-nums">{money(line.amount)}</span></div>{line.detail && <p className="ml-4 mt-0.5 text-slate-500">{line.detail}</p>}</div>) : order ? <>
-                {order.table?.tableNumber && <p className="ml-3 text-[10px] text-slate-500">{order.table.tableNumber}</p>}
-                {order.items.map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="ml-3 py-0.5 text-[10px]"><div className="flex justify-between gap-3"><span>{countOf(line.quantity)}× {line.menuItem?.name || "Item"}{line.addExtras ? ` · ${line.addExtras}` : ""}{line.removeIngredients ? ` · No ${line.removeIngredients}` : ""}</span><span className="shrink-0 tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * countOf(line.quantity))}</span></div>{line.modifierSelections?.map((selection) => <p key={selection.groupId} className="ml-4 mt-0.5 text-slate-500">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}</div>)}
-              </> : <p className="ml-3 text-[10px] text-slate-500">{charge.quantity} × {money(charge.unitPrice)}</p>}
-            </div>;
-          }) : receipt.orders.map((order) => <div key={order.id} className="receipt-item mb-3 last:mb-0">
+          {folioGroups ? folioGroups.map((group) => <div key={group.key} className="mb-4 border-b border-dashed border-pink-200 pb-3 last:mb-0 last:border-b-0 last:pb-0">
+            {(() => {
+              const signs: GuestSign[] = [];
+              for (const row of group.rows) rememberSign(signs, chargeSign(row.charge, row.order));
+              const food = moneyRound(group.rows.reduce((sum, row) => sum + row.food, 0));
+              const only = group.rows.length === 1 ? group.rows[0] : null;
+              const heading = group.title || (only?.charge.billNumber ? `Bill ${only.charge.billNumber} · ${only.charge.description}` : only?.charge.description || "Restaurant order");
+              const plain = Boolean(only && !only.order && !only.charge.lines?.length);
+              return <>
+                <div className="flex justify-between gap-3 py-1"><span className="font-semibold">{heading}</span><span className="shrink-0 font-semibold tabular-nums">{money(food)}</span></div>
+                {plain && only ? <p className="ml-3 text-[10px] text-slate-500">{only.charge.quantity} × {money(only.charge.unitPrice)}</p> : group.rows.map(({ charge, order }) => charge.lines?.length ? groupedChargeLines((charge.lines ?? []).filter((line) => !line.removedAt)).map((line, index) => <div key={`${charge.id}-${index}`} className="ml-3 py-0.5 text-[10px]"><div className="flex justify-between gap-3"><span>{line.quantity}× {line.name}</span><span className="shrink-0 tabular-nums">{money(line.amount)}</span></div>{line.detail && <p className="ml-4 mt-0.5 text-slate-500">{line.detail}</p>}</div>) : order ? order.items.filter((line) => !line.removedAt).map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="ml-3 py-0.5 text-[10px]"><div className="flex justify-between gap-3"><span>{countOf(line.quantity)}× {line.menuItem?.name || "Item"}{line.addExtras ? ` · ${line.addExtras}` : ""}{line.removeIngredients ? ` · No ${line.removeIngredients}` : ""}</span><span className="shrink-0 tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * countOf(line.quantity))}</span></div>{line.modifierSelections?.map((selection) => <p key={selection.groupId} className="ml-4 mt-0.5 text-slate-500">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}</div>) : null)}
+                {signs.map((sign) => <SignMark key={sign.data} sign={sign} />)}
+              </>;
+            })()}
+          </div>) : <>{receipt.orders.map((order) => <div key={order.id} className="receipt-item mb-3 last:mb-0">
             <div className="mb-2 flex justify-between gap-2 text-[10px] font-bold text-slate-500"><span className="font-mono uppercase tracking-wide">Order #{orderCode(order)}</span><span>{order.waiter?.name ?? ""}</span></div>
-            {order.items.map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="mb-1">
+            {order.items.filter((line) => !line.removedAt).map((line, index) => <div key={line.id ?? `${order.id}-${index}`} className="mb-1">
               <div className="flex justify-between gap-3 py-1"><span className="font-semibold"><span className="mr-1 text-[#d80c7c]">{countOf(line.quantity)}×</span>{line.menuItem?.name || "Item"}</span><span className="shrink-0 font-semibold tabular-nums">{money(line.subtotal ?? Number(line.unitPrice ?? line.menuItem.price) * countOf(line.quantity))}</span></div>
               {line.modifierSelections?.map((selection) => <p key={selection.groupId} className="ml-5 text-[10px] leading-4 text-slate-500">{selection.groupName}: {selection.options.map((option) => option.name).join(", ")}</p>)}
               {(line.removeIngredients || line.addExtras || line.selectedAllergens?.length || line.specialNotes) && <p className="ml-5 rounded-lg bg-pink-50 px-2 py-1 text-[10px] leading-4 text-slate-600">{[line.removeIngredients && `No: ${line.removeIngredients}`, line.addExtras && `Extra: ${line.addExtras}`, line.selectedAllergens?.length && `Allergy: ${line.selectedAllergens.join(", ")}`, line.specialNotes].filter(Boolean).join(" · ")}</p>}
             </div>)}
-            <div className="mt-2 flex justify-between border-t border-pink-100 pt-2 text-[10px] font-semibold text-slate-500"><span>Ticket subtotal</span><span className="tabular-nums">{money(order.totalAmount)}</span></div>
-          </div>)}
+            {orderSigns(order).map((sign) => <SignMark key={sign.data} sign={sign} />)}
+          </div>)}{diningSigns.filter((sign) => !receipt.orders.some((order) => orderSigns(order).some((own) => own.data === sign.data))).map((sign) => <SignMark key={sign.data} sign={sign} />)}</>}
         </div>
         <div className="relative space-y-2 border-b border-dashed border-pink-300 py-4">
+          {(folioPriced ? folioVat : diningVat) > 0 && <div className="flex justify-between gap-2 px-1 text-[11px] text-slate-500"><span>VAT</span><span className="tabular-nums">{vatRateText(folioPriced ? folioPercent : diningPercent)}</span></div>}
           <div className="flex justify-between gap-2 rounded-xl bg-pink-100/80 px-3 py-2.5 font-display text-sm font-extrabold text-slate-900"><span>Total</span><span className="tabular-nums">{money(receiptTotal)}</span></div>
           <div className="flex justify-between gap-2 px-1 pt-1"><span className="text-slate-500">Payment</span><span className="font-bold text-[#b90b6b]">{receipt.paymentMethod === "CASH" ? "Cash · Paid" : receipt.paymentMethod === "CARD" ? "Card · Paid" : receipt.paymentMethod === "PROMPTPAY" ? "PromptPay QR · Paid" : "Room folio"}</span></div>
           {receiptRooms.map((room, index) => <div key={`${room.roomNumber}-${index}`} className="space-y-1"><div className="flex justify-between gap-2 px-1"><span className="text-slate-500">Room number</span><span className="text-right font-semibold">{room.roomNumber}</span></div><div className="flex justify-between gap-2 px-1"><span className="shrink-0 text-slate-500">Guest name</span><span className="text-right font-semibold">{(room.guestNames?.length ? room.guestNames : [room.guestName]).filter(Boolean).join(" and ") || "—"}</span></div></div>)}
         </div>
-        {showSignature && signatureImage && <div className="relative mt-7 rounded-xl border border-pink-200 bg-white/80 px-4 pb-3 pt-2 text-center"><p className="font-bold text-[#b90b6b]">Guest signature</p><img src={signatureImage} alt={`Signature by ${receipt.signature?.name ?? folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}`} className="mx-auto mt-2 h-16 max-w-full object-contain" /><p className="mt-2 border-t border-slate-300 pt-1 text-[10px] font-semibold text-slate-700">{receipt.signature?.name ?? folioCharges?.find((charge) => charge.signedByName)?.signedByName ?? "Guest"}</p><p className="mt-2 text-[10px] leading-4 text-slate-500">I authorize these restaurant charges to be added to my room folio.</p></div>}
+        {showSignature && <p className="relative mt-4 text-center text-[10px] leading-4 text-slate-500">I authorize these restaurant charges to be added to my room folio.</p>}
         <p className="relative mt-6 text-center text-[10px] font-semibold tracking-wide text-[#b90b6b]">{thankYouPhrase}</p>
         </div>
       </div>

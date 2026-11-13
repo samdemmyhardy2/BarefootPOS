@@ -76,7 +76,7 @@ interface OrderState {
   connectLive: () => Promise<void>;
   disconnectLive: () => void;
   createOrder: (
-    location: { tableId?: string; roomStayId?: string; paymentMethod?: OrderPaymentMethod },
+    location: { tableId?: string; tableSplitId?: string; roomStayId?: string; paymentMethod?: OrderPaymentMethod; type?: "DINE_IN" | "ROOM_SERVICE" | "PICKUP" },
     items: Array<{
       menuItemId: string;
       quantity: number;

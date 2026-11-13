@@ -10,6 +10,7 @@ interface UiState {
   modifierPickerMode: "list" | "step";
   restaurantName: string;
   restaurantLogoUrl: string | null;
+  vatPercent: number;
   toast: { message: string; tone: "success" | "error" } | null;
   setSidebarOpen: (open: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -18,7 +19,7 @@ interface UiState {
   setTheme: (theme: "light" | "dark") => void;
   setLanguage: (language: "en" | "my" | "th") => void;
   setModifierPickerMode: (mode: "list" | "step") => void;
-  setRestaurantIdentity: (name: string, logoUrl: string | null) => void;
+  setRestaurantIdentity: (name: string, logoUrl: string | null, vatPercent?: number) => void;
 }
 
 export const useUiStore = create<UiState>()(persist((set) => ({
@@ -29,6 +30,7 @@ export const useUiStore = create<UiState>()(persist((set) => ({
     modifierPickerMode: "list",
     restaurantName: "Table & Thyme",
     restaurantLogoUrl: null,
+    vatPercent: 0,
     toast: null,
     setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
     setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
@@ -43,7 +45,7 @@ export const useUiStore = create<UiState>()(persist((set) => ({
     },
     setLanguage: (language) => set({ language }),
     setModifierPickerMode: (modifierPickerMode) => set({ modifierPickerMode }),
-    setRestaurantIdentity: (restaurantName, restaurantLogoUrl) => set({ restaurantName, restaurantLogoUrl }),
-  }), { name: "restaurant-ui-preferences", partialize: ({ theme, language, modifierPickerMode, sidebarCollapsed, restaurantName, restaurantLogoUrl }) => ({ theme, language, modifierPickerMode, sidebarCollapsed, restaurantName, restaurantLogoUrl }) as UiState, onRehydrateStorage: () => (state) => {
+    setRestaurantIdentity: (restaurantName, restaurantLogoUrl, vatPercent) => set((state) => ({ restaurantName, restaurantLogoUrl, vatPercent: vatPercent === undefined ? state.vatPercent : vatPercent })),
+  }), { name: "restaurant-ui-preferences", partialize: ({ theme, language, modifierPickerMode, sidebarCollapsed, restaurantName, restaurantLogoUrl, vatPercent }) => ({ theme, language, modifierPickerMode, sidebarCollapsed, restaurantName, restaurantLogoUrl, vatPercent }) as UiState, onRehydrateStorage: () => (state) => {
     document.documentElement.classList.toggle("dark", state?.theme === "dark");
   } }));

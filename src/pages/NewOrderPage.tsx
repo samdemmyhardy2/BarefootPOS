@@ -4,7 +4,6 @@ import {
   ArrowRight,
   Beer,
   Check,
-  ChevronDown,
   ChevronLeft,
   Citrus,
   Coffee,
@@ -17,9 +16,10 @@ import {
   Martini,
   MessageCircle,
   Minus,
+  Pencil,
+  MoreHorizontal,
   Plus,
   Popcorn,
-  Receipt,
   Salad,
   Sandwich,
   Search,
@@ -34,11 +34,12 @@ import {
 } from "lucide-react";
 import { Panel, EmptyState } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import { listOutbox, SavedLocallyError } from "../lib/outbox";
+import { listOutbox, retargetQueuedTable, SavedLocallyError } from "../lib/outbox";
 import { SettleTableDialog } from "../components/SettleTableDialog";
-import type { Category, DiningTable, MenuItem, ModifierGroup, SendTo } from "../lib/types";
+import type { Category, DiningTable, MenuItem, ModifierGroup, Order, SendTo } from "../lib/types";
 import { money } from "../lib/types";
 import { mediaSrc } from "../lib/media";
+import { totalWithDishVat } from "../lib/vat";
 import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { useAuthStore } from "../stores/authStore";
@@ -62,7 +63,7 @@ type CartLine = {
 function DishCommentButton({ flagged, label, onClick }: { flagged: boolean; label: string; onClick: () => void }) {
   return <button type="button" aria-pressed={flagged} aria-label={flagged ? `Clear the kitchen mark on ${label}` : `Mark ${label} for the kitchen`} onClick={(event) => { event.stopPropagation(); onClick(); }} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full ${flagged ? "bg-[#ed168c] text-white" : "text-[#c9a3b6] hover:bg-[#fff1f8] hover:text-[#ed168c]"}`}><MessageCircle size={14} /></button>;
 }
-function SwipeClearRow({ rowKey, open, busy, label, onOpen, onClear, children }: { rowKey: string; open: boolean; busy: boolean; label: string; onOpen: (key: string | null) => void; onClear: () => void; children: ReactNode }) {
+function SwipeClearRow({ rowKey, open, busy, label, tone = "clear", onOpen, onClear, children }: { rowKey: string; open: boolean; busy: boolean; label: string; tone?: "clear" | "edit"; onOpen: (key: string | null) => void; onClear: () => void; children: ReactNode }) {
   const reveal = 56;
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -70,14 +71,14 @@ function SwipeClearRow({ rowKey, open, busy, label, onOpen, onClear, children }:
   const suppressClick = useRef(false);
   useEffect(() => { setOffset(open ? -reveal : 0); }, [open]);
   return <div className="relative overflow-hidden rounded-lg">
-    <button type="button" disabled={busy} onClick={onClear} className="absolute inset-y-0 right-0 grid w-14 place-items-center bg-[#ff3b30] text-white disabled:opacity-60" aria-label={`Clear ${label}`}>
-      <Trash2 size={18} />
+    <button type="button" disabled={busy} onClick={onClear} className={`absolute inset-y-0 right-0 grid w-14 place-items-center text-white disabled:opacity-60 ${tone === "edit" ? "bg-[#2a2430]" : "bg-[#ff3b30]"}`} aria-label={tone === "edit" ? `Edit ${label}` : `Clear ${label}`}>
+      {tone === "edit" ? <Pencil size={18} /> : <Trash2 size={18} />}
     </button>
     <div
       className="relative bg-white"
       style={{ transform: `translateX(${offset}px)`, transition: dragging ? "none" : "transform 180ms ease", touchAction: "pan-y" }}
       onPointerDown={(event) => {
-        if (busy || event.button !== 0) return;
+        if (busy || event.button !== 0 || (event.target as HTMLElement).closest("input, button, textarea, form")) return;
         drag.current = { pointer: event.pointerId, startX: event.clientX, startOffset: offset, moved: false };
         setDragging(true);
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -186,7 +187,14 @@ function sortCategories(section: MenuSection, list: Category[]) {
     return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex) || left.name.localeCompare(right.name);
   });
 }
-type ActiveRoomStay = { id: string; primaryGuestName: string; cashOnly?: boolean; occupants: { id: string; name: string }[]; room: { roomNumber: string | number } };
+type ActiveRoomStay = { id: string; primaryGuestName: string; cashOnly?: boolean; occupants: { id: string; name: string }[]; room: { roomNumber: string | number }; expectedCheckoutAt?: string | null };
+function checkedInNow(stays: ActiveRoomStay[], now = Date.now()) {
+  return stays.filter((stay) => {
+    if (!stay.expectedCheckoutAt) return true;
+    const end = new Date(stay.expectedCheckoutAt).getTime();
+    return Number.isNaN(end) || end > now;
+  });
+}
 const ORDER_DESK_KEY = "restaurant-order-desk";
 function readOrderDesk(): { categories: Category[]; tables: DiningTable[]; stays: ActiveRoomStay[] } | null {
   try {
@@ -217,22 +225,55 @@ function readOpenTickets(): Record<string, HeldTicket> {
 function writeOpenTickets(value: Record<string, HeldTicket>) {
   try { localStorage.setItem(OPEN_TICKETS_KEY, JSON.stringify(value)); } catch { /* The ticket stays on screen for this visit. */ }
 }
-function queuedLike(tableId: string, lines: CartLine[]) {
+function queuedLike(storageKey: string, lines: CartLine[]) {
   const bag = lines.map((line) => `${line.item.id}|${line.quantity}`).sort().join(",");
-  if (!bag) return false;
+  if (!bag || !storageKey) return false;
   return listOutbox().some((item) => {
-    if (item.status !== "pending" || item.scope !== "order.create" || item.body?.tableId !== tableId) return false;
+    if (item.status !== "pending" || item.scope !== "order.create") return false;
     const sent = Array.isArray(item.body.items) ? item.body.items as { menuItemId?: string; quantity?: number }[] : [];
-    return sent.map((line) => `${line.menuItemId}|${line.quantity}`).sort().join(",") === bag;
+    if (sent.map((line) => `${line.menuItemId}|${line.quantity}`).sort().join(",") !== bag) return false;
+    if (storageKey.startsWith("room:")) return item.body?.roomStayId === storageKey.slice(5) && !item.body?.tableId;
+    const [tableId, splitId = ""] = storageKey.split(":");
+    return item.body?.tableId === tableId && String(item.body?.tableSplitId ?? "") === splitId;
   });
 }
-function readOpenTicket(tableId: string): HeldTicket {
-  const held = readOpenTickets()[tableId];
+function readOpenTicket(storageKey: string): HeldTicket {
+  const held = readOpenTickets()[storageKey];
   const lines = Array.isArray(held?.lines) ? held.lines.filter((line) => line?.item?.id) : [];
-  if (!tableId || queuedLike(tableId, lines)) return { lines: [], note: "" };
+  if (!storageKey || queuedLike(storageKey, lines)) return { lines: [], note: "" };
   return { lines, note: held?.note ?? "" };
 }
 
+function picksOne(group: ModifierGroup) {
+  return group.appearance === "RADIO" || group.appearance === "SLIDER" || (group.appearance !== "CHECKBOX" && group.selectionType === "SINGLE");
+}
+function pickLimit(group: ModifierGroup) {
+  const choices = group.options.filter((option) => option.active).length;
+  if (group.appearance === "CHECKBOX") return Math.max(group.maxPicks > 1 ? group.maxPicks : choices, 1);
+  return picksOne(group) ? 1 : Math.max(group.maxPicks, 1);
+}
+function liveMenuItem(categories: Category[], itemId: string) {
+  for (const category of categories) {
+    const item = (category.items ?? []).find((entry) => entry.id === itemId);
+    if (item) return { ...item, category };
+  }
+  return undefined;
+}
+function remapModifierSelections(categories: Category[], item: MenuItem, selections: Record<string, string[]>) {
+  const liveGroups = itemModifierGroups(liveMenuItem(categories, item.id) ?? item);
+  const savedGroups = itemModifierGroups(item);
+  const next: Record<string, string[]> = {};
+  for (const [groupId, optionIds] of Object.entries(selections)) {
+    const savedGroup = savedGroups.find((group) => group.id === groupId);
+    const liveGroup = liveGroups.find((group) => group.id === groupId) ?? liveGroups.find((group) => group.name === savedGroup?.name);
+    next[liveGroup?.id ?? groupId] = optionIds.map((optionId) => {
+      if (liveGroup?.options.some((option) => option.id === optionId)) return optionId;
+      const name = savedGroup?.options.find((option) => option.id === optionId)?.name;
+      return liveGroup?.options.find((option) => option.name === name)?.id ?? optionId;
+    });
+  }
+  return next;
+}
 function itemModifierGroups(item: MenuItem): ModifierGroup[] {
   const groups = new Map<string, ModifierGroup>();
   const visit = (group: ModifierGroup) => {
@@ -269,21 +310,13 @@ function selectedModifierLines(item: MenuItem, selections: Record<string, string
 }
 
 export function NewOrderPage() {
-  const { tableId = "" } = useParams();
+  const { tableId = "", stayId = "" } = useParams();
+  const roomService = Boolean(stayId);
   const navigate = useNavigate();
   const [categories, setCategories] = useState<Category[]>([]);
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [activeStays, setActiveStays] = useState<ActiveRoomStay[]>([]);
   const [assignedRoomStayIds, setAssignedRoomStayIds] = useState<string[]>([]);
-  const [roomPickerOpen, setRoomPickerOpen] = useState(false);
-  const [roomListBox, setRoomListBox] = useState<{ top: number; left: number; width: number } | null>(null);
-  const roomPickerRef = useRef<HTMLDivElement>(null);
-  const roomButtonRef = useRef<HTMLButtonElement>(null);
-  const roomListRef = useRef<HTMLDivElement>(null);
-  const [tablePickerOpen, setTablePickerOpen] = useState(false);
-  const [tableListBox, setTableListBox] = useState<{ top: number; left: number; width: number } | null>(null);
-  const tableButtonRef = useRef<HTMLButtonElement>(null);
-  const tableListRef = useRef<HTMLDivElement>(null);
   const [savingRoomAssignments, setSavingRoomAssignments] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [browsingDishes, setBrowsingDishes] = useState(false);
@@ -291,7 +324,9 @@ export function NewOrderPage() {
   const [cart, setCart] = useState<CartLine[]>(() => readOpenTicket(tableId).lines);
   const [plusJumps, setPlusJumps] = useState<PlusJump[]>([]);
   const [ticketOpen, setTicketOpen] = useState(false);
-  const ticketMarkRef = useRef<HTMLSpanElement>(null);
+  const ticketMarkRef = useRef<HTMLButtonElement>(null);
+  const [ticketMenu, setTicketMenu] = useState<"closed" | "actions" | "tables" | "guests" | "note">("closed");
+  const [ticketMenuBox, setTicketMenuBox] = useState<{ top: number; right: number } | null>(null);
   const pendingAddOrigin = useRef<DOMRect | null>(null);
   const [orderKitchenNote, setOrderKitchenNote] = useState(() => readOpenTicket(tableId).note);
   const ticketTableRef = useRef(tableId);
@@ -303,12 +338,17 @@ export function NewOrderPage() {
   const [configStep, setConfigStep] = useState(0);
   const [modifierError, setModifierError] = useState("");
   const [placing, setPlacing] = useState(false);
+  const [movingTable, setMovingTable] = useState(false);
+  const [addingSplit, setAddingSplit] = useState(false);
+  const [activeSplitId, setActiveSplitId] = useState("");
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<CheckoutReceipt | null>(null);
   const [settleOpen, setSettleOpen] = useState(false);
   const [openSwipe, setOpenSwipe] = useState<string | null>(null);
   const [clearingId, setClearingId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<{ orderId: string; itemId: string; reason: string } | null>(null);
   const createOrder = useOrderStore((state) => state.createOrder);
+  const upsertOrder = useOrderStore((state) => state.upsertOrder);
   const orders = useOrderStore((state) => state.orders);
   const fetchOrders = useOrderStore((state) => state.fetchOrders);
   const notify = useUiStore((state) => state.notify);
@@ -318,36 +358,20 @@ export function NewOrderPage() {
   const t = (text: string) => translateUiText(language, text);
   const restaurantName = useUiStore((state) => state.restaurantName);
   const restaurantLogoUrl = useUiStore((state) => state.restaurantLogoUrl);
+  const vatPercent = useUiStore((state) => state.vatPercent);
   const currentUser = useAuthStore((state) => state.user);
   useEffect(() => {
-    const save = (forTable: string, lines: CartLine[], note: string) => {
-      if (!forTable) return;
-      const stored = readOpenTickets();
-      if (!lines.length && !note.trim()) delete stored[forTable];
-      else stored[forTable] = { lines: lines.map(slimTicketLine), note };
-      writeOpenTickets(stored);
-    };
-    if (ticketTableRef.current !== tableId) {
-      save(ticketTableRef.current, cart, orderKitchenNote);
-      ticketTableRef.current = tableId;
-      const next = readOpenTicket(tableId);
-      setCart(next.lines);
-      setOrderKitchenNote(next.note);
-      return;
-    }
-    save(tableId, cart, orderKitchenNote);
-  }, [tableId, cart, orderKitchenNote]);
-  useEffect(() => {
     const cached = readOrderDesk();
-    if (cached) { setCategories(cached.categories); setTables(cached.tables); setActiveStays(cached.stays); }
+    if (cached) { setCategories(cached.categories); setTables(cached.tables); setActiveStays(checkedInNow(cached.stays)); }
     void Promise.all([
       api.get<Category[]>("/categories"),
       api.get<DiningTable[]>("/tables"),
       api.get<ActiveRoomStay[]>("/orders/active-room-stays"),
     ])
       .then(([cat, tbl, stays]) => {
-        setCategories(cat.data); setTables(tbl.data); setActiveStays(stays.data);
-        writeOrderDesk({ categories: cat.data, tables: tbl.data, stays: stays.data });
+        const inHouse = checkedInNow(stays.data);
+        setCategories(cat.data); setTables(tbl.data); setActiveStays(inHouse);
+        writeOrderDesk({ categories: cat.data, tables: tbl.data, stays: inHouse });
       })
       .catch((e) => { if (!cached) reportError(errorMessage(e)); });
   }, []);
@@ -355,69 +379,45 @@ export function NewOrderPage() {
     void fetchOrders().catch(() => undefined);
   }, [fetchOrders]);
   const selectedTable = tables.find((table) => table.id === tableId);
+  const roomServiceStay = roomService ? activeStays.find((stay) => stay.id === stayId) : undefined;
+  const splits = [...(selectedTable?.splits ?? [])].sort((left, right) => left.position - right.position || left.label.localeCompare(right.label));
+  const activeSplit = splits.find((split) => split.id === activeSplitId) ?? splits[0] ?? null;
+  const ticketStorageKey = roomService ? `room:${stayId}` : !tableId ? "" : activeSplit ? `${tableId}:${activeSplit.id}` : tableId;
+  useEffect(() => {
+    const save = (storageKey: string, lines: CartLine[], note: string) => {
+      if (!storageKey) return;
+      const stored = readOpenTickets();
+      if (!lines.length && !note.trim()) delete stored[storageKey];
+      else stored[storageKey] = { lines: lines.map(slimTicketLine), note };
+      writeOpenTickets(stored);
+    };
+    if (ticketTableRef.current !== ticketStorageKey) {
+      save(ticketTableRef.current, cart, orderKitchenNote);
+      const stored = readOpenTickets();
+      const bare = tableId;
+      if (ticketTableRef.current === bare && ticketStorageKey.startsWith(`${bare}:`) && stored[bare] && !stored[ticketStorageKey]) {
+        stored[ticketStorageKey] = stored[bare];
+        delete stored[bare];
+        writeOpenTickets(stored);
+      }
+      ticketTableRef.current = ticketStorageKey;
+      const next = readOpenTicket(ticketStorageKey);
+      setCart(next.lines);
+      setOrderKitchenNote(next.note);
+      return;
+    }
+    save(ticketStorageKey, cart, orderKitchenNote);
+  }, [ticketStorageKey, tableId, cart, orderKitchenNote]);
   useEffect(() => {
     const assignedIds = selectedTable?.assignedRoomStays?.map((stay) => stay.id) ?? [];
     setAssignedRoomStayIds(assignedIds);
   }, [tableId, selectedTable?.assignedRoomStays]);
-  useEffect(() => {
-    if (!roomPickerOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (event.target instanceof Node && !roomPickerRef.current?.contains(event.target) && !roomListRef.current?.contains(event.target)) setRoomPickerOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setRoomPickerOpen(false); };
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [roomPickerOpen]);
-  useEffect(() => {
-    if (!roomPickerOpen) return;
-    const place = () => {
-      const anchor = roomPickerRef.current;
-      const button = roomButtonRef.current;
-      if (!anchor || !button) return;
-      const box = anchor.getBoundingClientRect();
-      const trigger = button.getBoundingClientRect();
-      setRoomListBox({ top: trigger.bottom + 6, left: box.left, width: box.width });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [roomPickerOpen]);
-  useEffect(() => {
-    if (!tablePickerOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (event.target instanceof Node && !tableButtonRef.current?.contains(event.target) && !tableListRef.current?.contains(event.target)) setTablePickerOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setTablePickerOpen(false); };
-    const place = () => {
-      const button = tableButtonRef.current;
-      if (!button) return;
-      const trigger = button.getBoundingClientRect();
-      setTableListBox({ top: trigger.bottom + 6, left: trigger.left, width: trigger.width });
-    };
-    place();
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [tablePickerOpen]);
   const activeTableOrders = orders
-    .filter((order) => order.tableId === tableId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status))
+    .filter((order) => roomService ? order.roomStayId === stayId && !order.tableId && order.type !== "DINE_IN" : order.tableId === tableId)
+    .filter((order) => ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status))
+    .filter((order) => roomService || !activeSplit || order.tableSplitId === activeSplit.id || (!order.tableSplitId && activeSplit.position === 0))
     .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
-  const roomPayers = assignedRoomStayIds.flatMap((id) => {
+  const roomPayers = (activeSplit ? (activeSplit.roomStayId ? [activeSplit.roomStayId] : []) : assignedRoomStayIds).flatMap((id) => {
     const stay = activeStays.find((entry) => entry.id === id);
     if (!stay) return [];
     return [{ id, label: `R${stay.room.roomNumber}`, name: stay.primaryGuestName, roomStayId: id }];
@@ -449,14 +449,27 @@ export function NewOrderPage() {
       .filter((group) => group.categories.length);
   }, [categories]);
   const leaveDishes = () => { setBrowsingDishes(false); setSelectedCategory("All"); setSearch(""); };
-  const lineAmount = (line: { subtotal?: number | string | null; unitPrice?: number | string | null; quantity: number; menuItem?: { price?: number | string | null } }) => {
+  const lineAmount = (line: { subtotal?: number | string | null; unitPrice?: number | string | null; quantity: number; menuItem?: { price?: number | string | null }; removedAt?: string | null }) => {
+    if (line.removedAt) return 0;
     const amount = Number(line.subtotal ?? Number(line.unitPrice ?? line.menuItem?.price ?? 0) * Number(line.quantity || 0));
     return Number.isFinite(amount) ? amount : 0;
   };
   const cartLines = cart;
   const cartCount = cartLines.reduce((count, line) => count + line.quantity, 0);
-  const sentCount = activeTableOrders.reduce((count, order) => count + order.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0), 0);
-  const ticketCount = cartCount + sentCount;
+  const tableTitle = selectedTable ? (/^table\b/i.test(selectedTable.tableNumber) ? selectedTable.tableNumber : `Table ${selectedTable.tableNumber}`) : "Table";
+  const headerRoom = (() => {
+    const stayId = activeSplit ? activeSplit.roomStayId : assignedRoomStayIds.length === 1 ? assignedRoomStayIds[0] : null;
+    const stay = stayId ? activeStays.find((entry) => entry.id === stayId) : undefined;
+    if (stay) return `Room ${stay.room.roomNumber}`;
+    if (!activeSplit && assignedRoomStayIds.length > 1) return `${assignedRoomStayIds.length} rooms`;
+    return "";
+  })();
+  const sideCount = (splitId: string) => {
+    const sent = orders.filter((order) => order.tableId === tableId && order.tableSplitId === splitId && ["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status)).reduce((count, order) => count + order.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0), 0);
+    const held = splitId === activeSplit?.id ? cartLines : readOpenTicket(`${tableId}:${splitId}`).lines;
+    return sent + held.reduce((count, line) => count + line.quantity, 0);
+  };
+  const wholeCount = cartCount + activeTableOrders.reduce((count, order) => count + order.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0), 0);
   const androidTicket = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
   const getLineUnitPrice = (item: MenuItem, selections: Record<string, string[]>) => Number(item.price) + openModifierGroups(item, selections).filter((group) => group.appearance !== "TEXT").reduce((sum, group) => {
     const selected = selections[group.id] ?? [];
@@ -466,12 +479,10 @@ export function NewOrderPage() {
     });
     return sum + selectedOptions.reduce((charge, option, index) => charge + (index < group.includedPicks ? 0 : Number(option.priceAdjustment) + Number(group.extraPickPrice ?? 0)), 0);
   }, 0);
-  const cartTotal = cartLines.reduce(
-    (sum, line) => sum + getLineUnitPrice(line.item, line.modifierSelections) * line.quantity,
-    0,
-  );
   const sentTotal = activeTableOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, line) => lineSum + lineAmount(line), 0), 0);
-  const total = Math.round((sentTotal + cartTotal) * 100) / 100;
+  const sentAmounts = activeTableOrders.flatMap((order) => order.items.filter((line) => !line.removedAt).map((line) => lineAmount(line)));
+  const cartAmounts = cartLines.map((line) => getLineUnitPrice(line.item, line.modifierSelections) * line.quantity);
+  const grand = totalWithDishVat([...sentAmounts, ...cartAmounts], vatPercent);
   const tableBill = activeTableOrders.length ? {
     id: "table",
     label: "Table",
@@ -480,6 +491,7 @@ export function NewOrderPage() {
     orders: activeTableOrders,
     total: Math.round(sentTotal * 100) / 100,
   } : null;
+  const settleGrand = totalWithDishVat(sentAmounts, vatPercent);
   const clearPlusJump = useCallback((id: string) => setPlusJumps((current) => current.filter((jump) => jump.id !== id)), []);
   const launchPlus = (origin: DOMRect | null, amount = 1) => {
     if (/Android/i.test(navigator.userAgent)) return;
@@ -544,7 +556,7 @@ export function NewOrderPage() {
   const updateDraftSelection = (group: ModifierGroup, optionId: string, checked: boolean) => {
     setDraftSelections((current) => {
       const values = current[group.id] ?? [];
-      const nextValues = group.selectionType === "SINGLE"
+      const nextValues = picksOne(group)
         ? checked ? [optionId] : values.filter((id) => id !== optionId)
         : checked ? [...values, optionId] : (() => { const next = [...values]; const index = next.lastIndexOf(optionId); if (index >= 0) next.splice(index, 1); return next; })();
       const next = { ...current, [group.id]: nextValues };
@@ -560,7 +572,7 @@ export function NewOrderPage() {
   const updateQuantityOption = (group: ModifierGroup, optionId: string, change: 1 | -1) => {
     const selected = draftSelections[group.id] ?? [];
     const optionCount = selected.filter((id) => id === optionId).length;
-    if (change > 0 && selected.length >= group.maxPicks) return;
+    if (change > 0 && selected.length >= pickLimit(group)) return;
     if (change < 0 && optionCount === 0) return;
     updateDraftSelection(group, optionId, change > 0);
   };
@@ -569,9 +581,9 @@ export function NewOrderPage() {
     const groups = openModifierGroups(configuringItem, draftSelections);
     const invalid = groups.find((group) => {
       const count = draftSelections[group.id]?.length ?? 0;
-      return group.appearance !== "TEXT" && group.appearance !== "TOGGLE" && (count < group.minPicks || count > group.maxPicks || (group.required && count === 0));
+      return group.appearance !== "TEXT" && group.appearance !== "TOGGLE" && (count < group.minPicks || count > pickLimit(group) || (group.required && count === 0));
     });
-    if (invalid) { setModifierError(`${invalid.name}: choose ${invalid.minPicks === invalid.maxPicks ? invalid.minPicks : `${invalid.minPicks}–${invalid.maxPicks}`} option${invalid.maxPicks === 1 ? "" : "s"}.`); return; }
+    if (invalid) { const limit = pickLimit(invalid); setModifierError(`${invalid.name}: choose ${invalid.minPicks === limit ? limit : `${invalid.minPicks}–${limit}`} option${limit === 1 ? "" : "s"}.`); return; }
     if (editingCartLineId) {
       setCart((current) => current.map((line) => line.id === editingCartLineId ? { ...line, quantity: draftQuantity, specialNotes: draftKitchenNote.trim(), modifierSelections: draftSelections } : line));
       setEditingCartLineId(null);
@@ -611,6 +623,19 @@ export function NewOrderPage() {
       setClearingId(null);
     }
   };
+  const voidSentLine = async (orderId: string, itemId: string, reason: string) => {
+    setClearingId(itemId);
+    try {
+      const { data } = await api.patch(`/orders/${orderId}/items/${itemId}/remove`, { reason });
+      useOrderStore.getState().upsertOrder(data);
+      setRemoval(null);
+      setOpenSwipe(null);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    } finally {
+      setClearingId(null);
+    }
+  };
   const toggleSentFlag = async (orderId: string, itemId: string | undefined, flagged: boolean) => {
     if (!itemId || itemId.startsWith("local-")) return;
     try {
@@ -621,8 +646,8 @@ export function NewOrderPage() {
     }
   };
   const placeOrder = async () => {
-    if (!tableId || !selectedTable) {
-      reportError("Return to the floor and open a table before sending an order.");
+    if (roomService ? !stayId : !tableId || !selectedTable) {
+      reportError(roomService ? "Open a checked-in room before sending room service." : "Return to the floor and open a table before sending an order.");
       return;
     }
     if (!cartLines.length) {
@@ -636,16 +661,22 @@ export function NewOrderPage() {
     try {
       const lines = cartLines;
       try {
+        const { data: freshCategories } = await api.get<Category[]>("/categories");
+        setCategories(freshCategories);
+        writeOrderDesk({ categories: freshCategories, tables, stays: activeStays });
         await createOrder(
-          { tableId },
-          lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation, kitchenFlag }) => ({
+          roomService ? { roomStayId: stayId, paymentMethod: "ROOM_CHECKOUT", type: "ROOM_SERVICE" } : { tableId, ...(activeSplit ? { tableSplitId: activeSplit.id } : {}) },
+          lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation, kitchenFlag }) => {
+            const selections = remapModifierSelections(freshCategories, item, modifierSelections);
+            return {
             menuItemId: item.id,
             quantity,
             prepStation: item.prepStation ?? prepStation,
             kitchenFlag: Boolean(kitchenFlag),
-            modifierSelections: openModifierGroups(item, modifierSelections).filter((group) => group.appearance !== "TEXT").map((group) => ({ groupId: group.id, optionIds: modifierSelections[group.id] ?? [] })),
+            modifierSelections: openModifierGroups(liveMenuItem(freshCategories, item.id) ?? item, selections).filter((group) => group.appearance !== "TEXT").map((group) => ({ groupId: group.id, optionIds: selections[group.id] ?? [] })),
             ...([orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).length ? { specialNotes: [orderKitchenNote.trim() && `Order note: ${orderKitchenNote.trim()}`, specialNotes.trim()].filter(Boolean).join(" · ") } : {}),
-          })),
+            };
+          }),
         );
       } catch (cause) {
         if (!(cause instanceof SavedLocallyError)) throw cause;
@@ -658,11 +689,13 @@ export function NewOrderPage() {
         });
         useOrderStore.getState().upsertOrder({
           id: `local-${cause.requestId || localId()}`,
-          tableId,
-          table: selectedTable,
-          roomStayId: null,
-          paymentMethod: "CASH",
-          paymentStatus: "UNPAID",
+          type: roomService ? "ROOM_SERVICE" : "DINE_IN",
+          tableId: roomService ? null : tableId,
+          tableSplitId: roomService ? null : activeSplit?.id ?? null,
+          table: roomService ? null : selectedTable ? { ...selectedTable, tableNumber: `${selectedTable.tableNumber}${splits.length > 1 ? activeSplit?.label ?? "" : ""}` } : selectedTable,
+          roomStayId: roomService ? stayId : null,
+          paymentMethod: roomService ? "ROOM_CHECKOUT" : "CASH",
+          paymentStatus: roomService ? "ROOM_FOLIO" : "UNPAID",
           waiterId: currentUser?.id ?? "local",
           waiter: { id: currentUser?.id ?? "local", name: currentUser?.name ?? "This device" },
           status: "PENDING",
@@ -692,6 +725,97 @@ export function NewOrderPage() {
       reportError(errorMessage(e));
     } finally {
       setPlacing(false);
+    }
+  };
+  const movePartyToTable = async (nextId: string) => {
+    if (!tableId || nextId === tableId || movingTable) return;
+    setMovingTable(true);
+    setError("");
+    try {
+      const { data } = await api.post<{ tables: DiningTable[]; orders: Order[] }>(`/tables/${tableId}/move`, { tableId: nextId });
+      const nextTables = tables.map((table) => data.tables.find((updated) => updated.id === table.id) ?? table);
+      setTables(nextTables);
+      writeOrderDesk({ categories, tables: nextTables, stays: activeStays });
+      for (const order of data.orders) upsertOrder(order);
+      const destination = nextTables.find((table) => table.id === nextId);
+      for (const order of orders) {
+        if (!order.id.startsWith("local-") || order.tableId !== tableId) continue;
+        if (!["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status)) continue;
+        upsertOrder({ ...order, tableId: nextId, table: order.table && destination ? { ...order.table, id: destination.id, tableNumber: destination.tableNumber, status: "OCCUPIED" } : order.table });
+      }
+      retargetQueuedTable(tableId, nextId);
+      const stored = readOpenTickets();
+      const nextKey = `${nextId}${ticketStorageKey.slice(tableId.length)}`;
+      for (const key of Object.keys(stored)) {
+        if (key !== tableId && !key.startsWith(`${tableId}:`)) continue;
+        const destKey = `${nextId}${key.slice(tableId.length)}`;
+        const sourceLines = key === ticketStorageKey ? cart : stored[key]?.lines ?? [];
+        const sourceNote = key === ticketStorageKey ? orderKitchenNote : stored[key]?.note ?? "";
+        const there = destKey === key ? undefined : stored[destKey];
+        const lines = key === ticketStorageKey ? [...(there?.lines ?? []), ...sourceLines] : sourceLines;
+        const note = key === ticketStorageKey ? [there?.note, sourceNote].map((entry) => entry?.trim()).filter(Boolean).join(" · ") : sourceNote;
+        delete stored[key];
+        if (lines.length || note.trim()) stored[destKey] = { lines: lines.map(slimTicketLine), note };
+      }
+      writeOpenTickets(stored);
+      const moved = readOpenTicket(nextKey);
+      setCart(moved.lines);
+      setOrderKitchenNote(moved.note);
+      ticketTableRef.current = nextKey;
+      navigate(`/tables/${nextId}`);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    } finally {
+      setMovingTable(false);
+    }
+  };
+  const rememberSplit = (table: DiningTable, ordersToKeep: Order[]) => {
+    setTables((current) => current.map((entry) => entry.id === table.id ? table : entry));
+    for (const order of ordersToKeep) upsertOrder(order);
+    setActiveSplitId((current) => table.splits?.some((split) => split.id === current) ? current : table.splits?.[0]?.id ?? "");
+  };
+  const addTableSplit = async () => {
+    if (!tableId || addingSplit) return;
+    setAddingSplit(true);
+    setError("");
+    try {
+      const { data } = await api.post<{ table: DiningTable; orders: Order[] }>(`/tables/${tableId}/splits`);
+      rememberSplit(data.table, data.orders);
+      const first = [...(data.table.splits ?? [])].sort((left, right) => left.position - right.position)[0];
+      if (first && !(selectedTable?.splits ?? []).length) setActiveSplitId(first.id);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    } finally {
+      setAddingSplit(false);
+    }
+  };
+  const removeTableSplit = async (splitId: string) => {
+    if (!tableId || addingSplit || splits.length <= 1 || sideCount(splitId) > 0) return;
+    setAddingSplit(true);
+    setError("");
+    try {
+      const { data } = await api.delete<{ table: DiningTable; orders: Order[] }>(`/tables/${tableId}/splits/${splitId}`);
+      const stored = readOpenTickets();
+      delete stored[`${tableId}:${splitId}`];
+      writeOpenTickets(stored);
+      rememberSplit(data.table, data.orders);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    } finally {
+      setAddingSplit(false);
+    }
+  };
+  const setSplitRoom = async (roomStayId: string | null) => {
+    if (!tableId || !activeSplit) return;
+    setSavingRoomAssignments(true);
+    setError("");
+    try {
+      const { data } = await api.patch<{ table: DiningTable }>(`/tables/${tableId}/splits/${activeSplit.id}`, { roomStayId });
+      rememberSplit(data.table, []);
+    } catch (cause) {
+      reportError(errorMessage(cause));
+    } finally {
+      setSavingRoomAssignments(false);
     }
   };
   const assignRoomsToTable = async (nextRoomStayIds: string[]) => {
@@ -725,7 +849,8 @@ export function NewOrderPage() {
   function renderModifierGroup(group: ModifierGroup, depth = 0, parentOption?: { name: string; nameMy?: string; nameTh?: string }): JSX.Element {
     const selected = draftSelections[group.id] ?? [];
     const groupOptions = group.options.filter((option) => option.active);
-    const groupDone = group.appearance === "TEXT" ? (!group.required || Boolean(draftKitchenNote.trim())) : group.appearance === "TOGGLE" ? true : selected.length >= group.minPicks && selected.length <= group.maxPicks;
+    const limit = pickLimit(group);
+    const groupDone = group.appearance === "TEXT" ? (!group.required || Boolean(draftKitchenNote.trim())) : group.appearance === "TOGGLE" ? true : selected.length >= group.minPicks && selected.length <= limit;
     const childForOption = (optionId: string) => {
       const option = groupOptions.find((candidate) => candidate.id === optionId);
       const child = option?.opensGroup && selected.includes(option.id) ? configureGroups.find((candidate) => candidate.id === option.opensGroup?.id) : undefined;
@@ -738,25 +863,25 @@ export function NewOrderPage() {
         return <div key={option.id}>
           <div className={`flex min-h-[72px] items-center gap-3 rounded-xl border px-3 py-2.5 ${count ? "border-[#ed168c] bg-[#fff8fb]" : "border-line bg-white"}`}>
             <div className="min-w-0 flex-1"><p className="text-xs font-semibold">{modifierLabel(option, language)}</p>{language !== "en" && option.name !== modifierLabel(option, language) && <p className="text-[10px] text-muted">{option.name}</p>}<p className="mt-1 text-[10px] font-semibold text-muted">{addedPrice > 0 ? `+${money(addedPrice)}` : "Included"}</p></div>
-            <div className="flex h-8 shrink-0 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label={`Remove one ${modifierLabel(option, language)}`} disabled={!count} onClick={() => updateQuantityOption(group, option.id, -1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white disabled:opacity-30"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{count}</span><button type="button" aria-label={`Add one ${modifierLabel(option, language)}`} disabled={selected.length >= group.maxPicks} onClick={() => updateQuantityOption(group, option.id, 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white disabled:opacity-30"><Plus size={12} /></button></div>
+            <div className="flex h-8 shrink-0 items-center rounded-lg bg-[#fff4f9] p-0.5"><button type="button" aria-label={`Remove one ${modifierLabel(option, language)}`} disabled={!count} onClick={() => updateQuantityOption(group, option.id, -1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white disabled:opacity-30"><Minus size={12} /></button><span className="w-6 text-center text-[11px] font-bold">{count}</span><button type="button" aria-label={`Add one ${modifierLabel(option, language)}`} disabled={selected.length >= limit} onClick={() => updateQuantityOption(group, option.id, 1)} className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-white disabled:opacity-30"><Plus size={12} /></button></div>
           </div>
           {childForOption(option.id)}
         </div>;
       })}
     </div> : group.appearance === "SLIDER" && groupOptions.length > 0 ? <div className="rounded-xl border border-line px-4 py-4">
       <h4 className="text-sm font-bold">How {modifierLabel(group, language).toLowerCase()} is it?</h4>
-      <p className="mb-4 mt-1 text-[11px] text-muted">Tap a level. The kitchen makes it this way unless the guest asks for different.</p>
+      <p className="mb-4 mt-1 text-[11px] text-muted">Slide to a level. The kitchen makes it this way unless the guest asks for different.</p>
       <LevelSlider labels={groupOptions.map((option) => modifierLabel(option, language))} value={Math.max(0, groupOptions.findIndex((option) => selected.includes(option.id)))} onChange={(index) => updateDraftSelection(group, groupOptions[index].id, true)} ariaLabel={`Choose ${modifierLabel(group, language)} level`} />
       {modifierPickerMode === "list" && selected[0] && childForOption(selected[0])}
     </div> : group.appearance === "TOGGLE" ? <div className="space-y-2">{groupOptions.map((option) => { const on = selected.includes(option.id); const price = Number(option.priceAdjustment); return <div key={option.id} className={`flex min-h-[62px] items-center gap-3 rounded-xl border px-3 py-2.5 ${on ? "border-[#ed168c] bg-[#fff8fb]" : "border-line bg-white"}`}><div className="min-w-0 flex-1"><p className="text-xs font-semibold">{modifierLabel(option, language)}</p><p className="mt-0.5 text-[10px] text-muted">{on ? "Included" : "Not included"}{on && price > 0 ? ` · +${money(price)}` : ""}</p></div><button type="button" role="switch" aria-checked={on} aria-label={`${on ? "Leave out" : "Include"} ${modifierLabel(option, language)}`} onClick={() => updateDraftSelection(group, option.id, !on)} className={`relative h-7 w-12 shrink-0 rounded-full transition ${on ? "bg-[#ed168c]" : "bg-[#efe4ea]"}`}><span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition ${on ? "left-[22px]" : "left-0.5"}`} /></button></div>; })}</div> : <div className="grid gap-2 sm:grid-cols-2">
       {groupOptions.map((option) => {
         const isSelected = selected.includes(option.id);
-        const atLimit = selected.length >= group.maxPicks;
+        const atLimit = selected.length >= limit;
         const chargeIndex = isSelected ? selected.slice(0, selected.indexOf(option.id)).length : selected.length;
         const price = chargeIndex < group.includedPicks ? 0 : Number(option.priceAdjustment) + Number(group.extraPickPrice ?? 0);
         return <div key={option.id}>
           <label className={`flex min-h-[62px] cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition ${isSelected ? "border-[#ed168c] bg-[#fff8fb]" : "border-line bg-white hover:border-[#ed168c]/40"}`}>
-            <input type={group.selectionType === "SINGLE" ? "radio" : "checkbox"} name={`modifier-${group.id}`} checked={isSelected} disabled={group.selectionType !== "SINGLE" && !isSelected && atLimit} onChange={(event) => { updateDraftSelection(group, option.id, group.selectionType === "SINGLE" ? true : event.target.checked); if (modifierPickerMode === "step" && group.selectionType === "SINGLE" && event.target.checked) setConfigStep((step) => step + 1); }} className="h-4 w-4 accent-[#ed168c]" />
+            <input type={picksOne(group) ? "radio" : "checkbox"} name={`modifier-${group.id}`} checked={isSelected} disabled={!picksOne(group) && !isSelected && atLimit} onChange={(event) => { updateDraftSelection(group, option.id, picksOne(group) ? true : event.target.checked); if (modifierPickerMode === "step" && picksOne(group) && event.target.checked) setConfigStep((step) => step + 1); }} className="h-4 w-4 accent-[#ed168c]" />
             <span className="min-w-0 flex-1"><span className="block text-xs font-semibold">{modifierLabel(option, language)}</span>{language !== "en" && option.name !== modifierLabel(option, language) && <span className="block text-[10px] text-muted">{option.name}</span>}</span>
             <span className="shrink-0 text-[10px] font-semibold text-muted">{price > 0 ? `+${money(price)}` : "Included"}</span>
           </label>
@@ -767,7 +892,7 @@ export function NewOrderPage() {
     return <section key={group.id} className={depth ? "mt-2 rounded-lg border-l-[3px] border-l-[#f7c5df] bg-[#fff8fb] p-3" : "rounded-xl border border-[#f1dfe9] bg-white p-4"}>
       {parentOption && <p className="mb-2 text-[10px] font-semibold text-muted">Because you picked {modifierLabel(parentOption, language)}</p>}
       <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d]"><ModifierGroupIcon name={group.icon} size={16} /></span><div className="min-w-0"><h3 className="text-sm font-bold">{modifierLabel(group, language)}{language !== "en" && group.name ? <span className="ml-1 font-normal text-muted">{group.name}</span> : null}</h3><p className="mt-0.5 text-[10px] text-muted">{group.required ? "Required" : "Optional"}{group.appearance === "TEXT" ? " · Free text" : group.appearance === "TOGGLE" ? " · Include or leave out" : ` · Pick ${group.minPicks === group.maxPicks ? group.minPicks : `${group.minPicks}–${group.maxPicks}`}`}</p></div></div>
+        <div className="flex min-w-0 items-center gap-2"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#fff0f7] text-[#d90c7d]"><ModifierGroupIcon name={group.icon} size={16} /></span><div className="min-w-0"><h3 className="text-sm font-bold">{modifierLabel(group, language)}{language !== "en" && group.name ? <span className="ml-1 font-normal text-muted">{group.name}</span> : null}</h3><p className="mt-0.5 text-[10px] text-muted">{group.required ? "Required" : "Optional"}{group.appearance === "TEXT" ? " · Free text" : group.appearance === "TOGGLE" ? " · Include or leave out" : ` · Pick ${group.minPicks === limit ? limit : `${group.minPicks}–${limit}`}`}</p></div></div>
         <div className="shrink-0 text-right"><span className={`rounded-full px-2.5 py-1 text-[9px] font-bold ${groupDone ? "bg-emerald-50 text-emerald-700" : "bg-[#f5f5f4] text-muted"}`}>{groupDone ? "Done" : group.required ? "Required" : "Optional"}</span><p className="mt-1 text-[10px] text-muted">{group.appearance === "TEXT" ? "Free text" : group.appearance === "TOGGLE" ? `${selected.length} included` : `${selected.length} picked`}</p></div>
       </div>
       {groupBody}
@@ -794,14 +919,14 @@ export function NewOrderPage() {
         </div>
         <div className="mb-4 mt-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
           <div className="min-w-0">
-            <p className="text-[11px] font-extrabold uppercase tracking-[.16em] text-[#e21888]">Floor · New ticket</p>
+            <p className="text-[11px] font-extrabold uppercase tracking-[.16em] text-[#e21888]">{roomService ? "Room · Room service" : "Floor · New ticket"}</p>
             <h1 className="mt-1.5 font-display text-[30px] font-extrabold leading-tight tracking-[-.05em] text-ink sm:text-[34px]">Build an order</h1>
-            <p className="mt-1.5 max-w-2xl text-[13px] leading-5 text-muted sm:text-sm">{showingDishes ? "Choose a table, add a few good things, and send it straight to the kitchen." : "Pick a category to see its dishes, or search for anything."}</p>
+            <p className="mt-1.5 max-w-2xl text-[13px] leading-5 text-muted sm:text-sm">{roomService ? `Add dishes for ${roomServiceStay ? `Room ${roomServiceStay.room?.roomNumber}` : "this room"} and send them straight to the kitchen.` : showingDishes ? "Choose a table, add a few good things, and send it straight to the kitchen." : "Pick a category to see its dishes, or search for anything."}</p>
           </div>
           {showingDishes ? (
             <button type="button" onClick={leaveDishes} className="inline-flex h-fit shrink-0 items-center gap-1.5 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold transition hover:border-[#ed168c]/40 hover:text-[#d90c7d]"><ChevronLeft size={14} /> Back to categories</button>
           ) : (
-            <button onClick={() => navigate("/tables")} className="h-fit shrink-0 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold transition hover:border-[#ed168c]/40 hover:text-[#d90c7d]">Back to tables</button>
+            <button onClick={() => navigate(roomService ? "/rooms" : "/tables")} className="h-fit shrink-0 rounded-xl border border-line bg-white px-3.5 py-2.5 text-xs font-semibold transition hover:border-[#ed168c]/40 hover:text-[#d90c7d]">{roomService ? "Back to rooms" : "Back to tables"}</button>
           )}
         </div>
         {showingDishes && (
@@ -955,19 +1080,92 @@ export function NewOrderPage() {
         )}
         <Panel className={androidTicket
           ? `fixed inset-y-0 right-0 z-50 flex h-dvh w-[min(22rem,88vw)] flex-col overflow-hidden shadow-float transition-transform duration-300 !rounded-r-none ${ticketOpen ? "translate-x-0" : "pointer-events-none translate-x-full"}`
-          : "fixed bottom-5 right-5 top-[11.5rem] z-30 flex w-80 min-h-0 flex-col overflow-hidden"}>
+          : "fixed bottom-5 right-5 top-8 z-30 flex w-80 min-h-0 flex-col overflow-hidden"}>
           <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-2 pt-4">
-            <div className="min-w-0">
-              <h2 className="font-display text-[16px] font-bold tracking-[-.02em]">
-                Current ticket
-              </h2>
-              <p className="mt-0.5 text-[12px] text-[#8d939c]">
-                {ticketCount} {ticketCount === 1 ? "item" : "items"} · one bill
-              </p>
+            {roomService ? <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 border-b-2 border-[#2a2430] py-1.5 pl-1.5 text-[13px] font-bold text-ink">Room service<span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#ed168c] px-1 text-[11px] font-bold text-white">{wholeCount}</span></div>
+              <p className="mt-1 text-[12px] text-[#8d939c]">{roomServiceStay ? `Room ${roomServiceStay.room?.roomNumber} · ${roomServiceStay.primaryGuestName}` : "Charged to this room"}</p>
+            </div> : splits.length ? <div className="min-w-0 flex-1">
+              <div className="scrollbar-hide flex items-end gap-1 overflow-x-auto">
+                {splits.map((split) => {
+                  const selected = split.id === activeSplit?.id;
+                  const occupied = sideCount(split.id) > 0;
+                  const lone = splits.length <= 1;
+                  const locked = occupied || lone;
+                  return <div key={split.id} className={`flex shrink-0 items-center gap-0.5 border-b-2 ${selected ? "border-[#2a2430]" : "border-transparent"}`}>
+                    <button type="button" onClick={() => setActiveSplitId(split.id)} className={`flex items-center gap-1.5 py-1.5 pl-1.5 text-[13px] ${selected ? "font-bold text-ink" : "font-semibold text-[#8d939c]"}`}>{tableTitle}{lone ? "" : split.label}<span className={`grid h-5 min-w-5 place-items-center rounded-full px-1 text-[11px] font-bold ${selected ? "bg-[#ed168c] text-white" : "bg-[#efe8ec] text-[#8d939c]"}`}>{sideCount(split.id)}</span></button>
+                    <button type="button" aria-label={`Close ${tableTitle}${lone ? "" : split.label}`} title={occupied ? "This side still has an order" : lone ? "This is the only side" : `Close ${tableTitle}${split.label}`} disabled={locked || addingSplit} onClick={() => void removeTableSplit(split.id)} className="grid h-5 w-5 place-items-center rounded-full text-[#8d939c] hover:bg-[#efe8ec] hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"><X size={12} /></button>
+                  </div>;
+                })}
+                <button type="button" aria-label="Add a side of this table" disabled={addingSplit} onClick={() => void addTableSplit()} className="mb-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[#8d939c] hover:bg-white disabled:opacity-40"><Plus size={16} /></button>
+              </div>
+              <p className="mt-1 text-[12px] text-[#8d939c]">{headerRoom || "Choose a room for this side"}</p>
+            </div> : selectedTable ? <div className="min-w-0 flex-1">
+              <div className="flex items-end gap-1">
+                <div className="flex items-center gap-1.5 border-b-2 border-[#2a2430] py-1.5 pl-1.5 text-[13px] font-bold text-ink">{tableTitle}<span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#ed168c] px-1 text-[11px] font-bold text-white">{wholeCount}</span></div>
+                <button type="button" aria-label="Split this table" disabled={addingSplit} onClick={() => void addTableSplit()} className="mb-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[#8d939c] hover:bg-white disabled:opacity-40"><Plus size={16} /></button>
+              </div>
+              {headerRoom && <p className="mt-1 text-[12px] text-[#8d939c]">{headerRoom}</p>}
+            </div> : <div className="min-w-0">
+              <h2 className="font-display text-[16px] font-bold tracking-[-.02em]">Current ticket</h2>
+              <p className="mt-0.5 text-[12px] text-[#8d939c]">Choose a table</p>
+            </div>}
+            <div className="flex shrink-0 items-center gap-2">
+              <button ref={ticketMarkRef} type="button" aria-label="Ticket actions" aria-expanded={ticketMenu !== "closed"} onClick={() => { const rect = ticketMarkRef.current?.getBoundingClientRect(); if (rect) setTicketMenuBox({ top: rect.bottom + 8, right: Math.max(8, window.innerWidth - rect.right) }); setTicketMenu((current) => current === "closed" ? "actions" : "closed"); }} className="grid h-9 w-9 place-items-center rounded-xl bg-[#ffe4f2] text-[#f2168d]">
+                <MoreHorizontal size={18} />
+              </button>
+              {ticketMenu !== "closed" && ticketMenuBox && createPortal(<>
+                <div className="fixed inset-0 z-[80]" onPointerDown={() => setTicketMenu("closed")} />
+                <div style={{ top: ticketMenuBox.top, right: ticketMenuBox.right }} className="fixed z-[90] w-64 overflow-hidden rounded-xl border border-line bg-white p-1.5 shadow-float">
+                  {ticketMenu === "actions" ? <>
+                    {!roomService && <button type="button" disabled={!selectedTable || movingTable} onClick={() => setTicketMenu("tables")} className="flex min-h-10 w-full items-center rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas disabled:opacity-40">Move table</button>}
+                    {!roomService && <button type="button" disabled={!selectedTable || savingRoomAssignments} onClick={() => setTicketMenu("guests")} className="flex min-h-10 w-full items-center rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas disabled:opacity-40">Who&apos;s at the table</button>}
+                    <button type="button" onClick={() => setTicketMenu("note")} className="flex min-h-10 w-full items-center rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas">Kitchen note</button>
+                  </> : ticketMenu === "tables" ? <>
+                    <button type="button" onClick={() => setTicketMenu("actions")} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas"><ChevronLeft size={15} /> Back</button>
+                    <div className="max-h-64 overflow-y-auto">
+                      {tables.map((table) => {
+                        const selected = table.id === selectedTable?.id;
+                        const label = /^table\b/i.test(table.tableNumber) ? table.tableNumber : `Table ${table.tableNumber}`;
+                        return <button key={table.id} type="button" disabled={movingTable} onClick={() => { setTicketMenu("closed"); if (!selected) void movePartyToTable(table.id); }} className={`flex min-h-10 w-full items-center rounded-lg px-2.5 text-left text-[13px] font-semibold disabled:opacity-60 ${selected ? "bg-[#fff1f8] text-[#d90c7d]" : "text-ink hover:bg-canvas"}`}>{label}</button>;
+                      })}
+                      {!tables.length && <p className="px-2.5 py-2 text-[11px] text-muted">No tables yet</p>}
+                    </div>
+                  </> : ticketMenu === "guests" ? <>
+                    <button type="button" onClick={() => setTicketMenu("actions")} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas"><ChevronLeft size={15} /> Back</button>
+                    <div className="max-h-64 overflow-y-auto">
+                      {activeStays.map((stay) => {
+                        const selected = activeSplit ? activeSplit.roomStayId === stay.id : assignedRoomStayIds.includes(stay.id);
+                        return <button key={stay.id} type="button" disabled={savingRoomAssignments} onClick={() => {
+                          if (activeSplit) { void setSplitRoom(selected ? null : stay.id); return; }
+                          const next = selected ? assignedRoomStayIds.filter((id) => id !== stay.id) : [...assignedRoomStayIds, stay.id];
+                          void assignRoomsToTable(next);
+                        }} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas disabled:opacity-60">
+                          <span className={`grid h-4 w-4 shrink-0 place-items-center rounded border ${selected ? "border-[#ed168c] bg-[#ed168c] text-white" : "border-[#d9c3cf]"}`}>{selected && <Check size={11} />}</span>
+                          <span className="min-w-0 truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
+                        </button>;
+                      })}
+                      {!activeStays.length && <p className="px-2.5 py-2 text-[11px] text-muted">No one is checked in.</p>}
+                    </div>
+                  </> : <>
+                    <button type="button" onClick={() => setTicketMenu("actions")} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] font-semibold text-ink hover:bg-canvas"><ChevronLeft size={15} /> Back</button>
+                    <div className="px-2.5 pb-1.5 pt-1">
+                      <label className="block text-[12px] font-semibold text-ink">
+                        Note for kitchen <span className="font-normal text-muted">(optional)</span>
+                        <textarea
+                          value={orderKitchenNote}
+                          onChange={(event) => setOrderKitchenNote(event.target.value)}
+                          placeholder="Add a note for this ticket"
+                          rows={3}
+                          className="mt-1.5 w-full resize-y rounded-xl border border-[#eadfe6] bg-white px-3 py-2 text-xs font-normal text-ink outline-none transition placeholder:text-muted focus:border-[#ed168c]"
+                        />
+                      </label>
+                      <button type="button" onClick={() => setTicketMenu("closed")} className="mt-2 flex h-9 w-full items-center justify-center rounded-xl bg-[#ed168c] text-[13px] font-bold text-white">Confirm</button>
+                    </div>
+                  </>}
+                </div>
+              </>, document.body)}
             </div>
-            <span ref={ticketMarkRef} className={`${androidTicket ? "hidden" : "grid"} h-9 w-9 place-items-center rounded-xl bg-[#ffe4f2] text-[#f2168d]`}>
-              <Receipt size={16} strokeWidth={2.1} />
-            </span>
             {androidTicket && (
               <button type="button" onClick={() => setTicketOpen(false)} aria-label="Close ticket" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-canvas hover:text-ink">
                 <X size={18} />
@@ -975,34 +1173,9 @@ export function NewOrderPage() {
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
-            <label className="block text-[12px] font-semibold text-ink">
-              Table
-              <span className="relative mt-1.5 block">
-                <button ref={tableButtonRef} type="button" aria-haspopup="listbox" aria-expanded={tablePickerOpen} onClick={() => setTablePickerOpen((open) => !open)} className="flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-[#eadfe6] bg-white px-3 text-left text-[13px] font-medium text-ink outline-none focus:border-[#ed168c]">
-                  <span className="truncate">{selectedTable ? (/^table\b/i.test(selectedTable.tableNumber) ? selectedTable.tableNumber : `Table ${selectedTable.tableNumber}`) : "Choose a table"}</span>
-                  <ChevronDown size={16} className="shrink-0 text-[#9aa09a]" />
-                </button>
-              </span>
-            </label>
-            {tablePickerOpen && tableListBox && createPortal(<>
-              <div ref={tableListRef} role="listbox" aria-label="Choose a table" style={{ top: tableListBox.top, left: tableListBox.left, width: tableListBox.width }} className="fixed z-[90] max-h-64 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
-                {tables.map((table) => {
-                  const selected = table.id === selectedTable?.id;
-                  const label = /^table\b/i.test(table.tableNumber) ? table.tableNumber : `Table ${table.tableNumber}`;
-                  return <button key={table.id} type="button" role="option" aria-selected={selected} onClick={() => { setTablePickerOpen(false); if (!selected) navigate(`/tables/${table.id}`); }} className={`flex min-h-10 w-full items-center rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold ${selected ? "bg-[#fff1f8] text-[#d90c7d]" : "text-ink hover:bg-canvas"}`}>{label}</button>;
-                })}
-                {!tables.length && <p className="px-2.5 py-2 text-[11px] text-muted">No tables yet</p>}
-              </div>
-            </>, document.body)}
-            {selectedTable && <div className="relative z-20 mt-4 border-b border-[#f3e6ec] pb-4" ref={roomPickerRef}>
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[12px] font-medium text-[#3c4248]">At this table</p>
-                <button ref={roomButtonRef} type="button" aria-haspopup="listbox" aria-expanded={roomPickerOpen} disabled={savingRoomAssignments} onClick={() => setRoomPickerOpen((open) => !open)} className="inline-flex shrink-0 items-center gap-1 text-[12px] font-semibold text-[#f2168d] disabled:opacity-60">
-                  Who&apos;s at the table
-                  <ArrowRight size={13} strokeWidth={2.4} />
-                </button>
-              </div>
-              {roomPayers.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {(selectedTable || roomService) && <div className="relative z-20 border-b border-[#f3e6ec] pb-4">
+              <p className="text-[12px] font-medium text-[#3c4248]">{roomService ? "Room service" : "At this table"}</p>
+              {!roomService && roomPayers.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 {roomPayers.map((payer, index) => {
                   const tone = ["bg-[#efe6fb] text-[#6a5a86]", "bg-[#fde7d8] text-[#c56b45]"][index % 2];
                   return <span key={payer.id} className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${tone}`}>{payer.label}</span>;
@@ -1010,40 +1183,32 @@ export function NewOrderPage() {
               </div>}
               {activeTableOrders.length > 0 && <div className="mt-3 space-y-2.5">
                 {activeTableOrders.flatMap((order) => order.items.map((line, index) => {
+                  const removed = Boolean(line.removedAt);
+                  const fromRoom = Boolean(order.roomStayId) || roomPayers.length > 0;
                   const detail = [line.modifierSelections?.map((selection) => `${selection.groupName}: ${selection.options.map((option) => option.name).join(", ")}`).join(" · "), line.removeIngredients && `No ${line.removeIngredients}`, line.addExtras && line.addExtras, line.specialNotes].filter(Boolean).join(" · ");
                   const amount = lineAmount(line);
                   const rowKey = line.id ?? `${order.id}-${index}`;
-                  const canClear = Boolean(line.id && !line.id.startsWith("local-"));
-                  const row = <div className="flex items-start justify-between gap-3">
+                  const canClear = Boolean(line.id && !line.id.startsWith("local-") && !removed);
+                  const row = <div className={`flex items-start justify-between gap-3 px-1 py-2.5 ${removed ? "text-[#a398a0]" : ""}`}>
                     <div className="min-w-0">
                       <div className="flex items-start gap-1.5">
-                        <p className="min-w-0 truncate text-[13px] font-bold leading-5"><span className="mr-1 text-[#d80c7c]">{line.quantity}×</span>{line.menuItem.name}</p>
+                        <p className={`min-w-0 truncate text-[13px] font-bold leading-5 ${removed ? "line-through" : ""}`}><span className={`mr-1 ${removed ? "text-[#a398a0]" : "text-[#d80c7c]"}`}>{line.quantity}×</span>{line.menuItem.name}</p>
                         {canClear && <DishCommentButton flagged={Boolean(line.kitchenFlag)} label={line.menuItem.name} onClick={() => void toggleSentFlag(order.id, line.id, Boolean(line.kitchenFlag))} />}
                       </div>
-                      {detail && <p className="mt-0.5 text-[11px] leading-4 text-[#8d939c]">{detail}</p>}
+                      {detail && <p className={`mt-0.5 text-[11px] leading-4 text-[#8d939c] ${removed ? "line-through" : ""}`}>{detail}</p>}
+                      {removed && <p className="mt-0.5 text-[11px] leading-4 text-[#8d939c]">Removed · {line.removalReason || "No reason given"}</p>}
                     </div>
-                    <span className="shrink-0 text-[13px] font-semibold tabular-nums">{money(amount)}</span>
+                    <span className={`shrink-0 text-[13px] font-semibold tabular-nums ${removed ? "line-through" : ""}`}>{money(removed ? Number(line.subtotal ?? 0) : amount)}</span>
                   </div>;
-                  if (!canClear || !line.id) return <div key={rowKey}>{row}</div>;
+                  const reasonForm = fromRoom && line.id && removal?.itemId === line.id ? <form className="flex items-center gap-2 px-1 pb-2" onSubmit={(event) => { event.preventDefault(); const next = removal.reason.trim(); if (!next) return; void voidSentLine(order.id, line.id!, next); }}>
+                    <input value={removal.reason} onChange={(event) => setRemoval({ ...removal, reason: event.target.value })} placeholder="Why is this dish removed?" maxLength={240} className="h-8 min-w-0 flex-1 rounded-lg border border-[#eadfe6] bg-white px-2 text-[11px] outline-none focus:border-[#ed168c]" />
+                    <button type="submit" disabled={clearingId === line.id || !removal.reason.trim()} className="h-8 rounded-lg bg-[#2a2430] px-2.5 text-[11px] font-bold text-white disabled:opacity-40">Done</button>
+                  </form> : null;
+                  if (removed || !canClear || !line.id) return <div key={rowKey}>{row}</div>;
+                  if (fromRoom) return <SwipeClearRow key={rowKey} rowKey={rowKey} tone="edit" open={openSwipe === rowKey} busy={clearingId === line.id} label={line.menuItem.name} onOpen={setOpenSwipe} onClear={() => { setRemoval({ orderId: order.id, itemId: line.id!, reason: "" }); setOpenSwipe(null); }}>{row}{reasonForm}</SwipeClearRow>;
                   return <SwipeClearRow key={rowKey} rowKey={rowKey} open={openSwipe === rowKey} busy={clearingId === line.id} label={line.menuItem.name} onOpen={setOpenSwipe} onClear={() => void clearSentLine(order.id, line.id!)}>{row}</SwipeClearRow>;
                 }))}
               </div>}
-              {roomPickerOpen && roomListBox && createPortal(<>
-                <div className="fixed inset-0 z-[80] bg-black/30" onPointerDown={() => setRoomPickerOpen(false)} />
-                <div ref={roomListRef} role="listbox" aria-multiselectable="true" aria-label={t("Assign guest rooms to this table")} style={{ top: roomListBox.top, left: roomListBox.left, width: roomListBox.width }} className="fixed z-[90] max-h-56 overflow-y-auto rounded-xl border border-line bg-white p-1.5 shadow-float">
-                {activeStays.map((stay) => {
-                  const selected = assignedRoomStayIds.includes(stay.id);
-                  return <button key={stay.id} type="button" role="option" aria-selected={selected} disabled={savingRoomAssignments} onClick={() => {
-                    const next = selected ? assignedRoomStayIds.filter((id) => id !== stay.id) : [...assignedRoomStayIds, stay.id];
-                    void assignRoomsToTable(next);
-                  }} className="flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-ink hover:bg-canvas disabled:opacity-60">
-                    <span className={`grid h-4 w-4 shrink-0 place-items-center rounded border ${selected ? "border-[#ed168c] bg-[#ed168c] text-white" : "border-[#d9c3cf]"}`}>{selected && <Check size={11} />}</span>
-                    <span className="min-w-0 truncate">Room {stay.room?.roomNumber} · {stay.primaryGuestName}</span>
-                  </button>;
-                })}
-                {!activeStays.length && <p className="px-2.5 py-2 text-[10px] text-muted">{t("No active guest stays to assign.")}</p>}
-              </div>
-              </>, document.body)}
             </div>}
             {cartLines.length ? (
               <div className="mt-4 space-y-3">
@@ -1082,43 +1247,28 @@ export function NewOrderPage() {
                 <p className="mt-1 text-[11px] text-muted">Add a dish from the menu to get started.</p>
               </div>
             )}
-            <label className="mt-4 block text-[12px] font-semibold text-ink">
-              Note for kitchen <span className="font-normal text-muted">(optional)</span>
-              <textarea
-                value={orderKitchenNote}
-                onChange={(event) => setOrderKitchenNote(event.target.value)}
-                placeholder="Add a note for this ticket"
-                rows={2}
-                className="mt-1.5 w-full resize-y rounded-xl border border-[#eadfe6] bg-white px-3 py-2 text-xs font-normal text-ink outline-none transition placeholder:text-muted focus:border-[#ed168c]"
-              />
-            </label>
             </div>
           <div className="shrink-0 bg-white px-4 pb-[max(0.85rem,env(safe-area-inset-bottom))] pt-1">
-              <div className="flex items-center justify-between text-[13px] text-ink">
-                <span>Subtotal</span>
-                <span className="font-semibold">{money(total)}</span>
-              </div>
-              <div className="mt-1.5 flex items-center justify-between">
+              <div className="flex items-center justify-between">
                 <span className="text-[15px] font-bold">Total</span>
-                <span className="text-[15px] font-extrabold">{money(total)}</span>
+                <span className="text-[15px] font-extrabold">{money(grand)}</span>
               </div>
-              <button
-                disabled={placing || !selectedTable || !cartLines.length}
-                onClick={() => void placeOrder()}
-                className="focus-ring mt-3 flex h-11 w-full items-center justify-center rounded-xl border border-[#eadfe6] bg-white px-3 text-center text-[13px] font-bold text-ink transition hover:bg-[#fff8fb] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {placing ? "Sending…" : "Send"}
-              </button>
-              <button
-                disabled={placing || !selectedTable || !tableBill}
-                onClick={() => setSettleOpen(true)}
-                className="focus-ring mt-2 flex h-11 w-full items-center justify-center rounded-xl bg-[#ed168c] px-3 text-center text-[13px] font-bold text-white transition hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Settle table · {money(tableBill?.total ?? total)}
-              </button>
-              <p className="mt-2.5 text-center text-[10px] leading-4 text-[#8d939c]">
-                Settle it all on one bill, or split it so each person pays their part or adds it to their room.
-              </p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  disabled={placing || (roomService ? !stayId : !selectedTable) || !cartLines.length}
+                  onClick={() => void placeOrder()}
+                  className={roomService ? "focus-ring flex h-11 min-w-0 flex-1 items-center justify-center rounded-xl bg-[#ed168c] px-3 text-center text-[13px] font-bold text-white transition hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40" : "focus-ring flex h-11 min-w-0 flex-1 items-center justify-center rounded-xl border border-[#eadfe6] bg-white px-3 text-center text-[13px] font-bold text-ink transition hover:bg-[#fff8fb] disabled:cursor-not-allowed disabled:opacity-40"}
+                >
+                  {placing ? "Sending…" : "Send"}
+                </button>
+                {!roomService && <button
+                  disabled={placing || !selectedTable || !tableBill}
+                  onClick={() => setSettleOpen(true)}
+                  className="focus-ring flex h-11 min-w-0 flex-[1.4] items-center justify-center rounded-xl bg-[#ed168c] px-3 text-center text-[13px] font-bold text-white transition hover:bg-[#d80d7c] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Settle · {money(settleGrand)}
+                </button>}
+              </div>
             </div>
         </Panel>
     </div>
@@ -1146,10 +1296,11 @@ export function NewOrderPage() {
     </div>}
     {settleOpen && selectedTable && tableBill && <SettleTableDialog
       tableId={selectedTable.id}
-      tableNumber={selectedTable.tableNumber}
+      tableNumber={`${selectedTable.tableNumber}${splits.length > 1 ? activeSplit?.label ?? "" : ""}`}
+      splitId={activeSplit?.id}
       orders={tableBill.orders}
       stays={activeStays}
-      assignedStayIds={assignedRoomStayIds}
+      assignedStayIds={activeSplit ? (activeSplit.roomStayId ? [activeSplit.roomStayId] : []) : assignedRoomStayIds}
       cashierName={currentUser?.name ?? "Restaurant staff"}
       onClose={() => setSettleOpen(false)}
       onChanged={async () => {
