@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import { Panel, EmptyState } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
-import { listOutbox, retargetQueuedTable, SavedLocallyError } from "../lib/outbox";
+import { listOutbox, postOnce, retargetQueuedTable, SavedLocallyError } from "../lib/outbox";
 import { SettleTableDialog } from "../components/SettleTableDialog";
 import type { Category, DiningTable, MenuItem, ModifierGroup, Order, SendTo } from "../lib/types";
 import { money } from "../lib/types";
@@ -648,26 +648,30 @@ export function NewOrderPage() {
     launchPlus(origin ?? null);
   };
   const clearSentLine = async (orderId: string, itemId: string) => {
+    if (orderId.startsWith("local-") || itemId.startsWith("local-")) { reportError("This dish is still waiting to send. Remove it after it reaches the kitchen."); return; }
     setClearingId(itemId);
     try {
-      const { data } = await api.delete(`/orders/${orderId}/items/${itemId}`);
+      const data = await postOnce<Order>({ method: "delete", scope: "order.void", url: `/orders/${orderId}/items/${itemId}`, label: "Remove a dish", dedupeKey: `void:${itemId}` });
       useOrderStore.getState().upsertOrder(data);
       setOpenSwipe(null);
     } catch (cause) {
-      reportError(errorMessage(cause));
+      if (cause instanceof SavedLocallyError) notify(cause.message);
+      else reportError(errorMessage(cause));
     } finally {
       setClearingId(null);
     }
   };
   const voidSentLine = async (orderId: string, itemId: string, reason: string) => {
+    if (orderId.startsWith("local-") || itemId.startsWith("local-")) { reportError("This dish is still waiting to send. Remove it after it reaches the kitchen."); return; }
     setClearingId(itemId);
     try {
-      const { data } = await api.patch(`/orders/${orderId}/items/${itemId}/remove`, { reason });
+      const data = await postOnce<Order>({ method: "patch", scope: "order.void", url: `/orders/${orderId}/items/${itemId}/remove`, body: { reason }, label: "Void a dish", dedupeKey: `void:${itemId}` });
       useOrderStore.getState().upsertOrder(data);
       setRemoval(null);
       setOpenSwipe(null);
     } catch (cause) {
-      reportError(errorMessage(cause));
+      if (cause instanceof SavedLocallyError) notify(cause.message);
+      else reportError(errorMessage(cause));
     } finally {
       setClearingId(null);
     }
@@ -769,7 +773,7 @@ export function NewOrderPage() {
     setMovingTable(true);
     setError("");
     try {
-      const { data } = await api.post<{ tables: DiningTable[]; orders: Order[] }>(`/tables/${tableId}/move`, { tableId: nextId });
+      const data = await postOnce<{ tables: DiningTable[]; orders: Order[] }>({ scope: "table.move", url: `/tables/${tableId}/move`, body: { tableId: nextId }, label: "Move this table", dedupeKey: `move:${tableId}:${nextId}` });
       const nextTables = tables.map((table) => data.tables.find((updated) => updated.id === table.id) ?? table);
       setTables(nextTables);
       writeOrderDesk({ categories, tables: nextTables, stays: activeStays });
@@ -801,7 +805,34 @@ export function NewOrderPage() {
       ticketTableRef.current = nextKey;
       navigate(`/tables/${nextId}`);
     } catch (cause) {
-      reportError(errorMessage(cause));
+      if (!(cause instanceof SavedLocallyError)) { reportError(errorMessage(cause)); return; }
+      const destination = tables.find((table) => table.id === nextId);
+      for (const order of orders) {
+        if (!order.id.startsWith("local-") || order.tableId !== tableId) continue;
+        if (!["PENDING", "PREPARING", "READY", "SERVED"].includes(order.status)) continue;
+        upsertOrder({ ...order, tableId: nextId, table: order.table && destination ? { ...order.table, id: destination.id, tableNumber: destination.tableNumber, status: "OCCUPIED" } : order.table });
+      }
+      retargetQueuedTable(tableId, nextId);
+      const stored = readOpenTickets();
+      const nextKey = `${nextId}${ticketStorageKey.slice(tableId.length)}`;
+      for (const key of Object.keys(stored)) {
+        if (key !== tableId && !key.startsWith(`${tableId}:`)) continue;
+        const destKey = `${nextId}${key.slice(tableId.length)}`;
+        const sourceLines = key === ticketStorageKey ? cart : stored[key]?.lines ?? [];
+        const sourceNote = key === ticketStorageKey ? orderKitchenNote : stored[key]?.note ?? "";
+        const there = destKey === key ? undefined : stored[destKey];
+        const lines = key === ticketStorageKey ? [...(there?.lines ?? []), ...sourceLines] : sourceLines;
+        const note = key === ticketStorageKey ? [there?.note, sourceNote].map((entry) => entry?.trim()).filter(Boolean).join(" · ") : sourceNote;
+        delete stored[key];
+        if (lines.length || note.trim()) stored[destKey] = { lines: lines.map(slimTicketLine), note };
+      }
+      writeOpenTickets(stored);
+      const moved = readOpenTicket(nextKey);
+      setCart(moved.lines);
+      setOrderKitchenNote(moved.note);
+      ticketTableRef.current = nextKey;
+      navigate(`/tables/${nextId}`);
+      notify(cause.message);
     } finally {
       setMovingTable(false);
     }

@@ -31,6 +31,7 @@ import {
 import { playOrderAlert, useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { api, errorMessage } from "../lib/api";
+import { postOnce, SavedLocallyError } from "../lib/outbox";
 import { orderCode, orderLocation } from "../lib/types";
 
 import type {
@@ -585,8 +586,8 @@ export function KitchenPage({
 
     try {
       if (ticketId) {
-        const { data } = await api.patch(
-          `/orders/${targetStation.toLowerCase()}/tickets/${ticketId}/${action}`,
+        const data = await postOnce<Order>(
+          { method: "patch", scope: "kitchen.ticket", url: `/orders/${targetStation.toLowerCase()}/tickets/${ticketId}/${action}`, label: action === "ready" ? "Mark ticket ready" : "Start ticket", dedupeKey: `ticket:${ticketId}:${action}` },
         );
 
         upsertOrder(data);
@@ -606,7 +607,8 @@ export function KitchenPage({
           } ticket accepted.`,
       );
     } catch (e) {
-      setError(errorMessage(e));
+      if (e instanceof SavedLocallyError) notify(e.message);
+      else setError(errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -626,11 +628,13 @@ export function KitchenPage({
     setError("");
 
     try {
-      const { data } = await api.patch<Order>(
-        ticketId
-          ? `/orders/kitchen/tickets/${ticketId}/pickup`
-          : `/orders/kitchen/orders/${orderId}/pickup`,
-      );
+      const data = await postOnce<Order>({
+        method: "patch",
+        scope: "kitchen.served",
+        url: ticketId ? `/orders/kitchen/tickets/${ticketId}/pickup` : `/orders/kitchen/orders/${orderId}/pickup`,
+        label: "Mark served",
+        dedupeKey: `served:${ticketKey}`,
+      });
 
       upsertOrder(data);
       if (standalone) {
@@ -641,7 +645,8 @@ export function KitchenPage({
 
       notify("Picked up.");
     } catch (e) {
-      setError(errorMessage(e));
+      if (e instanceof SavedLocallyError) notify(e.message);
+      else setError(errorMessage(e));
     } finally {
       setBusy(null);
     }

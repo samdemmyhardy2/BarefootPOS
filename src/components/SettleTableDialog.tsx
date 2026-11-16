@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Split, X } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
+import { postOnce } from "../lib/outbox";
 import { money, type Order, type OrderLine, type TableBill, type TableBillLine } from "../lib/types";
 import { moneyRound, totalWithDishVat } from "../lib/vat";
 import { useUiStore } from "../stores/uiStore";
@@ -285,7 +286,7 @@ export function SettleTableDialog({
       if (!orderIds.length) { setError("These orders are still saving. Wait a moment, then settle again."); setBusy(false); return; }
       const seated = assignedStayIds.length === 1 ? stays.find((entry) => entry.id === assignedStayIds[0]) : undefined;
       const guest = stay ?? (method === "ROOM_CHECKOUT" ? undefined : seated);
-      const { data } = await api.post<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>(`/tables/${tableId}/settle-party`, { orderIds, paymentMethod: method, amount: charge(units), ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) });
+      const data = await postOnce<{ tableNumber: string; totalAmount: number; checkedOutAt: string; tableCleared: boolean; signedByName?: string | null }>({ scope: "table.settle", url: `/tables/${tableId}/settle-party`, label: `Settle ${money(charge(units))}`, dedupeKey: `settle:${tableId}:${orderIds.slice().sort().join(",")}`, body: { orderIds, paymentMethod: method, amount: charge(units), ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) } });
       await onChanged();
       onReceipt(receiptFor(units, wholeTotal, method, stay, data.checkedOutAt, signature && { name: data.signedByName ?? signature.name, data: signature.data }));
       onClose();
@@ -313,7 +314,7 @@ export function SettleTableDialog({
     try {
       const seated = assignedStayIds.length === 1 ? stays.find((entry) => entry.id === assignedStayIds[0]) : undefined;
       const guest = stay ?? (method === "ROOM_CHECKOUT" ? undefined : seated);
-      const { data } = await api.post<{ bill: TableBill; tableNumber: string; tableCleared: boolean; checkedOutAt: string; room: { roomNumber: string; guestName: string; guestNames: string[] } | null }>(`/tables/${tableId}/bills/${bill.id}/settle`, { paymentMethod: method, ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) });
+      const data = await postOnce<{ bill: TableBill; tableNumber: string; tableCleared: boolean; checkedOutAt: string; room: { roomNumber: string; guestName: string; guestNames: string[] } | null }>({ scope: "table.bill", url: `/tables/${tableId}/bills/${bill.id}/settle`, label: `Settle bill ${bill.number}`, dedupeKey: `bill:${bill.id}`, body: { paymentMethod: method, ...(guest ? { roomStayId: guest.id } : {}), ...(method === "ROOM_CHECKOUT" && signature ? { signedByName: signature.name, signatureData: signature.data } : {}) } });
       await onChanged();
       onReceipt(receiptFor(bill.lines, bill.amount, method, stay, data.checkedOutAt, signature && { name: data.bill.signedByName ?? signature.name, data: signature.data }, bill.number, rateOf(bill)));
       if (data.tableCleared) onClose();

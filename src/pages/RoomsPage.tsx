@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { BedDouble, Minus, Plus, ReceiptText, Trash2, Users, X, Pencil, Search, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { Field, Modal, Panel, SelectField } from "../components/ui";
 import { api, errorMessage } from "../lib/api";
+import { postOnce, SavedLocallyError } from "../lib/outbox";
 import { money, orderCode, type Order, type Room, type RoomCharge, type RoomChargeKind, type RoomPaymentMethod, type RoomStay } from "../lib/types";
 import { moneyRound, roundUpBaht } from "../lib/vat";
 import { useAuthStore } from "../stores/authStore";
@@ -490,7 +491,12 @@ export function RoomsPage() {
     }
   };
   const removeRoomDish = async (orderId: string, itemId: string, reason: string) => {
-    await api.patch(`/orders/${orderId}/items/${itemId}/remove`, { reason });
+    try {
+      await postOnce({ method: "patch", scope: "order.void", url: `/orders/${orderId}/items/${itemId}/remove`, body: { reason }, label: "Void a dish", dedupeKey: `void:${itemId}` });
+    } catch (cause) {
+      if (cause instanceof SavedLocallyError) { notify(cause.message); return; }
+      throw cause;
+    }
     const stayId = selectedStayId ?? timeline?.id;
     if (!stayId) return;
     const { data } = await api.get<RoomStay>(`/rooms/stays/${stayId}/timeline`);

@@ -317,7 +317,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     get().upsertOrder(data);
   },
   cookAction: async (id, action) => {
-    const { data } = await api.patch<Order>(`/orders/${id}/${action}`);
+    const data = await postOnce<Order>({ method: "patch", scope: "kitchen.status", url: `/orders/${id}/${action}`, label: `Mark order ${action}`, dedupeKey: `kitchen:${id}:${action}` });
     get().upsertOrder(data);
   },
   deleteOrder: async (id) => {

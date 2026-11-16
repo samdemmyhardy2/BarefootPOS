@@ -16,6 +16,7 @@ export class SavedLocallyError extends Error {
 export type OutboxItem = {
   id: string;
   scope: string;
+  method?: "post" | "patch" | "delete";
   url: string;
   body: Record<string, unknown>;
   label: string;
@@ -79,12 +80,18 @@ function offlineNow() {
 }
 
 async function send(item: OutboxItem) {
-  const { data } = await api.post(item.url, { ...item.body, clientRequestId: item.id });
+  const payload = { ...item.body, clientRequestId: item.id };
+  const method = item.method ?? "post";
+  const { data } = method === "delete"
+    ? await api.delete(item.url)
+    : method === "patch"
+      ? await api.patch(item.url, payload)
+      : await api.post(item.url, payload);
   write(read().filter((entry) => entry.id !== item.id));
   return data;
 }
 
-export async function postOnce<T>(entry: { scope: string; url: string; body: Record<string, unknown>; label: string; dedupeKey?: string }): Promise<T> {
+export async function postOnce<T>(entry: { scope: string; method?: OutboxItem["method"]; url: string; body?: Record<string, unknown>; label: string; dedupeKey?: string }): Promise<T> {
   if (entry.dedupeKey) {
     const existing = read().find((item) => item.dedupeKey === entry.dedupeKey);
     if (existing?.status === "pending") throw new SavedLocallyError(existing.id);
@@ -93,8 +100,9 @@ export async function postOnce<T>(entry: { scope: string; url: string; body: Rec
   const item: OutboxItem = {
     id: localUuid(),
     scope: entry.scope,
+    method: entry.method,
     url: entry.url,
-    body: entry.body,
+    body: entry.body ?? {},
     label: entry.label,
     createdAt: new Date().toISOString(),
     status: "pending",
@@ -107,9 +115,7 @@ export async function postOnce<T>(entry: { scope: string; url: string; body: Rec
   } catch (error) {
     if (isNetwork(error)) throw new SavedLocallyError(item.id);
     const status = axios.isAxiosError(error) ? error.response?.status ?? 0 : 0;
-    if (status >= 400 && status < 500) {
-      remember({ ...item, status: "blocked", lastError: errorMessage(error) });
-    }
+    if (status >= 400 && status < 500) write(read().filter((entry) => entry.id !== item.id));
     throw error;
   }
 }
@@ -131,6 +137,12 @@ export async function flushOutbox() {
   } finally {
     flushing = false;
   }
+}
+
+export function retryOutbox(id: string) {
+  const next = read().map((item) => item.id === id && item.status === "blocked" ? { ...item, status: "pending" as const, lastError: undefined } : item);
+  write(next);
+  void flushOutbox();
 }
 
 export function watchOutbox(onChange: () => void) {

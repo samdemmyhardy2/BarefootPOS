@@ -5,6 +5,7 @@ import { useOrderStore } from "../stores/orderStore";
 import { useUiStore } from "../stores/uiStore";
 import { orderCode, orderLocation } from "../lib/types";
 import { errorMessage } from "../lib/api";
+import { SavedLocallyError } from "../lib/outbox";
 import { money } from "../lib/types";
 import { formatOrderDuration } from "../lib/orderTiming";
 
@@ -33,7 +34,8 @@ export function ReadyOrdersPage() {
       await cookAction(id, "served");
       notify("Pickup acknowledged. Service team is on it.");
     } catch (e) {
-      setError(errorMessage(e));
+      if (e instanceof SavedLocallyError) notify(e.message);
+      else setError(errorMessage(e));
     } finally {
       setBusy(null);
     }
