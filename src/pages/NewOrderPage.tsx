@@ -59,6 +59,7 @@ type CartLine = {
   prepStation: SendTo;
   payerId: string;
   kitchenFlag?: boolean;
+  unitPrice?: number;
 };
 function DishCommentButton({ flagged, label, onClick }: { flagged: boolean; label: string; onClick: () => void }) {
   return <button type="button" aria-pressed={flagged} aria-label={flagged ? `Clear the kitchen mark on ${label}` : `Mark ${label} for the kitchen`} onClick={(event) => { event.stopPropagation(); onClick(); }} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full ${flagged ? "bg-[#ed168c] text-white" : "text-[#c9a3b6] hover:bg-[#fff1f8] hover:text-[#ed168c]"}`}><MessageCircle size={14} /></button>;
@@ -188,11 +189,17 @@ function sortCategories(section: MenuSection, list: Category[]) {
   });
 }
 type ActiveRoomStay = { id: string; primaryGuestName: string; cashOnly?: boolean; occupants: { id: string; name: string }[]; room: { roomNumber: string | number }; expectedCheckoutAt?: string | null };
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+function bangkokDayStart(now = Date.now()) {
+  const shifted = new Date(now + BANGKOK_OFFSET_MS);
+  return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - BANGKOK_OFFSET_MS;
+}
 function checkedInNow(stays: ActiveRoomStay[], now = Date.now()) {
+  const start = bangkokDayStart(now);
   return stays.filter((stay) => {
     if (!stay.expectedCheckoutAt) return true;
     const end = new Date(stay.expectedCheckoutAt).getTime();
-    return Number.isNaN(end) || end > now;
+    return Number.isNaN(end) || end >= start;
   });
 }
 const ORDER_DESK_KEY = "restaurant-order-desk";
@@ -337,6 +344,11 @@ export function NewOrderPage() {
   const [draftSelections, setDraftSelections] = useState<Record<string, string[]>>({});
   const [configStep, setConfigStep] = useState(0);
   const [modifierError, setModifierError] = useState("");
+  const [manualAsk, setManualAsk] = useState<{ item: MenuItem; origin: DOMRect | null } | null>(null);
+  const [manualAmount, setManualAmount] = useState("");
+  const [manualError, setManualError] = useState("");
+  const [manualUnitPrice, setManualUnitPrice] = useState<number | null>(null);
+  const [amountTexts, setAmountTexts] = useState<Record<string, string>>({});
   const [placing, setPlacing] = useState(false);
   const [movingTable, setMovingTable] = useState(false);
   const [addingSplit, setAddingSplit] = useState(false);
@@ -471,7 +483,7 @@ export function NewOrderPage() {
   };
   const wholeCount = cartCount + activeTableOrders.reduce((count, order) => count + order.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0), 0);
   const androidTicket = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
-  const getLineUnitPrice = (item: MenuItem, selections: Record<string, string[]>) => Number(item.price) + openModifierGroups(item, selections).filter((group) => group.appearance !== "TEXT").reduce((sum, group) => {
+  const getLineUnitPrice = (item: MenuItem, selections: Record<string, string[]>, entered?: number | null) => (item.manualPrice ? Number(entered ?? 0) : Number(item.price)) + openModifierGroups(item, selections).filter((group) => group.appearance !== "TEXT").reduce((sum, group) => {
     const selected = selections[group.id] ?? [];
     const selectedOptions = selected.flatMap((id) => {
       const option = group.options.find((candidate) => candidate.id === id);
@@ -481,7 +493,7 @@ export function NewOrderPage() {
   }, 0);
   const sentTotal = activeTableOrders.reduce((sum, order) => sum + order.items.reduce((lineSum, line) => lineSum + lineAmount(line), 0), 0);
   const sentAmounts = activeTableOrders.flatMap((order) => order.items.filter((line) => !line.removedAt).map((line) => lineAmount(line)));
-  const cartAmounts = cartLines.map((line) => getLineUnitPrice(line.item, line.modifierSelections) * line.quantity);
+  const cartAmounts = cartLines.map((line) => getLineUnitPrice(line.item, line.modifierSelections, line.unitPrice) * line.quantity);
   const grand = totalWithDishVat([...sentAmounts, ...cartAmounts], vatPercent);
   const tableBill = activeTableOrders.length ? {
     id: "table",
@@ -500,7 +512,7 @@ export function NewOrderPage() {
     const id = localId();
     setPlusJumps((current) => [...current, { id, fromX: origin.left + origin.width / 2, fromY: origin.top + origin.height / 2, toX: ticket.left + ticket.width / 2, toY: ticket.top + ticket.height / 2, label: `+${amount}` }]);
   };
-  const addToCart = (item: MenuItem, modifierSelections: Record<string, string[]> = {}, quantity = 1, specialNotes = "") => {
+  const addToCart = (item: MenuItem, modifierSelections: Record<string, string[]> = {}, quantity = 1, specialNotes = "", unitPrice?: number) => {
     const id = localId();
     setCart((current) => [...current, {
       id,
@@ -510,9 +522,25 @@ export function NewOrderPage() {
       modifierSelections,
       prepStation: item.prepStation ?? "KITCHEN",
       payerId: "",
+      ...(item.manualPrice ? { unitPrice: unitPrice ?? 0 } : {}),
     }]);
   };
-  const add = (item: MenuItem, origin?: DOMRect | null) => {
+  const askManualAmount = (item: MenuItem, origin?: DOMRect | null) => {
+    setManualAmount("");
+    setManualError("");
+    setManualAsk({ item, origin: origin ?? null });
+  };
+  const saveManualAmount = () => {
+    if (!manualAsk) return;
+    const amount = Math.round(Number(manualAmount) * 100) / 100;
+    if (!Number.isFinite(amount) || amount < 0 || manualAmount.trim() === "") { setManualError("Enter an amount."); return; }
+    const { item, origin } = manualAsk;
+    setManualAsk(null);
+    setManualUnitPrice(amount);
+    if (!itemModifierGroups(item).length) { addToCart(item, {}, 1, "", amount); launchPlus(origin); setManualUnitPrice(null); return; }
+    beginConfigure(item, origin);
+  };
+  const beginConfigure = (item: MenuItem, origin?: DOMRect | null) => {
     setEditingCartLineId(null);
     const groups = itemModifierGroups(item);
     if (!groups.length) { addToCart(item); launchPlus(origin ?? null); return; }
@@ -529,6 +557,11 @@ export function NewOrderPage() {
     setConfigStep(0);
     setConfiguringItem(item);
   };
+  const add = (item: MenuItem, origin?: DOMRect | null) => {
+    if (item.manualPrice) { askManualAmount(item, origin); return; }
+    setManualUnitPrice(null);
+    beginConfigure(item, origin);
+  };
   const editCartLine = (line: CartLine) => {
     setEditingCartLineId(line.id);
     setDraftSelections(line.modifierSelections);
@@ -536,6 +569,7 @@ export function NewOrderPage() {
     setDraftKitchenNote(line.specialNotes);
     setModifierError("");
     setConfigStep(0);
+    setManualUnitPrice(line.item.manualPrice ? Number(line.unitPrice ?? 0) : null);
     setConfiguringItem(line.item);
   };
   function openModifierGroups(item: MenuItem, selections: Record<string, string[]>) {
@@ -584,22 +618,24 @@ export function NewOrderPage() {
       return group.appearance !== "TEXT" && group.appearance !== "TOGGLE" && (count < group.minPicks || count > pickLimit(group) || (group.required && count === 0));
     });
     if (invalid) { const limit = pickLimit(invalid); setModifierError(`${invalid.name}: choose ${invalid.minPicks === limit ? limit : `${invalid.minPicks}–${limit}`} option${limit === 1 ? "" : "s"}.`); return; }
+    const entered = configuringItem.manualPrice ? Number(manualUnitPrice ?? 0) : undefined;
     if (editingCartLineId) {
-      setCart((current) => current.map((line) => line.id === editingCartLineId ? { ...line, quantity: draftQuantity, specialNotes: draftKitchenNote.trim(), modifierSelections: draftSelections } : line));
+      setCart((current) => current.map((line) => line.id === editingCartLineId ? { ...line, quantity: draftQuantity, specialNotes: draftKitchenNote.trim(), modifierSelections: draftSelections, ...(line.item.manualPrice ? { unitPrice: entered ?? 0 } : {}) } : line));
       setEditingCartLineId(null);
     } else {
-      addToCart(configuringItem, draftSelections, draftQuantity, draftKitchenNote.trim());
+      addToCart(configuringItem, draftSelections, draftQuantity, draftKitchenNote.trim(), entered);
       launchPlus(pendingAddOrigin.current, draftQuantity);
       pendingAddOrigin.current = null;
     }
+    setManualUnitPrice(null);
     setConfiguringItem(null);
   };
-  const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); pendingAddOrigin.current = null; };
+  const closeItemEditor = () => { setConfiguringItem(null); setEditingCartLineId(null); setManualUnitPrice(null); pendingAddOrigin.current = null; };
   const removeCartLine = (lineId: string) => setCart((current) => current.filter((line) => line.id !== lineId));
   const updateCartQuantity = (lineId: string, quantity: number) => setCart((current) => current.map((line) => line.id === lineId ? { ...line, quantity: Math.max(1, Math.min(99, quantity)) } : line));
   const bumpMenuItem = (item: MenuItem, delta: 1 | -1, origin?: DOMRect | null) => {
     const lines = cart.filter((line) => line.item.id === item.id);
-    if (delta > 0 && itemModifierGroups(item).length) { add(item, origin); return; }
+    if (delta > 0 && (item.manualPrice || itemModifierGroups(item).length)) { add(item, origin); return; }
     if (delta > 0 && !lines.length) { add(item, origin); return; }
     const target = lines[lines.length - 1];
     if (!target) return;
@@ -666,11 +702,12 @@ export function NewOrderPage() {
         writeOrderDesk({ categories: freshCategories, tables, stays: activeStays });
         await createOrder(
           roomService ? { roomStayId: stayId, paymentMethod: "ROOM_CHECKOUT", type: "ROOM_SERVICE" } : { tableId, ...(activeSplit ? { tableSplitId: activeSplit.id } : {}) },
-          lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation, kitchenFlag }) => {
+          lines.map(({ item, quantity, specialNotes, modifierSelections, prepStation, kitchenFlag, unitPrice }) => {
             const selections = remapModifierSelections(freshCategories, item, modifierSelections);
             return {
             menuItemId: item.id,
             quantity,
+            ...(item.manualPrice ? { unitPrice: Number(unitPrice ?? 0) } : {}),
             prepStation: item.prepStation ?? prepStation,
             kitchenFlag: Boolean(kitchenFlag),
             modifierSelections: openModifierGroups(liveMenuItem(freshCategories, item.id) ?? item, selections).filter((group) => group.appearance !== "TEXT").map((group) => ({ groupId: group.id, optionIds: selections[group.id] ?? [] })),
@@ -684,7 +721,7 @@ export function NewOrderPage() {
         const now = new Date().toISOString();
         const note = orderKitchenNote.trim();
         const items = lines.map((line) => {
-          const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
+          const unitPrice = getLineUnitPrice(line.item, line.modifierSelections, line.unitPrice);
           return { id: `local-line-${line.id}`, menuItemId: line.item.id, quantity: line.quantity, unitPrice, subtotal: unitPrice * line.quantity, specialNotes: [note && `Order note: ${note}`, line.specialNotes.trim()].filter(Boolean).join(" · ") || null, modifierSelections: [], menuItem: slimTicketLine(line).item };
         });
         useOrderStore.getState().upsertOrder({
@@ -812,6 +849,7 @@ export function NewOrderPage() {
     try {
       const { data } = await api.patch<{ table: DiningTable }>(`/tables/${tableId}/splits/${activeSplit.id}`, { roomStayId });
       rememberSplit(data.table, []);
+      await fetchOrders().catch(() => undefined);
     } catch (cause) {
       reportError(errorMessage(cause));
     } finally {
@@ -827,6 +865,7 @@ export function NewOrderPage() {
         roomStayIds: nextRoomStayIds,
       });
       setTables((current) => current.map((table) => table.id === data.id ? data : table));
+      await fetchOrders().catch(() => undefined);
       notify(t(nextRoomStayIds.length ? "Guest rooms assigned to this table." : "Guest room assignments cleared."));
     } catch (cause) {
       reportError(errorMessage(cause));
@@ -845,7 +884,7 @@ export function NewOrderPage() {
     if (configStep >= configureGroups.length - 1) confirmConfiguredItem();
     else setConfigStep((step) => step + 1);
   };
-  const configuredItemPrice = configuringItem ? getLineUnitPrice(configuringItem, draftSelections) : 0;
+  const configuredItemPrice = configuringItem ? getLineUnitPrice(configuringItem, draftSelections, configuringItem.manualPrice ? manualUnitPrice : null) : 0;
   function renderModifierGroup(group: ModifierGroup, depth = 0, parentOption?: { name: string; nameMy?: string; nameTh?: string }): JSX.Element {
     const selected = draftSelections[group.id] ?? [];
     const groupOptions = group.options.filter((option) => option.active);
@@ -1017,7 +1056,7 @@ export function NewOrderPage() {
                         {item.name}
                       </h3>
                       <span className="shrink-0 text-[14px] font-bold">
-                        {money(item.price)}
+                        {item.manualPrice ? "Manual" : money(item.price)}
                       </span>
                     </div>
                     <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-muted">
@@ -1213,7 +1252,7 @@ export function NewOrderPage() {
             {cartLines.length ? (
               <div className="mt-4 space-y-3">
                 {cartLines.map((line) => {
-                  const unitPrice = getLineUnitPrice(line.item, line.modifierSelections);
+                  const unitPrice = getLineUnitPrice(line.item, line.modifierSelections, line.unitPrice);
                   const modifierLines = selectedModifierLines(line.item, line.modifierSelections);
                   const detail = [modifierLines.map((modifier) => `${modifier.name}${modifier.count > 1 ? ` ×${modifier.count}` : ""}`).join(", "), line.specialNotes].filter(Boolean).join(" · ");
                   const configured = itemModifierGroups(line.item).length > 0;
@@ -1224,7 +1263,7 @@ export function NewOrderPage() {
                           <p className="min-w-0 truncate text-[13px] font-bold leading-5">{line.item.name}</p>
                           <DishCommentButton flagged={Boolean(line.kitchenFlag)} label={line.item.name} onClick={() => setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, kitchenFlag: !entry.kitchenFlag } : entry))} />
                         </div>
-                        <p className="mt-0.5 text-[13px] font-semibold leading-5">{configured && line.quantity > 1 ? `${line.quantity} × ${money(unitPrice)}` : money(unitPrice * line.quantity)}</p>
+                        {line.item.manualPrice ? <label className="mt-1 flex h-8 max-w-[168px] items-center rounded-lg border border-[#f3d5e4] bg-white px-2"><input inputMode="decimal" aria-label={`Amount for ${line.item.name}`} value={amountTexts[line.id] ?? String(line.unitPrice ?? "")} onChange={(event) => { const next = event.target.value; if (next !== "" && !/^\d*\.?\d{0,2}$/.test(next)) return; setAmountTexts((current) => ({ ...current, [line.id]: next })); const amount = Number(next); if (next === "" || next === "." || !Number.isFinite(amount) || amount < 0) return; setCart((current) => current.map((entry) => entry.id === line.id ? { ...entry, unitPrice: amount } : entry)); }} className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none" /><span className="text-[11px] text-muted">THB</span></label> : <p className="mt-0.5 text-[13px] font-semibold leading-5">{configured && line.quantity > 1 ? `${line.quantity} × ${money(unitPrice)}` : money(unitPrice * line.quantity)}</p>}
                       </div>
                       {configured ? (
                         <button type="button" onClick={() => removeCartLine(line.id)} className="mt-0.5 shrink-0 text-[#b7b3b8] hover:text-rose-600" aria-label={`Remove ${line.item.name}`}><Trash2 size={15} /></button>
@@ -1272,11 +1311,20 @@ export function NewOrderPage() {
             </div>
         </Panel>
     </div>
+    {manualAsk && <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#291923]/35 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setManualAsk(null); }}>
+      <form role="dialog" aria-modal="true" aria-label={`Amount for ${manualAsk.item.name}`} onSubmit={(event) => { event.preventDefault(); saveManualAmount(); }} className="w-full max-w-sm rounded-[24px] bg-white p-5 shadow-float">
+        <h2 className="text-lg font-bold text-ink">{manualAsk.item.name}</h2>
+        <p className="mt-1 text-xs text-muted">Enter the amount for this dish.</p>
+        <label className="mt-4 block"><span className="mb-1.5 block text-sm font-semibold text-ink">Amount</span><span className="flex h-11 items-center rounded-xl border border-[#f3d5e4] bg-white px-3"><input autoFocus required type="number" min="0" step="0.01" inputMode="decimal" value={manualAmount} onChange={(event) => setManualAmount(event.target.value)} placeholder="0" className="min-w-0 flex-1 bg-transparent text-sm outline-none" /><span className="text-sm text-muted">THB</span></span></label>
+        {manualError && <p role="alert" className="mt-2 text-xs text-rose-700">{manualError}</p>}
+        <div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setManualAsk(null)} className="h-10 rounded-xl border border-[#f3d5e4] px-4 text-sm font-semibold">Cancel</button><button type="submit" className="h-10 rounded-xl bg-[#ed168c] px-4 text-sm font-bold text-white">Save</button></div>
+      </form>
+    </div>}
     {configuringItem && <div className="fixed inset-0 z-[9999] flex justify-end bg-black/40" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemEditor(); }}>
       <aside role="dialog" aria-modal="true" aria-label={`Customize ${configuringItem.name}`} className="flex h-dvh max-h-dvh w-full min-h-0 max-w-full flex-col border-l border-line bg-white shadow-float sm:max-w-[700px]">
         <header className="flex shrink-0 items-center gap-4 border-b border-line px-5 py-4 sm:px-6">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#fff0f7] text-[#ed168c]"><Utensils size={19} /></span>
-          <div className="min-w-0 flex-1"><h2 className="truncate font-display text-base font-bold">{configuringItem.name}</h2><p className="mt-0.5 line-clamp-1 text-xs text-muted">{configuringItem.description || "Choose options for this dish."} From {money(configuringItem.price)}.</p></div>
+          <div className="min-w-0 flex-1"><h2 className="truncate font-display text-base font-bold">{configuringItem.name}</h2><p className="mt-0.5 line-clamp-1 text-xs text-muted">{configuringItem.description || "Choose options for this dish."} {configuringItem.manualPrice ? "Amount entered." : `From ${money(configuringItem.price)}.`}</p>{configuringItem.manualPrice && <label className="mt-2 flex h-9 max-w-[180px] items-center rounded-lg border border-[#f3d5e4] px-2"><input inputMode="decimal" aria-label={`Amount for ${configuringItem.name}`} value={manualUnitPrice ?? ""} onChange={(event) => { const next = event.target.value; if (next !== "" && !/^\d*\.?\d{0,2}$/.test(next)) return; setManualUnitPrice(next === "" || next === "." ? 0 : Number(next)); }} className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none" /><span className="text-[11px] text-muted">THB</span></label>}</div>
           <button type="button" onClick={closeItemEditor} aria-label="Close item options" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-canvas hover:text-ink"><X size={18} /></button>
         </header>
       {modifierPickerMode === "step" && configureGroups.length > 0 && <div className="shrink-0 border-b border-line px-5 py-3 sm:px-6"><div className="flex items-center justify-between text-xs font-semibold text-muted"><span>Step {Math.min(configStep + 1, configureGroups.length)} of {configureGroups.length}</span><span>{selectedModifierLines(configuringItem, draftSelections).length ? `${selectedModifierLines(configuringItem, draftSelections).length} choice${selectedModifierLines(configuringItem, draftSelections).length === 1 ? "" : "s"} selected` : "Your choices will show here"}</span></div><div className="mt-2 flex gap-1">{configureGroups.map((group, index) => <span key={group.id} className={`h-1 flex-1 rounded-full ${index <= configStep ? "bg-[#ed168c]" : "bg-[#f2e3eb]"}`} />)}</div></div>}

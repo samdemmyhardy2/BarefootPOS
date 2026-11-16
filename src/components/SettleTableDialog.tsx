@@ -161,6 +161,7 @@ export function SettleTableDialog({
     return () => { cancel = true; };
   }, [tableId, splitId]);
   useEffect(() => { setVatPercent(storedRate); }, [storedRate]);
+  useEffect(() => { if (assignedStayIds.length === 1) setWholeStayId((current) => current || assignedStayIds[0]); }, [assignedStayIds]);
   useEffect(() => {
     let cancel = false;
     void api.get<{ vatPercent?: number }>("/restaurant-settings").then(({ data }) => { if (!cancel) setVatPercent(Number(data.vatPercent) || 0); }).catch(() => undefined);
@@ -267,11 +268,11 @@ export function SettleTableDialog({
     };
   };
 
-  const settleWhole = async (signature?: { name: string; data: string }) => {
+  const settleWhole = async (signature?: { name: string; data: string }, unsigned = false) => {
     const method: PayMethod = wholeMode === "ROOM_CHECKOUT" ? "ROOM_CHECKOUT" : wholeMethod;
     const stay = stays.find((entry) => entry.id === wholeStayId);
     if (method === "ROOM_CHECKOUT" && !stay) { setError("Choose a room for this bill."); return; }
-    if (method === "ROOM_CHECKOUT" && !signature) {
+    if (method === "ROOM_CHECKOUT" && !signature && !unsigned) {
       setSignName(stay?.primaryGuestName ?? "");
       setSignData("");
       setSignFor({ billId: null, stayId: stay?.id ?? "", amount: charge(units), lines: units });
@@ -295,13 +296,13 @@ export function SettleTableDialog({
     }
   };
 
-  const settleBill = async (bill: TableBill, signature?: { name: string; data: string }) => {
+  const settleBill = async (bill: TableBill, signature?: { name: string; data: string }, unsigned = false) => {
     const mode = billMode[bill.id] ?? "NOW";
     const method: PayMethod = mode === "ROOM_CHECKOUT" ? "ROOM_CHECKOUT" : (billMethod[bill.id] ?? "CASH");
     const stay = stays.find((entry) => entry.id === billStay[bill.id]);
     if (method === "ROOM_CHECKOUT" && !stay) { setError("Choose a room for this bill."); return; }
     if (method === "ROOM_CHECKOUT" && stay?.cashOnly) { setError("This stay is cash only. Take cash, card, or PromptPay."); return; }
-    if (method === "ROOM_CHECKOUT" && !signature) {
+    if (method === "ROOM_CHECKOUT" && !signature && !unsigned) {
       setSignName(stay?.primaryGuestName ?? "");
       setSignData("");
       setSignFor({ billId: bill.id, stayId: stay?.id ?? "", amount: charge(bill.lines), lines: bill.lines });
@@ -346,7 +347,7 @@ export function SettleTableDialog({
     return visible;
   };
 
-  const payCard = (key: string, amount: number, onTake: () => void, mode: "ROOM_CHECKOUT" | "NOW", setMode: (mode: "ROOM_CHECKOUT" | "NOW") => void, method: Exclude<PayMethod, "ROOM_CHECKOUT">, setMethod: (method: Exclude<PayMethod, "ROOM_CHECKOUT">) => void, stayId: string, setStayId: (id: string) => void) => {
+  const payCard = (key: string, amount: number, onTake: () => void, onUnsigned: () => void, mode: "ROOM_CHECKOUT" | "NOW", setMode: (mode: "ROOM_CHECKOUT" | "NOW") => void, method: Exclude<PayMethod, "ROOM_CHECKOUT">, setMethod: (method: Exclude<PayMethod, "ROOM_CHECKOUT">) => void, stayId: string, setStayId: (id: string) => void, hideUnsigned = false) => {
     const stay = stays.find((entry) => entry.id === stayId);
     const query = roomQuery[key] ?? "";
     const choices = roomChoices(query, stayId);
@@ -381,6 +382,7 @@ export function SettleTableDialog({
       <button type="button" disabled={busy || (mode === "ROOM_CHECKOUT" && (!stay || stay.cashOnly))} onClick={() => { if (mode !== "ROOM_CHECKOUT" && method === "CASH") { setTendered(""); setCashFor({ amount, confirm: onTake }); return; } onTake(); }} className="mt-3 h-11 w-full rounded-xl bg-[#f2168d] text-[13px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">
         {mode !== "ROOM_CHECKOUT" && method === "CASH" ? "Enter cash received" : payPhrase(mode === "ROOM_CHECKOUT" ? "ROOM_CHECKOUT" : method, amount, stay?.room.roomNumber)}
       </button>
+      {mode === "ROOM_CHECKOUT" && !hideUnsigned && <button type="button" disabled={busy || !stay || stay.cashOnly} onClick={onUnsigned} className="mt-2 h-11 w-full rounded-xl border border-[#f2168d] text-[13px] font-bold text-[#f2168d] disabled:cursor-not-allowed disabled:opacity-40">Unsigned</button>}
     </>;
   };
 
@@ -449,7 +451,7 @@ export function SettleTableDialog({
             <div className="mt-3 space-y-1 border-b border-[#f3e7ed] pb-3">
               {groupUnits(units).map((line) => <div key={`${line.name}-${line.detail ?? ""}`} className="flex justify-between gap-2 text-[12px]"><span className="min-w-0">{line.quantity > 1 ? `${line.quantity} × ` : ""}{line.name}</span><span className="shrink-0 text-[#5c6370]">{money(line.amount)}</span></div>)}
             </div>
-            <div className="pt-3">{payCard("whole", charge(units), () => void settleWhole(), wholeMode, setWholeMode, wholeMethod, setWholeMethod, wholeStayId, setWholeStayId)}</div>
+            <div className="pt-3">{payCard("whole", charge(units), () => void settleWhole(), () => void settleWhole(undefined, true), wholeMode, setWholeMode, wholeMethod, setWholeMethod, wholeStayId, setWholeStayId, assignedStayIds.length === 1 && wholeStayId === assignedStayIds[0])}</div>
           </article>
           <button type="button" onClick={() => openSplit("whole")} className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-[#f3b6d4] bg-[#fffafc] px-6 text-center">
             <span className="grid h-10 w-10 place-items-center rounded-full bg-[#ffe4f2] text-[#f2168d]"><Split size={18} /></span>
@@ -470,7 +472,7 @@ export function SettleTableDialog({
           {openBills.map((bill) => <article key={bill.id} className="rounded-xl border border-[#f0e4ea] p-3">
             <div className="flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className={`grid h-5 w-5 place-items-center rounded-full text-[10px] font-bold text-white ${tone(bill.number).dot}`}>{bill.number}</span><div><p className="text-[13px] font-bold">Bill {bill.number}</p><p className="text-[11px] text-muted">{bill.lines.length} item{bill.lines.length === 1 ? "" : "s"}</p></div></div><strong>{money(charge(bill.lines))}</strong></div>
             <div className="mt-2 space-y-1 border-b border-[#f3e7ed] pb-3">{groupLines(bill.lines).map((line) => <div key={`${line.name}-${line.detail ?? ""}`} className="flex justify-between gap-2 text-[12px]"><span className="min-w-0">{line.quantity > 1 ? `${line.quantity} × ` : ""}{line.name}</span><span className="shrink-0 text-[#5c6370]">{money(line.amount)}</span></div>)}</div>
-            <div className="pt-3">{payCard(bill.id, charge(bill.lines), () => void settleBill(bill), billMode[bill.id] ?? "NOW", (mode) => setBillMode((current) => ({ ...current, [bill.id]: mode })), billMethod[bill.id] ?? "CASH", (method) => setBillMethod((current) => ({ ...current, [bill.id]: method })), billStay[bill.id] ?? "", (id) => setBillStay((current) => ({ ...current, [bill.id]: id })))}</div>
+            <div className="pt-3">{payCard(bill.id, charge(bill.lines), () => void settleBill(bill), () => void settleBill(bill, undefined, true), billMode[bill.id] ?? "NOW", (mode) => setBillMode((current) => ({ ...current, [bill.id]: mode })), billMethod[bill.id] ?? "CASH", (method) => setBillMethod((current) => ({ ...current, [bill.id]: method })), billStay[bill.id] ?? "", (id) => setBillStay((current) => ({ ...current, [bill.id]: id })))}</div>
           </article>)}
         </div>
         <footer className="flex items-center justify-between gap-3 border-t border-[#f3e7ed] px-5 py-3">

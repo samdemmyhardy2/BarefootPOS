@@ -51,6 +51,7 @@ export interface MenuItem {
   description?: string | null;
   prepStation?: SendTo;
   price: number | string;
+  manualPrice?: boolean;
   imageUrl?: string | null;
   allergens: string[];
   allergensMy: string[];

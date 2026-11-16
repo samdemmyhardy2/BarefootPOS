@@ -80,6 +80,7 @@ interface OrderState {
     items: Array<{
       menuItemId: string;
       quantity: number;
+      unitPrice?: number;
       removeIngredients?: string;
       addExtras?: string;
       selectedAllergens?: string[];

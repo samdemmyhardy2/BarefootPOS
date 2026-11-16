@@ -47,6 +47,7 @@ export function MenuPage() {
   const [categoryModal, setCategoryModal] = useState(false);
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
+  const [manualPrice, setManualPrice] = useState(false);
   const [position, setPosition] = useState("0");
   const [description, setDescription] = useState("");
   const [itemPrepStation, setItemPrepStation] = useState<SendTo>("KITCHEN");
@@ -161,7 +162,8 @@ export function MenuPage() {
       }
       const payload = {
         name,
-        price: Number(price),
+        price: Number(price || 0),
+        manualPrice,
         description,
         prepStation: itemPrepStation,
         categoryId: selectedCategory,
@@ -180,6 +182,7 @@ export function MenuPage() {
       navigate("/menu");
       setName("");
       setPrice("");
+      setManualPrice(false);
       setPosition("0");
       setDescription("");
       setItemPrepStation("KITCHEN");
@@ -195,6 +198,7 @@ export function MenuPage() {
     setEditingItem(item);
     setName(item.name);
     setPrice(String(item.price));
+    setManualPrice(Boolean(item.manualPrice));
     setPosition(String(item.position ?? 0));
     setDescription(item.description ?? "");
     setItemPrepStation(item.prepStation ?? "KITCHEN");
@@ -210,7 +214,7 @@ export function MenuPage() {
     if (editorItemId === "new") {
       setEditingItem(null);
       setSelectedCategory(categories[0]?.id ?? "");
-      setName(""); setPrice(""); setPosition("0"); setDescription(""); setItemPrepStation("KITCHEN"); setImageUrl(""); setImageFile(null);
+      setName(""); setPrice(""); setManualPrice(false); setPosition("0"); setDescription(""); setItemPrepStation("KITCHEN"); setImageUrl(""); setImageFile(null);
       setSelectedGroupIds([]); setModal(true);
       return;
     }
@@ -325,6 +329,7 @@ export function MenuPage() {
                 setSelectedCategory(categories[0]?.id ?? "");
                 setName("");
                 setPrice("");
+                setManualPrice(false);
                 setPosition("0");
                 setDescription("");
                 setItemPrepStation("KITCHEN");
@@ -428,7 +433,7 @@ export function MenuPage() {
                     {(item.modifierGroups ?? []).length ? (item.modifierGroups ?? []).map((link) => <span key={link.group.id} className="max-w-full truncate rounded-full bg-[#fff7fb] px-2 py-0.5 text-[10px] font-semibold text-[#9a3d6d]">{link.group.name}</span>) : <span className="text-[10px] font-semibold text-muted">No options assigned</span>}
                   </div>
                 </div>
-                <span className="whitespace-nowrap rounded-lg bg-[#fff4f9] px-3 py-2 text-sm font-bold text-[#27212a]">{money(item.price)}</span>
+                <span className="whitespace-nowrap rounded-lg bg-[#fff4f9] px-3 py-2 text-sm font-bold text-[#27212a]">{item.manualPrice ? "Manual" : money(item.price)}</span>
                 <button
                   onClick={() => openEdit(item)}
                   className="grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-[#fff0f7] hover:text-[#d90c7d]"
@@ -485,7 +490,8 @@ export function MenuPage() {
                     <p className="mt-0.5 text-xs text-muted">What staff and guests see</p>
                     <label className="mt-4 block"><span className="mb-1.5 block text-sm font-semibold text-ink">Dish name</span><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Pad Kra Pao" className="h-11 w-full rounded-xl border border-[#f3d5e4] bg-white px-3 text-sm outline-none focus:border-[#ed168c]" /></label>
                     <div className="mt-4"><span className="mb-2 block text-sm font-semibold text-ink">Category</span><div className="flex flex-wrap gap-2">{categories.map((category) => <button key={category.id} type="button" onClick={() => setSelectedCategory(category.id)} className={`rounded-xl border px-3 py-2 text-sm ${selectedCategory === category.id ? "border-[#ed168c] bg-[#fff4f9] font-semibold text-[#d90c7d]" : "border-[#f3d5e4] bg-white text-ink"}`}>{category.name}</button>)}</div></div>
-                    <label className="mt-4 block"><span className="mb-1.5 block text-sm font-semibold text-ink">Price</span><span className="flex h-11 items-center rounded-xl border border-[#f3d5e4] bg-white px-3"><input required type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0" className="min-w-0 flex-1 bg-transparent text-sm outline-none" /><span className="text-sm text-muted">THB</span></span></label>
+                    <label className="mt-4 block"><span className="mb-1.5 block text-sm font-semibold text-ink">Price</span><span className="flex h-11 items-center rounded-xl border border-[#f3d5e4] bg-white px-3"><input required={!manualPrice} type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0" className="min-w-0 flex-1 bg-transparent text-sm outline-none" /><span className="text-sm text-muted">THB</span></span></label>
+                    <label className="mt-2 flex items-center gap-2 text-sm font-semibold text-ink"><input type="checkbox" checked={manualPrice} onChange={(event) => setManualPrice(event.target.checked)} className="h-4 w-4 accent-[#ed168c]" />Manual Variable</label>
                     <div className="mt-4"><p className="mb-2 text-sm font-semibold text-ink">Send to</p><div className="grid gap-2 sm:grid-cols-3">{([["KITCHEN", "Kitchen"], ["BAR", "Bar"], ["NONE", "Don't send"]] as const).map(([value, label]) => <button key={value} type="button" onClick={() => setItemPrepStation(value)} className={choiceClass(itemPrepStation === value)}><span className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${itemPrepStation === value ? "border-[#ed168c]" : "border-[#d9c3cf]"}`}>{itemPrepStation === value && <span className="h-2 w-2 rounded-full bg-[#ed168c]" />}</span>{label}</button>)}</div></div>
                   </section>
                   <section>
